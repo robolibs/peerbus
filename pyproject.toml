@@ -1,0 +1,13 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "quicbit"
+version = "0.0.1"
+description = "Python bindings for quicbit — typed zero-copy messaging over shared memory (local) and QUIC (remote)"
+requires-python = ">=3.9"
+
+[tool.maturin]
+features = ["python-extension"]
+module-name = "quicbit"
