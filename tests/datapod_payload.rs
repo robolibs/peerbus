@@ -4,7 +4,6 @@
 //! spatial / temporal / sugar types let them ride on quicbit's
 //! local SHM transport without a serializer in the middle.
 
-#![cfg(feature = "remote")]
 
 use std::time::Duration;
 
@@ -68,9 +67,10 @@ fn datapod_compound_payload_works() {
     // A user-defined POD that nests datapod types — the whole
     // composite is Pod by virtue of every leaf field being Pod.
     use bytemuck::{Pod, Zeroable};
+use iceoryx2::prelude::ZeroCopySend;
 
     #[repr(C)]
-    #[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq)]
+    #[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq, ZeroCopySend)]
     struct Telemetry {
         stamp: Stamp,
         pose: Pose,

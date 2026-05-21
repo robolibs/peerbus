@@ -1,31 +1,24 @@
 //! Two-endpoint iroh loopback demo.
 //!
-//! Run with `cargo run --features remote --example remote_loopback`.
-//! Spins up two `RemoteTransport`s, one publishing and one
-//! subscribing, both on the loopback interface with relays disabled.
-//! Demonstrates the Phase 3 wire protocol end-to-end.
+//! Run with `cargo run --example remote_loopback`. Spins up two
+//! `RemoteTransport`s, one publishing and one subscribing, both on
+//! the loopback interface with relays disabled.
 
-#[cfg(feature = "remote")]
 use std::thread;
-#[cfg(feature = "remote")]
 use std::time::Duration;
 
-#[cfg(feature = "remote")]
 use bytemuck::{Pod, Zeroable};
-#[cfg(feature = "remote")]
+use iceoryx2::prelude::ZeroCopySend;
 use quicbit::transport::{PublisherOps, SubscriberOps};
-#[cfg(feature = "remote")]
 use quicbit::{RemoteTransport, Transport};
 
-#[cfg(feature = "remote")]
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Debug)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug, ZeroCopySend)]
 struct Tick {
     seq: u32,
     payload: u32,
 }
 
-#[cfg(feature = "remote")]
 fn main() {
     let publisher_side = RemoteTransport::builder("demo/tick")
         .no_relay()
@@ -46,7 +39,6 @@ fn main() {
     let mut pubr = publisher_side.publisher::<Tick>().expect("publisher");
     let mut sub = subscriber_side.subscriber::<Tick>().expect("subscriber");
 
-    // Give the bi stream time to come up; then publish ten ticks.
     let consumer = thread::spawn(move || {
         for _ in 0..200 {
             if let Some(sample) = sub.take().unwrap() {
@@ -67,9 +59,4 @@ fn main() {
     }
 
     consumer.join().unwrap();
-}
-
-#[cfg(not(feature = "remote"))]
-fn main() {
-    eprintln!("This example requires --features remote");
 }

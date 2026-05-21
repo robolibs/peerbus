@@ -1,21 +1,20 @@
-//! [`Transport`] impl backed by a single shared-memory segment.
+//! [`Transport`] impl backed by iceoryx2.
 //!
-//! Each `LocalTransport` owns one `LocalService<T>`. The user picks
-//! the slot pool size via [`LocalConfig`] when constructing it.
-//!
-//! [`Transport`]: crate::transport::Transport
+//! Each `LocalTransport` is bound to one service name. Publisher
+//! and subscriber construction lazily open the iceoryx2 service.
 
+use core::fmt::Debug;
 use std::marker::PhantomData;
 
 use bytemuck::Pod;
+use iceoryx2::prelude::ZeroCopySend;
 
 use crate::error::Result;
 use crate::local::handle::{Loan, Sample};
 use crate::local::service::{LocalConfig, LocalPublisher, LocalService, LocalSubscriber};
 use crate::transport::{LocalPayload, PublisherOps, SubscriberOps, Transport};
 
-/// Same-host SHM transport. Cloning is cheap and shares the
-/// underlying mapping.
+/// Same-host iceoryx2 transport. Cheap to clone (`Arc`-backed).
 #[derive(Clone)]
 pub struct LocalTransport {
     name: String,
@@ -23,9 +22,6 @@ pub struct LocalTransport {
 }
 
 impl LocalTransport {
-    /// Build a transport bound to SHM segment `name`. The segment
-    /// is created if it doesn't already exist (or attached if it
-    /// does, with config validated against the existing layout).
     pub fn new(name: impl Into<String>, cfg: LocalConfig) -> Self {
         Self {
             name: name.into(),
@@ -33,7 +29,7 @@ impl LocalTransport {
         }
     }
 
-    fn open<T: Pod>(&self) -> Result<LocalService<T>> {
+    fn open<T: Pod + ZeroCopySend + Debug + 'static>(&self) -> Result<LocalService<T>> {
         LocalService::<T>::open_or_create(&self.name, self.cfg.clone())
     }
 }
@@ -45,7 +41,7 @@ impl Transport for LocalTransport {
     fn publisher<T: LocalPayload>(&self) -> Result<Self::Publisher<T>> {
         let svc = self.open::<T>()?;
         Ok(LocalPublisherTyped {
-            inner: svc.publisher(),
+            inner: svc.publisher()?,
             _service: svc,
             _phantom: PhantomData,
         })
@@ -54,22 +50,22 @@ impl Transport for LocalTransport {
     fn subscriber<T: LocalPayload>(&self) -> Result<Self::Subscriber<T>> {
         let svc = self.open::<T>()?;
         Ok(LocalSubscriberTyped {
-            inner: svc.subscriber(),
+            inner: svc.subscriber()?,
             _service: svc,
             _phantom: PhantomData,
         })
     }
 }
 
-/// Owns a `LocalService` so the segment stays attached for the
-/// publisher's lifetime.
-pub struct LocalPublisherTyped<T: Pod> {
+/// Holds a `LocalService` to keep the iceoryx2 service alive for
+/// the publisher's lifetime.
+pub struct LocalPublisherTyped<T: Pod + ZeroCopySend + Debug + 'static> {
     inner: LocalPublisher<T>,
     _service: LocalService<T>,
     _phantom: PhantomData<fn() -> T>,
 }
 
-impl<T: Pod + 'static> PublisherOps<T> for LocalPublisherTyped<T> {
+impl<T: LocalPayload> PublisherOps<T> for LocalPublisherTyped<T> {
     type Loan = Loan<T>;
 
     fn loan(&mut self) -> Result<Self::Loan> {
@@ -81,13 +77,13 @@ impl<T: Pod + 'static> PublisherOps<T> for LocalPublisherTyped<T> {
     }
 }
 
-pub struct LocalSubscriberTyped<T: Pod> {
+pub struct LocalSubscriberTyped<T: Pod + ZeroCopySend + Debug + 'static> {
     inner: LocalSubscriber<T>,
     _service: LocalService<T>,
     _phantom: PhantomData<fn() -> T>,
 }
 
-impl<T: Pod + 'static> SubscriberOps<T> for LocalSubscriberTyped<T> {
+impl<T: LocalPayload> SubscriberOps<T> for LocalSubscriberTyped<T> {
     type Sample = Sample<T>;
 
     fn take(&mut self) -> Result<Option<Self::Sample>> {
@@ -98,7 +94,7 @@ impl<T: Pod + 'static> SubscriberOps<T> for LocalSubscriberTyped<T> {
 // Direct trait impls on `LocalPublisher` / `LocalSubscriber` so
 // callers that built the handle straight from `LocalService` can
 // also drop it into `AsyncPublisher` / `AsyncSubscriber`.
-impl<T: Pod + 'static> PublisherOps<T> for LocalPublisher<T> {
+impl<T: LocalPayload> PublisherOps<T> for LocalPublisher<T> {
     type Loan = Loan<T>;
 
     fn loan(&mut self) -> Result<Self::Loan> {
@@ -110,7 +106,7 @@ impl<T: Pod + 'static> PublisherOps<T> for LocalPublisher<T> {
     }
 }
 
-impl<T: Pod + 'static> SubscriberOps<T> for LocalSubscriber<T> {
+impl<T: LocalPayload> SubscriberOps<T> for LocalSubscriber<T> {
     type Sample = Sample<T>;
 
     fn take(&mut self) -> Result<Option<Self::Sample>> {

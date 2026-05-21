@@ -1,202 +1,216 @@
-//! Typed entrypoint: [`LocalService`] / [`LocalPublisher`] /
-//! [`LocalSubscriber`].
+//! Typed entrypoint to the iceoryx2-backed local transport.
 //!
-//! A `LocalService<T>` is one SHM segment scoped to a single payload
-//! type `T: Pod`. Creating a service `shm_open`s the segment with
-//! `O_CREAT | O_EXCL`; attaching does `O_RDWR` and validates the
-//! magic / version / type hash. Same process can hold any number of
-//! publishers and subscribers — the per-segment refcount handles
-//! cross-process teardown automatically.
+//! Replaces the previous home-grown SHM allocator. A
+//! `LocalService<T>` is one iceoryx2 publish/subscribe service
+//! scoped to one payload type `T`. Multiple publishers and
+//! subscribers can attach to the same service name on the same
+//! host; iceoryx2 handles SHM allocation, slot recycling, and
+//! cross-process discovery.
 
-use std::any::type_name;
-use std::marker::PhantomData;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
+use core::fmt::Debug;
 use std::sync::Arc;
 
 use bytemuck::Pod;
+use iceoryx2::node::Node as IoxNode;
+use iceoryx2::node::NodeBuilder;
+use iceoryx2::port::publisher::Publisher as IoxPublisher;
+use iceoryx2::port::subscriber::Subscriber as IoxSubscriber;
+use iceoryx2::prelude::*;
+use iceoryx2::service::port_factory::publish_subscribe::PortFactory;
 
 use crate::error::{Error, Result};
 use crate::local::handle::{Loan, Sample};
-use crate::local::layout::fnv1a64;
-use crate::local::segment::{Segment, SegmentParams};
 
-/// Configurable parameters for a local SHM service.
+/// Configurable parameters. iceoryx2 wires its own defaults so
+/// most fields are advisory; we keep the struct for API parity
+/// with the old allocator and to leave room for future tuning.
 #[derive(Debug, Clone)]
 pub struct LocalConfig {
-    /// Number of slots in the pool.
-    pub slot_count: u32,
-    /// Per-slot payload capacity in bytes. Must be `>= size_of::<T>()`
-    /// at the time a publisher/subscriber is constructed.
-    pub slot_size: u32,
-    /// Number of past samples a late-joining subscriber can replay.
-    /// Defaults to 1 (latest only).
+    /// Maximum concurrent publishers that may attach to the
+    /// service. iceoryx2 default is 2; we expose the knob.
+    pub max_publishers: u32,
+    /// Maximum concurrent subscribers.
+    pub max_subscribers: u32,
+    /// Per-subscriber sample buffer size. Subscribers that fall
+    /// behind by more than this number of unread samples observe
+    /// loss.
+    pub subscriber_buffer: u32,
+    /// History length kept on the publisher side for late-joining
+    /// subscribers.
     pub history_depth: u32,
 }
 
 impl Default for LocalConfig {
     fn default() -> Self {
         Self {
-            slot_count: 16,
-            slot_size: 256,
+            max_publishers: 2,
+            max_subscribers: 8,
+            subscriber_buffer: 16,
             history_depth: 1,
         }
     }
 }
 
-/// A typed local SHM service. Cheap to clone — clones share the
-/// underlying mapping.
-#[derive(Clone)]
-pub struct LocalService<T: Pod> {
-    segment: Segment,
-    _phantom: PhantomData<fn() -> T>,
+/// Typed handle to an iceoryx2 publish-subscribe service.
+///
+/// Cheap to clone — internally an `Arc<IoxNode>` and an
+/// `Arc<PortFactory>`. The first process to call `create_or_open`
+/// for a given name owns the service definition; subsequent
+/// callers attach.
+pub struct LocalService<T: Pod + ZeroCopySend + Debug + 'static> {
+    iox_node: Arc<IoxNode<ipc_threadsafe::Service>>,
+    factory: Arc<PortFactory<ipc_threadsafe::Service, T, ()>>,
 }
 
-impl<T: Pod> LocalService<T> {
-    /// Create a brand-new service named `name`. Returns
-    /// [`Error::ServiceAlreadyExists`] if a segment with this name
-    /// is already present in `/dev/shm`.
-    pub fn create(name: &str, cfg: LocalConfig) -> Result<Self> {
-        let required = std::mem::size_of::<T>();
-        if (cfg.slot_size as usize) < required {
-            return Err(Error::PayloadTooLarge {
-                actual: required,
-                capacity: cfg.slot_size as usize,
-            });
+impl<T: Pod + ZeroCopySend + Debug + 'static> Clone for LocalService<T> {
+    fn clone(&self) -> Self {
+        Self {
+            iox_node: self.iox_node.clone(),
+            factory: self.factory.clone(),
         }
-        let segment = Segment::create(
-            name,
-            SegmentParams {
-                slot_count: cfg.slot_count,
-                slot_size: cfg.slot_size,
-                history_depth: cfg.history_depth,
-                type_name: type_name::<T>(),
-            },
-        )?;
-        Ok(Self {
-            segment,
-            _phantom: PhantomData,
-        })
     }
+}
 
-    /// Attach to an existing service.
-    pub fn attach(name: &str) -> Result<Self> {
-        let expected = fnv1a64(type_name::<T>());
-        let segment = Segment::attach(name, expected)?;
-        if (segment.slot_size() as usize) < std::mem::size_of::<T>() {
-            return Err(Error::PayloadTooLarge {
-                actual: std::mem::size_of::<T>(),
-                capacity: segment.slot_size() as usize,
-            });
-        }
-        Ok(Self {
-            segment,
-            _phantom: PhantomData,
-        })
-    }
-
-    /// Create-or-attach: try `create`, fall back to `attach` on
-    /// collision. Convenient when multiple processes race to create
-    /// the same service.
+impl<T: Pod + ZeroCopySend + Debug + 'static> LocalService<T> {
+    /// Open the service named `name`, creating it if necessary.
+    /// The first caller pins the QoS settings from `cfg`;
+    /// subsequent attaches reuse the existing definition (their
+    /// `cfg` is ignored beyond compatibility checks iceoryx2
+    /// performs internally).
     pub fn open_or_create(name: &str, cfg: LocalConfig) -> Result<Self> {
-        match Self::create(name, cfg.clone()) {
-            Ok(svc) => Ok(svc),
-            Err(Error::ServiceAlreadyExists(_)) => Self::attach(name),
-            Err(e) => Err(e),
-        }
+        let iox_node = NodeBuilder::new()
+            .create::<ipc_threadsafe::Service>()
+            .map_err(|e| Error::Other(format!("iox NodeBuilder: {e}")))?;
+
+        let service_name: ServiceName = name
+            .try_into()
+            .map_err(|e| Error::invalid_argument(format!("bad service name '{name}': {e}")))?;
+
+        let factory = iox_node
+            .service_builder(&service_name)
+            .publish_subscribe::<T>()
+            .max_publishers(cfg.max_publishers as usize)
+            .max_subscribers(cfg.max_subscribers as usize)
+            .subscriber_max_buffer_size(cfg.subscriber_buffer as usize)
+            .history_size(cfg.history_depth as usize)
+            .open_or_create()
+            .map_err(|e| Error::Other(format!("iox service open_or_create: {e}")))?;
+
+        Ok(Self {
+            iox_node: Arc::new(iox_node),
+            factory: Arc::new(factory),
+        })
     }
 
-    /// Build a publisher handle. Cheap — does not allocate slots.
-    pub fn publisher(&self) -> LocalPublisher<T> {
-        LocalPublisher {
-            segment: self.segment.clone(),
-            _phantom: PhantomData,
-        }
+    /// Alias preserved for API parity with the old allocator.
+    pub fn create(name: &str, cfg: LocalConfig) -> Result<Self> {
+        Self::open_or_create(name, cfg)
     }
 
-    /// Build a subscriber handle. The subscriber's first `take` will
-    /// return whatever is currently in the history window (newest
-    /// first).
-    pub fn subscriber(&self) -> LocalSubscriber<T> {
-        // Start at "next message after current latest" so subscribers
-        // never replay history that pre-dates their attach.
-        let start_next = self.segment.latest_seq() + 1;
-        LocalSubscriber {
-            segment: self.segment.clone(),
-            next_seq: Arc::new(AtomicU64::new(start_next)),
-            _phantom: PhantomData,
-        }
+    /// Alias preserved for API parity. Same as `open_or_create`
+    /// with default QoS.
+    pub fn attach(name: &str) -> Result<Self> {
+        Self::open_or_create(name, LocalConfig::default())
     }
 
-    /// Subscriber that starts at the oldest still-resident sample in
-    /// the history ring (rather than future-only). Useful for tests
-    /// where you want the full visible backlog without a transient
-    /// `Lagged` on the first take.
-    pub fn subscriber_from_start(&self) -> LocalSubscriber<T> {
-        let latest = self.segment.latest_seq();
-        let depth = self.segment.history_depth() as u64;
-        let start_next = if latest == 0 {
-            1
-        } else if latest > depth {
-            latest - depth + 1
-        } else {
-            1
-        };
-        LocalSubscriber {
-            segment: self.segment.clone(),
-            next_seq: Arc::new(AtomicU64::new(start_next)),
-            _phantom: PhantomData,
-        }
+    /// Open an existing service — does NOT create one if missing.
+    /// Returns `Err` if no other process has created the service.
+    /// quicbit uses this for same-host detection: if a publisher
+    /// is registered for the topic name we route locally;
+    /// otherwise we fall through to iroh.
+    pub fn open_existing(name: &str) -> Result<Self> {
+        let iox_node = NodeBuilder::new()
+            .create::<ipc_threadsafe::Service>()
+            .map_err(|e| Error::Other(format!("iox NodeBuilder: {e}")))?;
+
+        let service_name: ServiceName = name
+            .try_into()
+            .map_err(|e| Error::invalid_argument(format!("bad service name '{name}': {e}")))?;
+
+        let factory = iox_node
+            .service_builder(&service_name)
+            .publish_subscribe::<T>()
+            .open()
+            .map_err(|e| Error::Other(format!("iox service open: {e}")))?;
+
+        Ok(Self {
+            iox_node: Arc::new(iox_node),
+            factory: Arc::new(factory),
+        })
     }
 
-    pub fn name(&self) -> &str {
-        self.segment.name()
+    /// Number of publishers currently attached to this service —
+    /// useful as a "is anyone broadcasting?" signal.
+    pub fn publisher_count(&self) -> usize {
+        use iceoryx2::service::port_factory::publish_subscribe::PortFactory as PF;
+        // PortFactory's dynamic_config() lives on a trait, drag it in.
+        use iceoryx2::service::port_factory::PortFactory as _;
+        let _: &PF<ipc_threadsafe::Service, T, ()> = &self.factory;
+        self.factory.dynamic_config().number_of_publishers()
     }
 
-    /// Internal accessor, exposed at `pub(crate)` for the FFI /
-    /// Python module shims so they can read segment metadata without
-    /// reaching into private fields.
-    #[allow(dead_code)]
-    pub(crate) fn segment(&self) -> &Segment {
-        &self.segment
+    /// Build a publisher.
+    pub fn publisher(&self) -> Result<LocalPublisher<T>> {
+        let publisher = self
+            .factory
+            .publisher_builder()
+            .create()
+            .map_err(|e| Error::Other(format!("iox publisher_builder: {e}")))?;
+        Ok(LocalPublisher {
+            inner: publisher,
+            _service: self.clone(),
+        })
+    }
+
+    /// Build a subscriber whose cursor starts at the next publish.
+    pub fn subscriber(&self) -> Result<LocalSubscriber<T>> {
+        let subscriber = self
+            .factory
+            .subscriber_builder()
+            .create()
+            .map_err(|e| Error::Other(format!("iox subscriber_builder: {e}")))?;
+        Ok(LocalSubscriber {
+            inner: subscriber,
+            _service: self.clone(),
+        })
     }
 }
 
-/// Handle that loans slots and publishes them.
-pub struct LocalPublisher<T: Pod> {
-    segment: Segment,
-    _phantom: PhantomData<fn() -> T>,
+/// Publisher port. Loan a slot, write the payload in place,
+/// publish.
+pub struct LocalPublisher<T: Pod + ZeroCopySend + Debug + 'static> {
+    inner: IoxPublisher<ipc_threadsafe::Service, T, ()>,
+    _service: LocalService<T>,
 }
 
-impl<T: Pod> LocalPublisher<T> {
-    /// Reserve one slot for in-place writes. The returned [`Loan`]
-    /// derefs to `T` initialized to all-zeros (POD safe).
+impl<T: Pod + ZeroCopySend + Debug + 'static> LocalPublisher<T> {
+    /// Loan an in-flight slot. Returned [`Loan<T>`] derefs mutably
+    /// to a zero-initialised `T` living in shared memory. Mutate
+    /// in place, then call [`publish`](Self::publish).
     pub fn loan(&mut self) -> Result<Loan<T>> {
-        let slot_idx = self.segment.pop_free().ok_or_else(|| Error::NoFreeSlot {
-            service: self.segment.name().to_string(),
-        })?;
-        // Zero-init the payload — Pod permits this and it gives the
-        // user a predictable starting state.
-        unsafe {
-            std::ptr::write_bytes(
-                self.segment.slot_payload(slot_idx),
-                0u8,
-                std::mem::size_of::<T>(),
-            );
-        }
-        Ok(Loan::new(self.segment.clone(), slot_idx))
+        // `loan_uninit` gives a `SampleMut<MaybeUninit<T>>`; we
+        // initialise it to all-zeros (which is a valid Pod value)
+        // so the caller can DerefMut into a `&mut T` without
+        // first having to assemble the full struct.
+        let uninit = self
+            .inner
+            .loan_uninit()
+            .map_err(|e| Error::Other(format!("iox loan_uninit: {e}")))?;
+        let initialised = uninit.write_payload(T::zeroed());
+        Ok(Loan { inner: initialised })
     }
 
-    /// Hand the loan over to subscribers. Returns the assigned
-    /// publish sequence.
+    /// Hand the loan back to the publisher; the iceoryx2 backend
+    /// dispatches the sample to all attached subscribers without a
+    /// copy.
     pub fn publish(&mut self, loan: Loan<T>) -> Result<u64> {
-        let slot_idx = loan.mark_published();
-        let seq = self.segment.publish_slot(slot_idx);
-        Ok(seq)
+        loan.inner
+            .send()
+            .map_err(|e| Error::Other(format!("iox send: {e}")))?;
+        Ok(0) // iceoryx2 doesn't surface a per-publish seq #
     }
 
-    /// Shortcut for "loan + write + publish" when you have a `T`
-    /// already.
+    /// Convenience: loan + write + publish.
     pub fn send(&mut self, value: T) -> Result<u64> {
         let mut loan = self.loan()?;
         *loan = value;
@@ -204,52 +218,24 @@ impl<T: Pod> LocalPublisher<T> {
     }
 }
 
-/// Handle that pulls samples off the publish ring.
-pub struct LocalSubscriber<T: Pod> {
-    segment: Segment,
-    next_seq: Arc<AtomicU64>,
-    _phantom: PhantomData<fn() -> T>,
+/// Subscriber port. Non-blocking `take`.
+pub struct LocalSubscriber<T: Pod + ZeroCopySend + Debug + 'static> {
+    inner: IoxSubscriber<ipc_threadsafe::Service, T, ()>,
+    _service: LocalService<T>,
 }
 
-impl<T: Pod> LocalSubscriber<T> {
-    /// Non-blocking take. Returns:
-    /// * `Ok(Some(sample))` — a fresh sample is available.
-    /// * `Ok(None)` — no new sample since the last take.
-    /// * `Err(Lagged { dropped })` — subscriber fell behind; the
-    ///   internal cursor has been fast-forwarded so the next take
-    ///   sees the freshest available sample.
+impl<T: Pod + ZeroCopySend + Debug + 'static> LocalSubscriber<T> {
+    /// Take the next sample if available. Returns
+    /// `Ok(Some(Sample))` when a sample is ready, `Ok(None)` when
+    /// the queue is empty, `Err` on backend failure.
     pub fn take(&mut self) -> Result<Option<Sample<T>>> {
-        let wanted = self.next_seq.load(Ordering::Acquire);
-        match self.segment.try_acquire(wanted) {
-            Ok(Some((idx, seq))) => {
-                self.next_seq.store(seq + 1, Ordering::Release);
-                Ok(Some(Sample::new(self.segment.clone(), idx, seq)))
-            }
-            Ok(None) => Ok(None),
-            Err(Error::Lagged { dropped }) => {
-                // Fast-forward past the lost window so the next call
-                // sees the freshest available sample. Surface the
-                // lag once.
-                let latest = self.segment.latest_seq();
-                let depth = self.segment.history_depth() as u64;
-                let new_next = if latest > depth { latest - depth + 1 } else { 1 };
-                self.next_seq.store(new_next, Ordering::Release);
-                Err(Error::Lagged { dropped })
-            }
-            Err(other) => Err(other),
-        }
-    }
-}
-
-impl<T: Pod> Clone for LocalSubscriber<T> {
-    /// Each clone tracks the SAME read cursor — useful when sharing
-    /// a subscriber across threads. For an independent cursor, build
-    /// a fresh subscriber via `LocalService::subscriber()`.
-    fn clone(&self) -> Self {
-        Self {
-            segment: self.segment.clone(),
-            next_seq: Arc::clone(&self.next_seq),
-            _phantom: PhantomData,
+        match self
+            .inner
+            .receive()
+            .map_err(|e| Error::Other(format!("iox receive: {e}")))?
+        {
+            Some(sample) => Ok(Some(Sample { inner: sample })),
+            None => Ok(None),
         }
     }
 }

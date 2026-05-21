@@ -1,34 +1,30 @@
 //! Minimum-ceremony pub/sub with identity-by-name.
 //!
 //! ```text
-//! cargo run --features remote --example node_demo
+//! cargo run --example node_demo
 //! ```
 //!
 //! No key files. No URLs. No EndpointIds in user code. Two
 //! strings: who I am, who I'm subscribed to.
 
-#[cfg(feature = "remote")]
 use std::time::{Duration, Instant};
 
-#[cfg(feature = "remote")]
 use bytemuck::{Pod, Zeroable};
-#[cfg(feature = "remote")]
+use iceoryx2::prelude::ZeroCopySend;
 use quicbit::Node;
 
-#[cfg(feature = "remote")]
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Debug)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug, ZeroCopySend)]
 struct Pose {
     x: f32,
     y: f32,
     yaw: f32,
 }
 
-#[cfg(feature = "remote")]
 fn main() -> quicbit::Result<()> {
     // One process running both sides for the demo. In the real
-    // world these are separate binaries — same code, just
-    // separate identities.
+    // world these are separate binaries — same code, just separate
+    // identities.
     let pub_node = Node::builder().no_relay().identity("rover-a").bind()?;
     let sub_node = Node::builder().no_relay().identity("planner").bind()?;
 
@@ -65,9 +61,4 @@ fn main() -> quicbit::Result<()> {
     publisher.join().unwrap();
     subscriber.join().unwrap();
     Ok(())
-}
-
-#[cfg(not(feature = "remote"))]
-fn main() {
-    eprintln!("This example requires --features remote");
 }

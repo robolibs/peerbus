@@ -38,7 +38,7 @@ use tokio::sync::{broadcast, OnceCell};
 use tokio::task::JoinHandle;
 
 use crate::error::{Error, Result};
-use crate::local::layout::fnv1a64;
+use crate::transport::fnv1a64;
 use crate::remote::handshake::{
     HANDSHAKE_MAGIC, HANDSHAKE_VERSION, MAX_PAYLOAD_LEN, MAX_TOPIC_LEN, REQRESP_MAGIC,
 };

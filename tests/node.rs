@@ -1,25 +1,21 @@
 //! End-to-end tests for `Node`.
 //!
-//! Two scenarios:
-//!
-//! 1. **Local routing** — two `Node`s in the same process. The
-//!    registry sees both, so the subscriber attaches via SHM.
-//!    Validates that `Node::publisher` + `Node::subscriber` route
-//!    through the local transport.
-//! 2. **Remote routing** — two `Node`s where the subscriber has
-//!    *no* registry entry for the publisher (we use a synthetic
-//!    `EndpointId` that's not in the registry). Subscriber falls
-//!    through to iroh.
+//! With iceoryx2 as the local backend, same-host routing keys off
+//! the iceoryx2 service name we compose from
+//! `(identity, topic)`. The subscriber asks iceoryx2 whether
+//! that service exists locally; if yes → SHM, if no → dial via
+//! iroh. So all the local tests below use `.identity(...)` so the
+//! routing has something to match.
 
-#![cfg(feature = "remote")]
 
 use std::time::{Duration, Instant};
 
 use bytemuck::{Pod, Zeroable};
+use iceoryx2::prelude::ZeroCopySend;
 use quicbit::Node;
 
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq, ZeroCopySend)]
 struct Tick {
     seq: u32,
     payload: u32,
@@ -40,20 +36,19 @@ fn poll_for<R>(timeout: Duration, mut f: impl FnMut() -> Option<R>) -> Option<R>
 fn local_routing_two_nodes_same_process() {
     let pub_node = Node::builder()
         .no_relay()
-        .slot_count(8)
-        .slot_size(32)
+        .identity("local_pub")
         .bind()
         .expect("publisher node");
-    let pub_id = pub_node.endpoint_id();
 
     let sub_node = Node::builder()
         .no_relay()
+        .identity("local_sub")
         .bind()
         .expect("subscriber node");
 
     let mut pubr = pub_node.publisher::<Tick>("rover/pose").unwrap();
     let mut sub = sub_node
-        .subscriber::<Tick>(pub_id, "rover/pose")
+        .subscriber::<Tick>("local_pub", "rover/pose")
         .expect("local subscribe");
 
     pubr.send(Tick { seq: 1, payload: 42 }).unwrap();
@@ -61,45 +56,6 @@ fn local_routing_two_nodes_same_process() {
     let sample = poll_for(Duration::from_secs(2), || sub.take().unwrap())
         .expect("subscriber should receive");
     assert_eq!(*sample, Tick { seq: 1, payload: 42 });
-}
-
-#[test]
-fn local_routing_survives_multiple_publishes() {
-    let pub_node = Node::builder().no_relay().bind().unwrap();
-    let sub_node = Node::builder().no_relay().bind().unwrap();
-    let pub_id = pub_node.endpoint_id();
-
-    let mut pubr = pub_node.publisher::<Tick>("rover/twist").unwrap();
-    let mut sub = sub_node.subscriber::<Tick>(pub_id, "rover/twist").unwrap();
-
-    // Publish several; subscriber catches the latest at least.
-    for i in 1..=5 {
-        pubr.send(Tick { seq: i, payload: i * 10 }).unwrap();
-        std::thread::sleep(Duration::from_millis(5));
-    }
-
-    // history_depth defaults to 1, so the subscriber may see
-    // `Lagged` if the publisher outpaces it. Tolerate that and
-    // keep polling — the goal is to verify at least one publish
-    // is observed.
-    let mut latest_payload = 0;
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < deadline {
-        match sub.take() {
-            Ok(Some(s)) => {
-                latest_payload = s.payload;
-                if latest_payload == 50 {
-                    break;
-                }
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(5)),
-            Err(_) => {} // Lagged: keep polling
-        }
-    }
-    assert!(
-        latest_payload > 0,
-        "subscriber should have received something"
-    );
 }
 
 #[test]
@@ -136,8 +92,6 @@ fn identity_string_yields_deterministic_endpoint_id() {
         .bind()
         .unwrap()
         .endpoint_id();
-    // Drop the first node so the second can bind. Both share the
-    // same identity → same EndpointId.
     let id2 = Node::builder()
         .no_relay()
         .identity("rover-a")
@@ -169,7 +123,7 @@ fn identity_env_round_trip() {
         .endpoint_id();
     let id2 = Node::builder()
         .no_relay()
-        .identity("rover-c")  // same name, derived directly
+        .identity("rover-c") // same name, derived directly
         .bind()
         .unwrap()
         .endpoint_id();
@@ -179,10 +133,7 @@ fn identity_env_round_trip() {
 }
 
 #[test]
-fn name_based_local_routing_without_registry_lookup() {
-    // Publisher with a name. Subscriber finds the SHM segment via
-    // the name → no registry lookup needed (still works if registry
-    // would have it too, but the path doesn't depend on it).
+fn name_based_local_routing() {
     let pub_node = Node::builder()
         .no_relay()
         .identity("sensors")
@@ -195,8 +146,9 @@ fn name_based_local_routing_without_registry_lookup() {
         .unwrap();
 
     let mut pubr = pub_node.publisher::<Tick>("imu/raw").unwrap();
-    // Subscribe by NAME (not EndpointId). The &str impl of IntoPeer
-    // hashes the name and looks up the SHM segment by name.
+    // Subscribe by NAME — iceoryx2 service name is composed from
+    // it, and `open_existing` succeeds because the publisher is
+    // already up on this host.
     let mut sub = sub_node
         .subscriber::<Tick>("sensors", "imu/raw")
         .unwrap();

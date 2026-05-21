@@ -23,7 +23,7 @@ use bytemuck::Pod;
 use iroh::endpoint::{RecvStream, SendStream};
 
 use crate::error::{Error, Result};
-use crate::local::layout::fnv1a64;
+use crate::transport::fnv1a64;
 use crate::remote::handshake::{HANDSHAKE_VERSION, MAX_TOPIC_LEN, REQRESP_MAGIC};
 use crate::remote::transport::{
     ensure_peer_connection, read_frame, write_frame, ErasedReqHandler, InnerShared,

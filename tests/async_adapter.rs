@@ -1,12 +1,12 @@
 //! Async adapter smoke test.
 
-#![cfg(feature = "async")]
 
 use bytemuck::{Pod, Zeroable};
+use iceoryx2::prelude::ZeroCopySend;
 use quicbit::{AsyncPublisher, AsyncSubscriber, LocalConfig, LocalService};
 
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq, ZeroCopySend)]
 struct Tick {
     seq: u32,
     payload: u32,
@@ -18,14 +18,14 @@ fn unique_name(stem: &str) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    format!("aa-{stem}-{pid}-{nanos}")
+    format!("quicbit_aa_{stem}_{pid}_{nanos}")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_local_round_trip() {
     let svc = LocalService::<Tick>::create(&unique_name("rt"), LocalConfig::default()).unwrap();
-    let mut pubr = AsyncPublisher::new(svc.publisher());
-    let mut sub = AsyncSubscriber::new(svc.subscriber());
+    let mut pubr = AsyncPublisher::new(svc.publisher().unwrap());
+    let mut sub = AsyncSubscriber::new(svc.subscriber().unwrap());
 
     let mut loan = pubr.loan().await.unwrap();
     *loan = Tick { seq: 1, payload: 42 };

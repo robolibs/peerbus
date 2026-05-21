@@ -37,30 +37,45 @@
           pkgs.clang
           pkgs.mold
           pkgs.pkg-config
+          # iceoryx2 has C bindings; its build.rs runs bindgen,
+          # which needs libclang + the C++ runtime resolvable at
+          # link time.
+          pkgs.libclang.lib
+          pkgs.stdenv.cc.cc.lib
         ];
+
+        # Env vars exported into every devShell so bindgen finds
+        # libclang and the dynamic linker finds libstdc++.
+        shellEnv = {
+          LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
+          LD_LIBRARY_PATH = nixpkgs.lib.makeLibraryPath [
+            pkgs.stdenv.cc.cc.lib
+            pkgs.libclang.lib
+          ];
+        };
       in
       {
         devShells = {
           # `nix develop`  →  stable shell, used for all normal work.
-          default = pkgs.mkShell {
+          default = pkgs.mkShell ({
             packages = [ stableToolchain ] ++ common;
             RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
-          };
+          } // shellEnv);
 
           # `nix develop .#nightly`  →  adds miri.
           # Use for:
           #   cargo miri test --lib
-          nightly = pkgs.mkShell {
+          nightly = pkgs.mkShell ({
             packages = [
               nightlyToolchain
             ] ++ common;
-          };
+          } // shellEnv);
 
           # `nix develop .#python`  →  adds Python + maturin so the
           # `python` feature links and Python tests run.
           # Build a wheel with:
           #   maturin build --release --features python-extension
-          python = pkgs.mkShell {
+          python = pkgs.mkShell ({
             packages = [
               stableToolchain
               pkgs.python312
@@ -68,7 +83,7 @@
               pkgs.maturin
             ] ++ common;
             RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
-          };
+          } // shellEnv);
         };
       }
     );

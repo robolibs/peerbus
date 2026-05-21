@@ -38,7 +38,6 @@ pub enum Error {
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
 
-    #[cfg(feature = "remote")]
     #[error("remote transport error: {0}")]
     Remote(String),
 

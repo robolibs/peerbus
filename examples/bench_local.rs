@@ -19,10 +19,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use bytemuck::{Pod, Zeroable};
+use iceoryx2::prelude::ZeroCopySend;
 use quicbit::{LocalConfig, LocalService};
 
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug, ZeroCopySend)]
 struct Sample {
     sent_nanos: u64,
     seq: u64,
@@ -44,28 +45,26 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(1_000_000);
 
-    let name = format!("bench-{}-{}", std::process::id(), now_ns());
-    // history_depth = slot_count - 1 so the ring buffers everything
-    // until the subscriber drains it; the publisher will only block
-    // on "no free slot" when the subscriber genuinely falls behind.
+    let name = format!("quicbit_bench_{}_{}", std::process::id(), now_ns());
     let svc = LocalService::<Sample>::create(
         &name,
         LocalConfig {
-            slot_count: 64,
-            slot_size: 64,
-            history_depth: 63,
+            max_publishers: 2,
+            max_subscribers: 2,
+            subscriber_buffer: 64,
+            history_depth: 1,
         },
     )
     .expect("create");
 
-    let mut sub = svc.subscriber();
+    let mut sub = svc.subscriber().expect("subscriber");
     let svc_for_pub = svc.clone();
 
     // Subscriber thread: drains samples until it sees a sentinel
     // (seq == total) or 5 seconds pass with no progress.
     let consumer = thread::spawn(move || {
         let mut received: u64 = 0;
-        let mut dropped: u64 = 0;
+        let dropped: u64 = 0;
         let mut total_latency_ns: u128 = 0;
         let mut empties: u64 = 0;
         let mut last_progress = Instant::now();
@@ -89,9 +88,6 @@ fn main() {
                     }
                     std::hint::spin_loop();
                 }
-                Err(quicbit::Error::Lagged { dropped: d }) => {
-                    dropped += d;
-                }
                 Err(_) => break,
             }
         }
@@ -100,7 +96,7 @@ fn main() {
     });
 
     // Publisher: publish `total` samples as fast as it can.
-    let mut pubr = svc_for_pub.publisher();
+    let mut pubr = svc_for_pub.publisher().expect("publisher");
     let start = Instant::now();
     let mut publish_latency_ns: u128 = 0;
     let mut emitted: u64 = 0;

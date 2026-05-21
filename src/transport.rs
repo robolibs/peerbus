@@ -14,27 +14,53 @@ use std::ops::{Deref, DerefMut};
 
 use crate::error::Result;
 
+/// FNV-1a (64-bit) — used to hash `std::any::type_name::<T>()`
+/// across publisher and subscriber so the iroh handshake can
+/// detect a payload-type mismatch quickly. Kept here because the
+/// historical home (`local::layout`) is gone after the iceoryx2
+/// migration.
+pub fn fnv1a64(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
 /// Marker trait for types you can send/receive locally.
 ///
-/// `Pod` is required because the local transport places the bytes
-/// directly into a shared-memory slot and reads them back through a
-/// typed pointer — there is no serialization step. `Send + Sync`
-/// is automatic for `Pod`.
-pub trait LocalPayload: bytemuck::Pod + 'static {}
-impl<T: bytemuck::Pod + 'static> LocalPayload for T {}
+/// Three constraints:
+/// * `bytemuck::Pod` — fixed memory layout, valid bit pattern for
+///   any byte sequence of the right size. We use this for the iroh
+///   remote path's byte-level (de)serialisation.
+/// * `iceoryx2::ZeroCopySend` — iceoryx2's marker that a type may
+///   ride in shared memory between processes. In practice it
+///   requires `#[repr(C)]` + no pointers / references / heap.
+///   `Pod` satisfies the safety contract, but the trait must be
+///   `unsafe impl`'d (or `#[derive(ZeroCopySend)]`) for each user
+///   type because the orphan rules prevent us from doing it
+///   automatically.
+/// * `Debug` — iceoryx2's `Sample` / `SampleMut` types require it.
+pub trait LocalPayload:
+    bytemuck::Pod + iceoryx2::prelude::ZeroCopySend + core::fmt::Debug + 'static
+{
+}
+impl<T> LocalPayload for T where
+    T: bytemuck::Pod + iceoryx2::prelude::ZeroCopySend + core::fmt::Debug + 'static
+{
+}
 
 /// Marker trait for types you can send/receive across the network.
 ///
 /// Adds `serde::Serialize + DeserializeOwned` on top of [`LocalPayload`].
 /// `Pod` is *not* required — the remote transport serializes through
 /// `postcard`, which can handle non-POD types.
-#[cfg(feature = "remote")]
 pub trait RemotePayload:
     serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
 {
 }
 
-#[cfg(feature = "remote")]
 impl<T> RemotePayload for T where
     T: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
 {

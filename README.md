@@ -1,31 +1,36 @@
 # quicbit
 
-`quicbit` is a Rust **typed zero-copy messaging** library for robotics,
-with two transports behind one service-oriented API:
+`quicbit` is a Rust **typed zero-copy messaging** library for
+robotics. One service-oriented API, two transports under the hood
+— both always on:
 
-- **Local (same host)** — loan-publish-consume pub/sub over POSIX
-  shared memory. Publisher writes the payload *in place* into an SHM
-  slot, hands over a pointer; subscribers read the same bytes. No
-  serialization, no copy across the process boundary.
-- **Remote (across hosts)** — pub/sub over [iroh] peer-to-peer QUIC.
-  Peers are identified by ed25519 `EndpointId`s rather than
-  IP\:port, NAT hole punching + relay fallback are handled by iroh,
+- **Local (same host)** — loan-publish-consume pub/sub on top of
+  [iceoryx2]'s production-grade shared-memory IPC. Publisher
+  writes the payload *in place* into a slot, hands over a pointer;
+  subscribers read the same bytes. No serialization, no copy
+  across the process boundary.
+- **Remote (across hosts)** — pub/sub over [iroh] peer-to-peer
+  QUIC. Peers are identified by ed25519 `EndpointId`s rather than
+  IP\:port. NAT hole punching + relay fallback are handled by iroh,
   TLS 1.3 is mandatory (and PKI-free — the `SecretKey` *is* the
   identity). Topics map to QUIC streams; back-pressure is the
   stream's own flow control.
 
-A `quicbit::Service` is the same thing to callers regardless of where
-subscribers live — local-only, remote-only, or a mixed fan-out.
-
+[iceoryx2]: https://github.com/eclipse-iceoryx/iceoryx2
 [iroh]: https://github.com/n0-computer/iroh
+
+A `quicbit::Node` is the same to callers regardless of where its
+subscribers live — local-only, remote-only, or a mixed fan-out.
+The routing decision (SHM vs iroh) happens automatically at
+`subscriber()` time.
 
 ## What quicbit is NOT
 
 - **Not a simulator.** [`wirebit`](https://codeberg.org/robolibs/wirebit)
   is the bus simulator + HIL bridge; quicbit *uses* it as a test
   substrate, not as its runtime transport.
-- **Not ROS.** No CDR, no DDS, no ROS graph. Interop with ROS 2 is a
-  future sidecar (quicbit ⇄ Zenoh ⇄ DDS), not in-process.
+- **Not ROS.** No CDR, no DDS, no ROS graph. Interop with ROS 2 is
+  a future sidecar (quicbit ⇄ Zenoh ⇄ DDS), not in-process.
 - **Not RPC.** Req/resp is a native pattern, but this is message
   middleware, not a full RPC framework (no service registry, no
   codegen).
@@ -38,7 +43,7 @@ subscribers live — local-only, remote-only, or a mixed fan-out.
                  └───────────┬────────────────────┘
                              │  loan / publish / subscribe / call
                  ┌───────────▼────────────────────┐
-                 │          Service               │   <- this crate
+                 │           Node                 │   <- this crate
                  │  (pub/sub + req/resp, typed)   │
                  └───────────┬────────────────────┘
                              │
@@ -46,7 +51,7 @@ subscribers live — local-only, remote-only, or a mixed fan-out.
               │                                 │
      ┌────────▼─────────┐              ┌────────▼─────────┐
      │   LocalTransport │              │  RemoteTransport │
-     │   (SHM slots)    │              │  (iroh / QUIC)   │
+     │  (iceoryx2 SHM)  │              │  (iroh / QUIC)   │
      └──────────────────┘              └──────────────────┘
        same-host,                         across hosts,
        true zero-copy,                    TLS 1.3, hole punching,
@@ -55,22 +60,22 @@ subscribers live — local-only, remote-only, or a mixed fan-out.
 
 ## Quick start
 
-One entry point: `Node`. It owns the iroh endpoint, registers itself
-in the host registry, and routes by topic.
+One entry point: `Node`. Two strings: who **I** am, who I'm
+listening to.
 
 ```rust,ignore
 use bytemuck::{Pod, Zeroable};
+use iceoryx2::prelude::ZeroCopySend;
 use quicbit::Node;
 
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Debug)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug, ZeroCopySend)]
 struct Pose { x: f32, y: f32, yaw: f32 }
 
-let node = Node::builder().no_relay().bind()?;
-let peer = node.endpoint_id();
+let node = Node::builder().identity("rover-a").no_relay().bind()?;
 
 let mut pubr = node.publisher::<Pose>("rover/pose")?;
-let mut sub  = node.subscriber::<Pose>(peer, "rover/pose")?;
+let mut sub  = node.subscriber::<Pose>("rover-a", "rover/pose")?;
 
 pubr.send(Pose { x: 1.0, y: 2.0, yaw: 0.1 })?;
 if let Some(s) = sub.take()? {
@@ -79,29 +84,44 @@ if let Some(s) = sub.take()? {
 # Ok::<_, quicbit::Error>(())
 ```
 
-If the peer's `EndpointId` is registered on this host (i.e. it's a
-sibling process on the same machine), the subscriber attaches to its
-SHM segment and reads with zero copy. Otherwise it dials over iroh.
-**Same call either way.**
+If the publisher's iceoryx2 service exists on this host (any
+process using the same `identity` + `topic`), the subscriber
+attaches to its SHM slot and reads with zero copy. Otherwise it
+dials over iroh. **Same call either way.**
 
-## Development shells (Nix)
+### Payload type requirements
 
-```text
-nix develop              # stable toolchain (default)
-nix develop .#nightly    # stable + miri
-nix develop .#python     # stable + python312 + maturin
+Every `T` you publish/subscribe must satisfy three traits:
+
+- `bytemuck::Pod + bytemuck::Zeroable` — fixed memory layout for
+  the iroh wire path.
+- `iceoryx2::ZeroCopySend` — marker that the type may ride in
+  shared memory between processes.
+- `Debug` — required by iceoryx2's `Sample` / `SampleMut`.
+
+In practice that's one struct annotation:
+
+```rust,ignore
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug, ZeroCopySend)]
+struct MyMessage { /* ... */ }
 ```
 
-## Features
+### Identity
 
-| Feature      | Adds                                                     |
-|--------------|----------------------------------------------------------|
-| *(default)*  | `local` — SHM loan/publish/consume pub/sub               |
-| `remote`     | iroh peer-to-peer QUIC transport                         |
-| `async`      | `AsyncPublisher` / `AsyncSubscriber` shims over the sync core |
-| `tracing`    | tracing spans around loan / publish / consume            |
-| `config`     | service-discovery config files (TOML / JSON)             |
-| `python`     | pyo3 bindings                                            |
+Three ways to pin a `Node`'s iroh identity:
+
+```rust,ignore
+.identity("rover-a")              // string in code — dev / trusted networks
+.identity_env("ROVER_ID")         // string from an env var
+.identity_file("/etc/rover.key")  // random key, persisted — production
+```
+
+String identities hash to a deterministic `SecretKey` (and so to a
+stable `EndpointId`). Anyone with the string can impersonate; only
+use in trusted contexts. The `_file` variant is the
+cryptographically meaningful path — the file holds 32 raw bytes
+and is generated on first run.
 
 ## Request / response
 
@@ -109,42 +129,65 @@ nix develop .#python     # stable + python312 + maturin
 use quicbit::{LocalConfig, LocalReqRespService};
 
 let svc = LocalReqRespService::<Ping, Pong>::create("calc", LocalConfig::default())?;
-// Server thread:
-let mut server = svc.server();
+let mut server = svc.server()?;
 while let Some((req, reply)) = server.take_request()? {
     reply.respond(handle(&*req))?;
 }
-// Client thread:
-let mut client = svc.client();
+
+let mut client = svc.client()?;
 let pong: Pong = client.call(Ping { /* ... */ })?;
 # Ok::<_, quicbit::Error>(())
 ```
 
 ## Lower-level building blocks
 
-`Node` is built on top of `LocalTransport` (SHM) and
-`RemoteTransport` (iroh). Both are public if you want direct
-control; otherwise prefer `Node`. See `examples/local_pose.rs`
-and `examples/remote_loopback.rs` for direct usage.
+`Node` is the recommended entry point. The pieces it composes are
+also public if you want direct control:
 
-## C / Python
+- `LocalTransport` / `LocalService<T>` — iceoryx2-backed local pub/sub.
+- `RemoteTransport` — iroh-backed remote pub/sub.
+- `AsyncPublisher` / `AsyncSubscriber` — `async fn` shims over the
+  sync core, for callers running in a tokio runtime.
 
-The C ABI is byte-oriented (publisher hands you a `*mut u8` of
-`slot_size` bytes). See [`include/quicbit.h`](include/quicbit.h)
-and `tests/ffi_smoke.rs` for usage.
+See `examples/local_pose.rs` and `examples/remote_loopback.rs` for
+direct usage.
 
-Python bindings (via pyo3, abi3-py39) expose `Service`, `Publisher`,
-`Subscriber` with the same byte-oriented model — see
-`examples/python_smoke.py`. Build a wheel with:
+## Development shells (Nix)
 
 ```text
-maturin build --release --features python-extension
+nix develop              # stable toolchain (default)
+nix develop .#nightly    # adds miri for unsafe-code audits
 ```
+
+The shells export `LIBCLANG_PATH` and `LD_LIBRARY_PATH` so
+iceoryx2's `bindgen` step finds libclang + the C++ runtime.
+
+## Cargo features
+
+`quicbit` ships with iceoryx2 and iroh always on — there are no
+feature flags for the transports. The only optional knobs:
+
+| Feature   | Adds                                          |
+|-----------|-----------------------------------------------|
+| `tracing` | tracing spans around loan / publish / consume |
+| `config`  | service-discovery config files (TOML / JSON)  |
+
+So `cargo build` / `cargo test` / `cargo run --example <name>`
+just work — no `--features ...` needed.
+
+## C / Python bindings
+
+The previous custom-SHM C ABI and Python bindings were retired in
+the iceoryx2 migration. If you need them back, the cleanest path
+is a thin shim around iceoryx2's own C bindings; happy to revisit
+on request.
 
 ## See also
 
-- [`PLAN.md`](PLAN.md) — phased roadmap, ADRs, risks.
-- [`iroh`](https://github.com/n0-computer/iroh) — peer-to-peer QUIC
-  with built-in NAT traversal; the wire for the remote transport.
+- [`iceoryx2`](https://github.com/eclipse-iceoryx/iceoryx2) —
+  zero-copy SHM IPC; the substrate of `LocalTransport`.
+- [`iroh`](https://github.com/n0-computer/iroh) — peer-to-peer
+  QUIC with built-in NAT traversal; the wire for the remote
+  transport.
 - [`wirebit`](https://codeberg.org/robolibs/wirebit) — the bus
   simulator / HIL bridge used as quicbit's test substrate.

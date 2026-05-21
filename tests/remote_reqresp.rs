@@ -1,19 +1,19 @@
 //! Loopback test for the iroh-backed req/resp transport.
 
-#![cfg(feature = "remote")]
 
 use bytemuck::{Pod, Zeroable};
+use iceoryx2::prelude::ZeroCopySend;
 use quicbit::RemoteTransport;
 
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq, ZeroCopySend)]
 struct Add {
     a: i32,
     b: i32,
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq, ZeroCopySend)]
 struct Sum {
     value: i32,
 }

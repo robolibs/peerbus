@@ -1,17 +1,20 @@
-//! Local transport — POSIX SHM slot allocator.
+//! Local transport — iceoryx2-backed publish/subscribe.
 //!
-//! The on-disk wire layout is defined in [`layout`]. [`segment`]
-//! glues the layout to a live mapping. [`service`] exposes the
-//! typed user-facing API: [`LocalService`], [`LocalPublisher`],
-//! [`LocalSubscriber`]. The RAII handles live in [`handle`].
-//! Request/response support sits in [`reqresp`].
+//! [`service`] exposes the typed user-facing API:
+//! [`LocalService`], [`LocalPublisher`], [`LocalSubscriber`]. The
+//! RAII handles live in [`handle`]. Request/response support sits
+//! in [`reqresp`].
+//!
+//! Earlier versions of this module shipped a hand-rolled POSIX
+//! SHM allocator (`segment.rs`, `layout.rs`, `shm.rs`, plus the
+//! cross-process `crate::registry`). All of that was retired in
+//! favour of iceoryx2 — the SHM ABA / refcount / multi-publisher
+//! work iceoryx2 has shipped in production is well beyond what
+//! we'd have built ourselves.
 
 pub mod handle;
-pub mod layout;
 pub mod reqresp;
-pub mod segment;
 pub mod service;
-pub mod shm;
 pub mod transport;
 
 pub use handle::{Loan, Sample};

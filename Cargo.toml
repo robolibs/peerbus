@@ -18,49 +18,15 @@ include = [
 
 [lib]
 path = "src/lib.rs"
-crate-type = ["rlib", "cdylib"]
 
 [features]
-# Default = local SHM transport only. QUIC pulls in rustls + quinn
-# and is opt-in so a same-host-only build stays small.
-default = ["local"]
-
-# Loan/publish/consume zero-copy pub/sub over POSIX SHM. Core
-# differentiator. Linux + BSDs with tmpfs.
-local = []
-
-# Peer-to-peer QUIC transport via iroh. Adds pub/sub across hosts
-# with EndpointId-based addressing, NAT hole punching, and relay
-# fallback. Opt-in because it brings a chunky dep tree.
-remote = [
-    "dep:iroh",
-    "dep:tokio",
-    "dep:postcard",
-    "dep:serde",
-    "dep:blake3",
-]
+default = []
 
 # Tracing spans / events at every loan / publish / consume.
 tracing = ["dep:tracing"]
 
 # TOML / JSON config parsing for service discovery files.
-config = ["dep:serde", "dep:serde_json", "dep:toml"]
-
-# Async adapter — `AsyncPublisher` / `AsyncSubscriber` shims that
-# wrap the sync core via `tokio::task::spawn_blocking`. Lets users
-# await quicbit calls inside their own tokio runtime without having
-# to bring up the iroh runtime separately.
-async = ["dep:tokio"]
-
-# Python bindings via pyo3 (abi3-py311). Floor is 3.11 because the
-# buffer protocol via `__getbuffer__` only stabilized in the limited
-# API at 3.11; we need it for `memoryview(sample)` zero-copy reads.
-# Python 3.9 + 3.10 reach EOL before this crate's 0.1.0 ships.
-python = ["dep:pyo3", "pyo3/abi3-py311", "pyo3/auto-initialize"]
-
-# Build a Python extension module (wheel). Enabled by maturin via
-# pyproject.toml; do not set by hand for ordinary `cargo build`.
-python-extension = ["python", "pyo3/extension-module"]
+config = ["dep:serde_json", "dep:toml"]
 
 [dependencies]
 datapod = { git = "https://codeberg.org/robolibs/datapod.git", rev = "9c080d97c4edd7c13762fb933ba8a255066711e9" }
@@ -69,24 +35,28 @@ bytes = "1"
 bon = "3"
 # bytemuck for Plain-Old-Data typed payloads placed directly into
 # SHM slots. zerocopy is a good alternative; picking one later.
-bytemuck = { version = "1", features = ["derive"] }
+bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
 libc = "0.2"
 
+# iceoryx2 is the SHM IPC substrate for the local transport.
+# Replaces our home-grown segment allocator with a production-
+# tested zero-copy pub/sub primitive.
+iceoryx2 = "0.7"
+
 # iroh — peer-to-peer QUIC. Brings hole punching, relay fallback,
-# and ed25519 EndpointId addressing. Optional, behind `remote`.
-iroh = { version = "1.0.0-rc.0", optional = true }
+# and ed25519 EndpointId addressing. Always on (no `remote` feature
+# gate any more); cross-host pub/sub is a core part of the library.
+iroh = "1.0.0-rc.0"
 # blake3 — derive deterministic SecretKeys from human-readable
-# identity strings. Already in the dep cone via iroh; we just opt
-# in explicitly.
-blake3 = { version = "1", optional = true, default-features = false }
+# identity strings.
+blake3 = { version = "1", default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+postcard = { version = "1.0", default-features = false, features = ["use-std"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 
 tracing = { version = "0.1", optional = true }
-serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 toml = { version = "0.8", optional = true }
-postcard = { version = "1.0", optional = true, default-features = false, features = ["use-std"] }
-tokio = { version = "1", optional = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
-pyo3 = { version = "0.23", optional = true }
 
 [dev-dependencies]
 tempfile = "3.10"
@@ -98,3 +68,10 @@ proptest = { version = "1.5", default-features = false, features = ["std"] }
 # its own UDP socket so plugging wirebit's TunLink underneath is
 # nontrivial; see PLAN §Phase 6 for the current testing strategy.
 wirebit = { path = "../wirebit" }
+
+# Local override for development: the ZeroCopySend derives on
+# datapod's Pod types live in a staged-but-not-yet-pushed commit
+# locally. Drop this block once that commit lands on codeberg
+# (then bump the `rev = ...` above to the published SHA).
+[patch."https://codeberg.org/robolibs/datapod.git"]
+datapod = { path = "../datapod" }

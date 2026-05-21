@@ -5,16 +5,16 @@
 //! sample round-trips. Verifies the Phase 3 wire protocol end-to-end
 //! without relying on external relay infrastructure.
 
-#![cfg(feature = "remote")]
 
 use std::time::{Duration, Instant};
 
 use bytemuck::{Pod, Zeroable};
+use iceoryx2::prelude::ZeroCopySend;
 use quicbit::transport::{PublisherOps, SubscriberOps};
 use quicbit::{RemoteTransport, Transport};
 
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq, ZeroCopySend)]
 struct Tick {
     seq: u32,
     payload: u32,
