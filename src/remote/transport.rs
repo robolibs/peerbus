@@ -26,6 +26,7 @@ use std::any::type_name;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bytemuck::Pod;
@@ -34,11 +35,12 @@ use iroh::endpoint::Connection;
 use iroh::endpoint::{RecvStream, SendStream};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use tokio::runtime::Runtime;
-use tokio::sync::{broadcast, OnceCell};
+use tokio::sync::{broadcast, Mutex as AsyncMutex};
 use tokio::task::JoinHandle;
 
 use crate::error::{Error, Result};
-use crate::transport::fnv1a64;
+use crate::transport::wire_type_hash;
+use crate::{qb_debug, qb_info, qb_warn};
 use crate::remote::handshake::{
     HANDSHAKE_MAGIC, HANDSHAKE_VERSION, MAX_PAYLOAD_LEN, MAX_TOPIC_LEN, REQRESP_MAGIC,
 };
@@ -76,7 +78,7 @@ pub struct RemoteTransportBuilder {
 }
 
 impl RemoteTransportBuilder {
-    /// Override the ALPN. Defaults to [`DEFAULT_ALPN`].
+    /// Override the ALPN. Defaults to `b"quicbit/1"`.
     pub fn alpn(mut self, alpn: impl Into<Vec<u8>>) -> Self {
         self.alpn = alpn.into();
         self
@@ -130,7 +132,7 @@ impl RemoteTransportBuilder {
                 subscriber_topics: Mutex::new(HashMap::new()),
                 request_servers: Mutex::new(HashMap::new()),
                 peer,
-                peer_conn: OnceCell::new(),
+                peer_conn: AsyncMutex::new(None),
             });
 
             // Accept loop.
@@ -140,14 +142,16 @@ impl RemoteTransportBuilder {
                     let _ = run_accept_loop(inner).await;
                 })
             };
-            Ok::<_, Error>(InnerOwned {
-                shared: inner,
-                _accept: accept_handle,
-            })
+            Ok::<_, Error>((inner, accept_handle))
         })?;
 
+        let (shared, accept_handle) = inner;
         Ok(RemoteTransport {
-            inner: Arc::new(inner),
+            inner: Arc::new(InnerOwned {
+                shared,
+                accept: Some(accept_handle),
+                rt: rt.clone(),
+            }),
             rt,
         })
     }
@@ -163,10 +167,26 @@ pub struct RemoteTransport {
 }
 
 /// Owned end of an `Arc<InnerOwned>`: holds the accept task and is
-/// dropped when the last transport handle goes away.
+/// dropped when the last transport handle goes away. On `Drop` we
+/// abort the accept loop and best-effort close the endpoint —
+/// `JoinHandle::drop` only *detaches* the task, which would leak
+/// it.
 struct InnerOwned {
     shared: Arc<InnerShared>,
-    _accept: JoinHandle<()>,
+    accept: Option<JoinHandle<()>>,
+    rt: Arc<Runtime>,
+}
+
+impl Drop for InnerOwned {
+    fn drop(&mut self) {
+        if let Some(handle) = self.accept.take() {
+            handle.abort();
+        }
+        let endpoint = self.shared.endpoint.clone();
+        self.rt.spawn(async move {
+            endpoint.close().await;
+        });
+    }
 }
 
 /// State shared with the accept loop and subscriber tasks. Owned by
@@ -181,8 +201,10 @@ pub(crate) struct InnerShared {
     /// Peer to dial as a subscriber. `None` means subscribe-only role
     /// is unavailable on this transport.
     pub(crate) peer: Option<EndpointAddr>,
-    /// Lazily-established outbound connection to `peer`.
-    pub(crate) peer_conn: OnceCell<Connection>,
+    /// Lazily-established outbound connection to `peer`. Held as
+    /// `Option<Connection>` so a dead handle (`close_reason()` is
+    /// `Some(_)`) can be replaced by a fresh dial on next use.
+    pub(crate) peer_conn: AsyncMutex<Option<Connection>>,
 }
 
 /// Per-topic broadcast queue for publishers. The accept loop creates
@@ -234,22 +256,21 @@ impl RemoteTransport {
     }
 
     /// Block until the endpoint has at least one transport address
-    /// (direct or relay). Useful for loopback tests that want to
-    /// read the address before the peer dials in.
-    pub fn wait_for_direct_addresses(&self) -> Result<()> {
+    /// (direct or relay), or `timeout` elapses. Useful for loopback
+    /// tests that want to read the address before the peer dials
+    /// in.
+    pub fn wait_for_direct_addresses(&self, timeout: std::time::Duration) -> Result<()> {
         let endpoint = self.inner.shared.endpoint.clone();
+        let deadline = std::time::Instant::now() + timeout;
         self.rt.block_on(async move {
-            // Poll until `addr()` reports at least one TransportAddr.
-            // The endpoint publishes addresses fairly quickly after
-            // `bind`, so this loop iterates only a handful of times.
-            loop {
+            while std::time::Instant::now() < deadline {
                 if !endpoint.addr().is_empty() {
-                    return;
+                    return Ok(());
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
-        });
-        Ok(())
+            Err(Error::Timeout(timeout))
+        })
     }
 
     pub fn name(&self) -> &str {
@@ -271,7 +292,7 @@ impl Transport for RemoteTransport {
 
     fn publisher<T: LocalPayload>(&self) -> Result<Self::Publisher<T>> {
         let topic = self.inner.shared.name.clone();
-        let type_hash = fnv1a64(type_name::<T>());
+        let type_hash = wire_type_hash::<T>();
         let payload_size = std::mem::size_of::<T>() as u32;
 
         let mut topics = self.inner.shared.publisher_topics.lock().unwrap_or_else(|p| p.into_inner());
@@ -292,6 +313,8 @@ impl Transport for RemoteTransport {
         Ok(RemotePublisher {
             tx: entry.tx.clone(),
             seq: 0,
+            published: AtomicU64::new(0),
+            dropped: AtomicU64::new(0),
             _phantom: PhantomData,
         })
     }
@@ -304,7 +327,7 @@ impl Transport for RemoteTransport {
             ));
         }
         let topic = self.inner.shared.name.clone();
-        let type_hash = fnv1a64(type_name::<T>());
+        let type_hash = wire_type_hash::<T>();
         let payload_size = std::mem::size_of::<T>() as u32;
 
         // Multi-subscriber: each call creates a fresh broadcast
@@ -348,17 +371,15 @@ impl Transport for RemoteTransport {
             let shared = self.inner.shared.clone();
             let topic_for_task = topic.clone();
             self.rt.spawn(async move {
-                if let Err(_e) =
-                    run_subscriber(shared, topic_for_task, type_hash, payload_size).await
-                {
-                    // Connection failures show up as `take()` returning
-                    // `None` once the channel closes; nothing else to do.
-                }
+                run_subscriber(shared, topic_for_task, type_hash, payload_size).await;
             });
         }
 
         Ok(RemoteSubscriber {
             rx: receiver,
+            received: AtomicU64::new(0),
+            lagged: AtomicU64::new(0),
+            disconnects: AtomicU64::new(0),
             _phantom: PhantomData,
         })
     }
@@ -366,11 +387,33 @@ impl Transport for RemoteTransport {
 
 // --- publisher ---
 
+/// Snapshot of a [`RemotePublisher`]'s lifetime counters.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RemotePublisherStats {
+    /// Successful `publish()` calls.
+    pub published: u64,
+    /// Frames the broadcast queue refused (no subscriber attached
+    /// at that moment).
+    pub dropped: u64,
+}
+
 /// Publisher handle returned by [`RemoteTransport::publisher`].
 pub struct RemotePublisher<T> {
     tx: broadcast::Sender<Arc<[u8]>>,
     seq: u64,
+    published: AtomicU64,
+    dropped: AtomicU64,
     _phantom: PhantomData<fn() -> T>,
+}
+
+impl<T> RemotePublisher<T> {
+    /// Snapshot lifetime counters.
+    pub fn stats(&self) -> RemotePublisherStats {
+        RemotePublisherStats {
+            published: self.published.load(Ordering::Relaxed),
+            dropped: self.dropped.load(Ordering::Relaxed),
+        }
+    }
 }
 
 /// Owned writable handle the publisher fills before `publish`.
@@ -410,8 +453,12 @@ impl<T: LocalPayload> PublisherOps<T> for RemotePublisher<T> {
     fn publish(&mut self, loan: Self::Loan) -> Result<u64> {
         let bytes: Arc<[u8]> = Arc::from(bytemuck::bytes_of(&loan.value).to_vec().into_boxed_slice());
         // `broadcast::send` returns Err only when there are no
-        // subscribers; treat that as a no-op rather than an error.
-        let _ = self.tx.send(bytes);
+        // subscribers; treat that as a no-op rather than an error,
+        // but count the drop so operators can see it.
+        if self.tx.send(bytes).is_err() {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+        self.published.fetch_add(1, Ordering::Relaxed);
         self.seq = self.seq.wrapping_add(1);
         Ok(self.seq)
     }
@@ -428,7 +475,34 @@ impl<T: LocalPayload> PublisherOps<T> for RemotePublisher<T> {
 /// returns [`Error::Lagged`](crate::Error::Lagged).
 pub struct RemoteSubscriber<T> {
     rx: broadcast::Receiver<Arc<[u8]>>,
+    received: AtomicU64,
+    lagged: AtomicU64,
+    disconnects: AtomicU64,
     _phantom: PhantomData<fn() -> T>,
+}
+
+/// Snapshot of a [`RemoteSubscriber`]'s lifetime counters.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RemoteSubscriberStats {
+    /// Samples successfully returned from `take()`.
+    pub received: u64,
+    /// Total samples dropped by broadcast lag events (sum of `n`
+    /// across every `Error::Lagged { dropped: n }` observed).
+    pub lagged: u64,
+    /// Times the channel was observed closed via
+    /// `Error::Disconnected`.
+    pub disconnects: u64,
+}
+
+impl<T> RemoteSubscriber<T> {
+    /// Snapshot lifetime counters.
+    pub fn stats(&self) -> RemoteSubscriberStats {
+        RemoteSubscriberStats {
+            received: self.received.load(Ordering::Relaxed),
+            lagged: self.lagged.load(Ordering::Relaxed),
+            disconnects: self.disconnects.load(Ordering::Relaxed),
+        }
+    }
 }
 
 /// Owned sample handed back from the subscriber. Decoded once on
@@ -461,11 +535,16 @@ impl<T: LocalPayload> SubscriberOps<T> for RemoteSubscriber<T> {
                 // is valid; the size check above ensures alignment-
                 // free transmute is in-bounds.
                 let value: T = *bytemuck::from_bytes(&bytes);
+                self.received.fetch_add(1, Ordering::Relaxed);
                 Ok(Some(RemoteSample { value }))
             }
             Err(broadcast::error::TryRecvError::Empty) => Ok(None),
-            Err(broadcast::error::TryRecvError::Closed) => Ok(None),
+            Err(broadcast::error::TryRecvError::Closed) => {
+                self.disconnects.fetch_add(1, Ordering::Relaxed);
+                Err(Error::Disconnected)
+            }
             Err(broadcast::error::TryRecvError::Lagged(n)) => {
+                self.lagged.fetch_add(n, Ordering::Relaxed);
                 Err(Error::Lagged { dropped: n })
             }
         }
@@ -474,25 +553,42 @@ impl<T: LocalPayload> SubscriberOps<T> for RemoteSubscriber<T> {
 
 // --- accept side (publisher endpoint) ---
 
+#[cfg_attr(not(feature = "tracing"), allow(unused_variables))]
 async fn run_accept_loop(inner: Arc<InnerShared>) -> Result<()> {
+    qb_debug!(target: "quicbit::remote", name = %inner.name, "accept loop started");
     while let Some(accept) = inner.endpoint.accept().await {
         let inner = inner.clone();
         tokio::spawn(async move {
             let mut iconn = match accept.accept() {
                 Ok(c) => c,
-                Err(_) => return,
+                Err(e) => {
+                    qb_warn!(target: "quicbit::remote", error = %e, "incoming.accept failed");
+                    return;
+                }
             };
             let _alpn = match iconn.alpn().await {
                 Ok(a) => a,
-                Err(_) => return,
+                Err(e) => {
+                    qb_warn!(target: "quicbit::remote", error = %e, "alpn negotiation failed");
+                    return;
+                }
             };
             let conn = match iconn.await {
                 Ok(c) => c,
-                Err(_) => return,
+                Err(e) => {
+                    qb_warn!(target: "quicbit::remote", error = %e, "connection handshake failed");
+                    return;
+                }
             };
+            qb_debug!(
+                target: "quicbit::remote",
+                remote = %conn.remote_id(),
+                "accepted connection"
+            );
             let _ = serve_incoming_connection(inner, conn).await;
         });
     }
+    qb_debug!(target: "quicbit::remote", "accept loop exiting");
     Ok(())
 }
 
@@ -554,6 +650,7 @@ async fn serve_pubsub_bi(
     pump_broadcast(broadcast_rx, &mut send).await
 }
 
+#[cfg_attr(not(feature = "tracing"), allow(unused_variables))]
 async fn pump_broadcast(
     mut rx: broadcast::Receiver<Arc<[u8]>>,
     send: &mut SendStream,
@@ -569,42 +666,109 @@ async fn pump_broadcast(
                 let _ = send.finish();
                 return Ok(());
             }
-            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                qb_warn!(
+                    target: "quicbit::remote",
+                    dropped = n,
+                    "broadcast lagged on publisher serve path"
+                );
+                continue;
+            }
         }
     }
 }
 
 // --- subscriber side ---
 
+/// Initial backoff between reconnect attempts on the subscriber
+/// dispatcher loop. Doubles up to [`RECONNECT_BACKOFF_MAX`].
+const RECONNECT_BACKOFF_MIN: std::time::Duration = std::time::Duration::from_millis(100);
+const RECONNECT_BACKOFF_MAX: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Dispatcher loop for a topic. Repeatedly dials the peer,
+/// re-issues the handshake, and pumps frames into the topic's
+/// broadcast channel. Exits when the broadcast sender is dropped
+/// (i.e. the transport itself is gone).
+#[cfg_attr(not(feature = "tracing"), allow(unused_variables))]
 async fn run_subscriber(
     inner: Arc<InnerShared>,
     topic: String,
     type_hash: u64,
     payload_size: u32,
+) {
+    let mut backoff = RECONNECT_BACKOFF_MIN;
+    loop {
+        let sender = {
+            let map = inner
+                .subscriber_topics
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            match map.get(&topic) {
+                Some(t) => t.tx.clone(),
+                // Topic state is gone — the transport is being
+                // torn down. Exit cleanly.
+                None => {
+                    qb_debug!(
+                        target: "quicbit::remote",
+                        topic = %topic,
+                        "dispatcher exiting: topic state gone"
+                    );
+                    return;
+                }
+            }
+        };
+        // Bail out if every subscriber has dropped — no point
+        // re-establishing the wire just to feed nobody. A new
+        // `subscriber()` call will spawn a fresh dispatcher.
+        if sender.receiver_count() == 0 {
+            qb_debug!(
+                target: "quicbit::remote",
+                topic = %topic,
+                "dispatcher exiting: no remaining receivers"
+            );
+            return;
+        }
+
+        match subscribe_pump_once(&inner, &topic, type_hash, payload_size, &sender).await {
+            Ok(()) => {
+                qb_warn!(
+                    target: "quicbit::remote",
+                    topic = %topic,
+                    "subscriber stream ended, will reconnect"
+                );
+                backoff = RECONNECT_BACKOFF_MIN;
+            }
+            Err(e) => {
+                qb_debug!(
+                    target: "quicbit::remote",
+                    topic = %topic,
+                    error = %e,
+                    backoff_ms = backoff.as_millis() as u64,
+                    "subscriber reconnect attempt failed"
+                );
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(RECONNECT_BACKOFF_MAX);
+            }
+        }
+    }
+}
+
+async fn subscribe_pump_once(
+    inner: &Arc<InnerShared>,
+    topic: &str,
+    type_hash: u64,
+    payload_size: u32,
+    sender: &broadcast::Sender<Arc<[u8]>>,
 ) -> Result<()> {
-    let conn = ensure_peer_connection(&inner).await?;
+    let conn = ensure_peer_connection(inner).await?;
     let (mut send, mut recv) = conn
         .open_bi()
         .await
         .map_err(|e| Error::Remote(format!("open_bi: {e}")))?;
 
-    // Subscriber writes the handshake, then FIN's its send side.
-    write_handshake(&mut send, &topic, type_hash, payload_size).await?;
+    write_handshake(&mut send, topic, type_hash, payload_size).await?;
     send.finish()
         .map_err(|e| Error::Remote(format!("finish: {e}")))?;
-
-    // Find the topic's broadcast tx and pump frames onto it. Each
-    // subscriber on this transport holds its own `Receiver`, so the
-    // dispatcher is fan-out — one send reaches every subscriber.
-    let sender = {
-        let map = inner
-            .subscriber_topics
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        map.get(&topic).map(|t| t.tx.clone()).ok_or_else(|| {
-            Error::Remote(format!("subscriber for topic '{}' vanished", topic))
-        })?
-    };
 
     loop {
         match read_frame(&mut recv).await {
@@ -619,22 +783,49 @@ async fn run_subscriber(
     }
 }
 
+#[cfg_attr(not(feature = "tracing"), allow(unused_variables))]
 pub(crate) async fn ensure_peer_connection(inner: &Arc<InnerShared>) -> Result<Connection> {
-    inner
-        .peer_conn
-        .get_or_try_init(|| async {
-            let peer = inner
-                .peer
-                .clone()
-                .ok_or_else(|| Error::invalid_argument("no peer configured"))?;
-            inner
-                .endpoint
-                .connect(peer, &inner.alpn)
-                .await
-                .map_err(|e| Error::Remote(format!("connect: {e}")))
-        })
+    let mut guard = inner.peer_conn.lock().await;
+    if let Some(conn) = guard.as_ref() {
+        if conn.close_reason().is_none() {
+            return Ok(conn.clone());
+        }
+        qb_warn!(
+            target: "quicbit::remote",
+            reason = ?conn.close_reason(),
+            "cached connection is dead, re-dialing"
+        );
+        *guard = None;
+    }
+    let peer = inner
+        .peer
+        .clone()
+        .ok_or_else(|| Error::invalid_argument("no peer configured"))?;
+    qb_info!(
+        target: "quicbit::remote",
+        peer = %peer.id,
+        "dialing peer"
+    );
+    let conn = inner
+        .endpoint
+        .connect(peer.clone(), &inner.alpn)
         .await
-        .cloned()
+        .map_err(|e| {
+            qb_warn!(
+                target: "quicbit::remote",
+                peer = %peer.id,
+                error = %e,
+                "dial failed"
+            );
+            Error::ConnectFailed(format!("{e}"))
+        })?;
+    qb_info!(
+        target: "quicbit::remote",
+        peer = %peer.id,
+        "connected to peer"
+    );
+    *guard = Some(conn.clone());
+    Ok(conn)
 }
 
 // --- wire helpers ---
@@ -646,7 +837,10 @@ async fn write_handshake(
     payload_size: u32,
 ) -> Result<()> {
     if topic.len() > MAX_TOPIC_LEN as usize {
-        return Err(Error::invalid_argument("topic name too long"));
+        return Err(Error::TopicNameTooLong {
+            len: topic.len(),
+            limit: MAX_TOPIC_LEN as usize,
+        });
     }
     let mut buf = Vec::with_capacity(4 + 4 + 8 + 4 + 2 + topic.len());
     buf.extend_from_slice(&HANDSHAKE_MAGIC.to_le_bytes());
@@ -666,26 +860,89 @@ async fn read_pubsub_handshake_tail(recv: &mut RecvStream) -> Result<(String, u6
     let mut header = [0u8; 4 + 8 + 4 + 2];
     recv.read_exact(&mut header)
         .await
-        .map_err(|e| Error::Remote(format!("handshake tail: {e}")))?;
-    let version = u32::from_le_bytes(header[0..4].try_into().unwrap());
-    if version != HANDSHAKE_VERSION {
-        return Err(Error::Remote(format!(
-            "handshake version mismatch: peer={version} local={HANDSHAKE_VERSION}"
-        )));
-    }
-    let type_hash = u64::from_le_bytes(header[4..12].try_into().unwrap());
-    let payload_size = u32::from_le_bytes(header[12..16].try_into().unwrap());
-    let topic_len = u16::from_le_bytes(header[16..18].try_into().unwrap());
-    if topic_len > MAX_TOPIC_LEN {
-        return Err(Error::Remote(format!("topic too long: {topic_len}")));
-    }
-    let mut topic_buf = vec![0u8; topic_len as usize];
+        .map_err(|e| Error::HandshakeMalformed(format!("handshake tail: {e}")))?;
+    let topic_len = u16::from_le_bytes(header[16..18].try_into().unwrap()) as usize;
+    let mut topic_buf = vec![0u8; topic_len];
     recv.read_exact(&mut topic_buf)
         .await
         .map_err(|e| Error::Remote(format!("topic name: {e}")))?;
-    let topic = String::from_utf8(topic_buf)
-        .map_err(|_| Error::Remote("topic name is not UTF-8".to_string()))?;
+
+    // Concatenate header + topic and feed to the pure parser so
+    // wire / fuzz tests exercise the exact same logic.
+    let mut buf = Vec::with_capacity(header.len() + topic_buf.len());
+    buf.extend_from_slice(&header);
+    buf.extend_from_slice(&topic_buf);
+    parse_pubsub_handshake_tail(&buf)
+}
+
+/// Pure-byte parser for the pub/sub handshake tail (the part after
+/// the 4-byte `HANDSHAKE_MAGIC`). Public so fuzz targets and tests
+/// can hammer it without driving an actual `RecvStream`.
+///
+/// Layout: `[u32 version][u64 type_hash][u32 payload_size][u16
+/// topic_len][topic_bytes]`.
+pub fn parse_pubsub_handshake_tail(bytes: &[u8]) -> Result<(String, u64, u32)> {
+    if bytes.len() < 4 + 8 + 4 + 2 {
+        return Err(Error::HandshakeMalformed(format!(
+            "handshake tail truncated: {} bytes",
+            bytes.len()
+        )));
+    }
+    let version = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+    if version != HANDSHAKE_VERSION {
+        return Err(Error::HandshakeVersionMismatch {
+            local: HANDSHAKE_VERSION,
+            peer: version,
+        });
+    }
+    let type_hash = u64::from_le_bytes(bytes[4..12].try_into().unwrap());
+    let payload_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
+    let topic_len = u16::from_le_bytes(bytes[16..18].try_into().unwrap());
+    if topic_len > MAX_TOPIC_LEN {
+        return Err(Error::TopicNameTooLong {
+            len: topic_len as usize,
+            limit: MAX_TOPIC_LEN as usize,
+        });
+    }
+    let topic_end = 18usize.saturating_add(topic_len as usize);
+    if bytes.len() < topic_end {
+        return Err(Error::HandshakeMalformed(format!(
+            "topic name truncated: declared {} bytes, have {}",
+            topic_len,
+            bytes.len().saturating_sub(18)
+        )));
+    }
+    let topic = std::str::from_utf8(&bytes[18..topic_end])
+        .map_err(|_| Error::HandshakeMalformed("topic name is not UTF-8".to_string()))?
+        .to_string();
     Ok((topic, type_hash, payload_size))
+}
+
+/// Pure-byte parser for the framed payload header (`[u32 length]`)
+/// plus body. Returns the body slice. Exposed for fuzz tests.
+pub fn parse_frame(bytes: &[u8]) -> Result<&[u8]> {
+    if bytes.len() < 4 {
+        return Err(Error::HandshakeMalformed(format!(
+            "frame header truncated: {} bytes",
+            bytes.len()
+        )));
+    }
+    let len = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+    if len > MAX_PAYLOAD_LEN {
+        return Err(Error::FrameTooLarge {
+            actual: len as u64,
+            limit: MAX_PAYLOAD_LEN as u64,
+        });
+    }
+    let end = 4usize.saturating_add(len as usize);
+    if bytes.len() < end {
+        return Err(Error::HandshakeMalformed(format!(
+            "frame body truncated: declared {} bytes, have {}",
+            len,
+            bytes.len().saturating_sub(4)
+        )));
+    }
+    Ok(&bytes[4..end])
 }
 
 pub(crate) async fn write_frame(send: &mut SendStream, bytes: &[u8]) -> Result<()> {
@@ -719,7 +976,10 @@ pub(crate) async fn read_frame(recv: &mut RecvStream) -> Result<Option<Arc<[u8]>
     }
     let len = u32::from_le_bytes(len_buf);
     if len > MAX_PAYLOAD_LEN {
-        return Err(Error::Remote(format!("frame too large: {len}")));
+        return Err(Error::FrameTooLarge {
+            actual: len as u64,
+            limit: MAX_PAYLOAD_LEN as u64,
+        });
     }
     let mut buf = vec![0u8; len as usize];
     recv.read_exact(&mut buf)

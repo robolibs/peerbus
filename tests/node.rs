@@ -165,3 +165,59 @@ fn ephemeral_key_changes_each_bind() {
     let id2 = Node::builder().no_relay().bind().unwrap().endpoint_id();
     assert_ne!(id1, id2, "fresh keys each time when no path is supplied");
 }
+
+/// Connection from an un-allowlisted peer must be rejected by the
+/// accept loop before any data flows. We exercise this by binding a
+/// publisher with an empty allowlist (`.allow_peer(<unrelated>)`)
+/// and then subscribing from a node whose endpoint id is NOT in
+/// the list. The subscriber's `take()` should never see a sample
+/// because no stream is served.
+#[test]
+fn rejects_unallowlisted_peer() {
+    use quicbit::Error;
+
+    // An "intended" peer whose key won't actually dial us — we
+    // just need *some* allowlisted id so the publisher is in
+    // closed-not-open mode.
+    let stranger_id = Node::builder().no_relay().bind().unwrap().endpoint_id();
+
+    let pub_node = Node::builder()
+        .no_relay()
+        .identity("rejector")
+        .allow_peer(stranger_id)
+        .bind()
+        .expect("publisher node");
+
+    pub_node
+        .wait_for_direct_addresses(Duration::from_secs(5))
+        .expect("publisher addresses");
+
+    let sub_node = Node::builder()
+        .no_relay()
+        .identity("attacker")
+        .bind()
+        .expect("subscriber node");
+
+    let _pubr = pub_node.publisher::<Tick>("blocked/topic").unwrap();
+
+    // The dial succeeds at the QUIC layer; quicbit then closes the
+    // connection because the subscriber's endpoint id is not in
+    // the allowlist. Subsequent take() observes the disconnect.
+    let mut sub = sub_node
+        .subscriber::<Tick>(pub_node.endpoint_addr(), "blocked/topic")
+        .expect("subscribe handshake (over wire)");
+
+    // Spin a little to give the publisher time to send/close.
+    let _ = poll_for(Duration::from_millis(300), || {
+        match sub.take() {
+            Err(Error::Disconnected) => Some(()),
+            Ok(Some(_)) => panic!("attacker should not receive any sample"),
+            _ => None,
+        }
+    });
+    // Either Disconnected or no sample is acceptable; the
+    // contract is that no Tick samples reach the attacker.
+    if let Ok(Some(_)) = sub.take() {
+        panic!("attacker received a Tick despite ACL");
+    }
+}

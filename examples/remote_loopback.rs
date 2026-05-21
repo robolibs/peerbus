@@ -25,7 +25,7 @@ fn main() {
         .build_blocking()
         .expect("publisher endpoint");
     publisher_side
-        .wait_for_direct_addresses()
+        .wait_for_direct_addresses(Duration::from_secs(5))
         .expect("addresses");
     let publisher_addr = publisher_side.endpoint_addr();
     println!("publisher endpoint id: {}", publisher_side.endpoint_id());

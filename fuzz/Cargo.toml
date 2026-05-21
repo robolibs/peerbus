@@ -1,0 +1,36 @@
+[package]
+name = "quicbit-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+quicbit = { path = ".." }
+
+[[bin]]
+name = "pubsub_handshake"
+path = "fuzz_targets/pubsub_handshake.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "request_handshake"
+path = "fuzz_targets/request_handshake.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "frame"
+path = "fuzz_targets/frame.rs"
+test = false
+doc = false
+bench = false
+
+# Cargo workspace exclusion: the fuzz crate is its own sandbox.
+[workspace]

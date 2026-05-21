@@ -1,182 +1,147 @@
 # LIMITATIONS
 
 What's actually tested, what's audited, and what's known sharp.
-Pair this with [`PLAN.md`](PLAN.md) for the roadmap.
+Pair this with [`PLAN.md`](PLAN.md) for the production-readiness
+roadmap.
 
 ## Versioning
 
 `0.0.x` — pre-1.0. Wire formats are documented but **not stable**
-between minor releases. The PLAN targets `0.1.0` as the first
-stable release after Phase 6 hardening completes.
+between minor releases. The `PLAN.md` phases target `0.1.0` as the
+first stable release after operability hardening completes.
 
 ## What is tested
 
-Test counts as of the most recent commit (Phase 4 + 6 land):
+Integration tests in `tests/`:
 
-| Suite              | Count | Notes                                       |
-|--------------------|-------|---------------------------------------------|
-| `local_inproc`     | 8     | loan/publish/take, fan-out, lag, type hash  |
-| `local_xproc`      | 3     | fork-based parent ⇄ child                   |
-| `local_reqresp`     | 3     | single-server, timeouts, multi-client      |
-| `remote_loopback`   | 2     | iroh pub/sub, single + multi-subscriber    |
-| `remote_reqresp`    | 1     | iroh req/resp, two endpoints               |
-| `any_transport`     | 1     | `AnyTransport::Local` dispatch             |
-| `auto_routing`      | 8     | `Service::auto` URL parsing (shm + iroh)   |
-| `async_adapter`     | 1     | `AsyncPublisher` / `AsyncSubscriber`       |
-| `ffi_smoke`         | 3     | C ABI in-process                           |
-| `ffi_adversarial`   | 16    | NULL handles, bad UTF-8, missing out-ptrs  |
-| `auto_traits`       | 3     | compile-time `Send`/`Sync` assertions      |
-| `drop_ordering`     | 6     | sample-outlives-sub, reverse drop, clones  |
-| `segment_concurrent`| 3     | concurrent free-list, SPMC, single-thread  |
-| `segment_proptest`  | 1     | proptest: 64 random op-sequences           |
-| `segment::tests`    | 8     | miri-runnable allocator unit tests         |
-| Doc tests           | 1     | top-of-crate example                       |
+| File                  | Tests | Notes                                            |
+|-----------------------|------:|--------------------------------------------------|
+| `local_inproc`        |     4 | iceoryx2 loan/publish/take, in-process           |
+| `local_reqresp`       |     2 | iceoryx2-backed req/resp                         |
+| `node`                |     7 | unified `Node` API, local + remote routing + ACL |
+| `remote_loopback`     |     2 | iroh pub/sub round-trip on 127.0.0.1             |
+| `remote_reqresp`      |     1 | iroh req/resp round-trip                         |
+| `async_adapter`       |     1 | `AsyncPublisher` / `AsyncSubscriber` smoke       |
+| `auto_traits`         |     2 | compile-time `Send`/`Sync` assertions            |
+| `datapod_payload`     |     5 | `datapod` Pod types crossing the wire            |
+| `wire_parsers`        |    11 | edge cases on the pure-byte wire parsers         |
+| Doc tests             |     2 | top-of-crate + `Node` examples                   |
 
-`cargo clippy --all-features --all-targets -- -D warnings` is clean,
-and `cargo miri test --lib local::segment::tests` runs the 8 unit
-tests on miri's interpreter (heap-backed segment; see below).
+A `fuzz/` directory holds `cargo-fuzz` targets for the wire
+parsers (`pubsub_handshake`, `request_handshake`, `frame`). They
+share the same `pub fn parse_*` entrypoints the integration tests
+hit, so seed corpora can be developed locally without disturbing
+the main test suite. Hook them into CI as a nightly job when the
+`cargo-fuzz` toolchain is available on the runner.
+
+`cargo clippy --all-features --all-targets -- -D warnings` is clean.
+
+The legacy custom-SHM allocator (`src/local/segment.rs`,
+`src/local/layout.rs`, the cross-process registry, the C ABI, and
+the Python bindings) was retired in the iceoryx2 migration. Its
+miri / proptest / fuzz coverage went with it; iceoryx2 carries its
+own test surface upstream.
 
 ## What is *not* yet tested
 
+See `PLAN.md` §F for the planned coverage. The big absences today:
+
 - **Cross-host iroh tests** — loopback works (the `remote_*` tests
-  prove the protocol round-trips between two endpoints), but
-  cross-machine connectivity is documented and demonstrable
-  manually rather than baked into CI.
-- **Lossy-link tests via wirebit** — iroh wraps its own UDP socket
-  (`noq-udp`) and does not currently expose a custom-socket hook,
-  so the original "swap UDP for `wirebit::TunLink`" plan is on hold
-  (see PLAN §3.8). Adopt the hook when/if iroh provides it.
-- **Sustained-load endurance** — the bench in
-  `examples/bench_local.rs` covers short bursts; we have not yet
-  measured behavior under hours of traffic or with kernel pressure.
+  prove the protocol round-trips between two endpoints in one
+  process), but cross-machine connectivity is demonstrated manually
+  rather than baked into CI.
+- **Connection-drop / reconnect** — there is currently no test that
+  the transport recovers when a peer endpoint vanishes and returns.
+  The crate also does not yet *implement* recovery; see PLAN §C.
+- **Malicious / adversarial peer suite** — the wire parsers
+  (`read_*_handshake_tail`, `read_frame`) are bounded but unfuzzed.
+- **Sustained-load endurance** — `examples/bench_local.rs` is a
+  short microbench (100 000 × 64-byte messages); there is no
+  hours-long run, no latency histogram beyond mean, no leak audit
+  under kernel pressure.
+- **Multi-publisher on iceoryx2** — the legacy custom allocator's
+  failure mode is gone, but iceoryx2's behaviour under
+  multi-publisher contention is not explicitly exercised in this
+  crate's tests.
 
 ## CI
 
-`.github/workflows/ci.yml` runs the full matrix on every push /
-PR:
+`.github/workflows/ci.yml` runs on every push / PR:
 
 * `rustfmt --check`
 * `clippy --all-features --all-targets -- -D warnings`
-* `cargo test` on six feature combinations (default, `remote`,
-  `async`, `remote + async`, `python`, all-features)
-* `cargo miri test --lib local::segment::tests` (nightly)
+* `cargo test` on the real feature matrix: default, `tracing`,
+  `config`, `tracing config`
 * `cargo doc --all-features --no-deps` with `-D warnings`
-* `cargo deny check` against `deny.toml` (license + advisory +
-  bans + sources policy)
+* `cargo deny check` against `deny.toml`
 
-Locally: `cargo fmt`, `cargo clippy --all-features --all-targets
--- -D warnings`, and (in the nightly devshell) `cargo miri test
---lib`.
-
-## miri coverage
-
-`cargo miri test --lib local::segment::tests` (in `nix develop
-.#nightly`) runs the 8 allocator unit tests on miri's
-Stacked-Borrows + Aliasing interpreter. Coverage:
-
-* `pop_free` / `push_free` (lock-free CAS, slot index validity)
-* `publish_slot` / `try_acquire` / `release` (refcount lifecycle,
-  generation bumps, ring eviction)
-* monotonic sequence numbers
-
-The tests run on a heap-backed `Segment` (via the test-only
-`Segment::test_from_heap`) so miri doesn't need `shm_open`. Two
-real bugs were found and fixed during the first miri run:
-
-1. Stacked-Borrows violation: the heap-backed `ShmMapping` used to
-   take a raw pointer from a `Box<[u8]>` then move the box into the
-   struct; that invalidated the pointer's provenance. Fixed by
-   replacing the box with a manual `alloc::alloc_zeroed` /
-   `dealloc` pair.
-2. Misaligned `ControlPage` deref: the heap backing was
-   1-byte-aligned. `ControlPage` requires 8-byte alignment because
-   it holds `AtomicU64` fields. Fixed by allocating with
-   page-aligned (4 KiB) `Layout`, matching real POSIX SHM.
-
-Production paths (`shm_open` → `mmap`) were not affected; both
-bugs only surfaced with the heap backing miri uses.
+Local development uses the Nix devshell (`nix develop`) which
+exports `LIBCLANG_PATH` and `LD_LIBRARY_PATH` so iceoryx2's
+`bindgen` step finds libclang. CI installs `libclang-dev` for the
+same reason.
 
 ## Known sharp edges
 
-### SHM allocator
+### Local transport (iceoryx2)
 
-- **Single publisher per topic is the supported configuration.**
-  Multi-publisher use *appears* to work for short bursts but the
-  multi-publisher stress test (`segment_concurrent::
-  multi_publisher_stress_documented_failure_mode`) reproducibly
-  leaks slots under load. The root cause is that concurrent
-  publishers fetching sequence numbers from `publish_seq` can land
-  on the same ring position out of order — `publish_slot`'s
-  bump → swap → evict trio is non-atomic across the three
-  operations, and an out-of-order publisher can effectively
-  "delete" another publisher's ring entry while still bumping
-  refcount for it. The free list is multi-producer safe; the *ring
-  + refcount* dance is not. The single-publisher / multi-subscriber
-  shape (the realistic robotics topology) is exercised by
-  `segment_concurrent::single_publisher_many_subscribers_balanced`
-  with 50 000 publishes against 6 contended subscribers — zero
-  leaks. Designing a truly multi-publisher-safe ring is a separate
-  project.
-- **Slot size is rounded up to 8 bytes** at create time to keep
-  the `AtomicU64` fields in each slot's header naturally aligned.
-  Tiny payloads (< 8 bytes) therefore use more memory than asked.
-- **History default is 1.** A subscriber that polls slower than
-  the publisher publishes will see `Lagged { dropped: N }` errors
-  with the count of skipped samples; on the next `take()` it sees
-  the freshest available. Choose `history_depth` according to your
-  worst-case subscriber latency.
-- **Cross-process drop coordination.** If a publisher process
-  crashes holding a loan, that slot stays out of the free list
-  until the segment is fully unlinked. There is no per-slot
-  watchdog yet (PLAN §6 risks). Linear in slot count; in practice
-  the next `LocalService::create` with the same name unlinks the
-  old segment and starts fresh.
-- **Fork inheritance is opt-in.** A `Segment` carries the
-  creator's PID and skips the per-segment refcount on drop if it
-  observes a different live PID (i.e. it was inherited via fork
-  and never explicitly `attach()`ed). Children of a fork that want
-  to participate in the refcount must call `LocalService::attach`
-  explicitly.
+- **Service name composition** is only lightly sanitised — spaces
+  are mapped to `_`, everything else passes through to iceoryx2.
+  Topic strings should stick to `[A-Za-z0-9._/-]`; PLAN §D.4
+  tightens this at the API boundary.
+- **History default is 1.** A subscriber that polls slower than the
+  publisher publishes will miss samples; iceoryx2 surfaces this as
+  the publish-side dropping the oldest in-flight sample. Choose
+  `LocalConfig::history_depth` according to your worst-case
+  subscriber latency.
+- **`max_publishers` defaults to 2 and `max_subscribers` to 8.**
+  These are iceoryx2 service-creation parameters and are *pinned*
+  by the first creator; subsequent attaches must be compatible.
 
 ### Remote (iroh) transport
 
-- **One topic per `RemoteTransport`.** The transport's `name()` is
-  the topic; multiple topics need multiple endpoints. This matches
-  the local transport's "one segment per service" semantics but
-  isn't free of cost — each transport spins up one iroh
-  `Endpoint`.
-- **Pod-only payloads.** Phase 3/4 wires raw bytemuck bytes; the
-  serde extension (non-POD types over the wire) lands later as
-  part of the Phase 4 follow-on plan.
-- **Best-effort publish.** `RemotePublisher::publish` returns the
-  sequence number; messages are pushed onto a `broadcast::Sender`
-  with depth 256. If no peer has subscribed yet, messages are
-  dropped silently. The Phase 4 follow-on adds explicit
-  back-pressure modes.
-- **Auto-discovery via `Service::auto`** understands `shm://name`,
-  `iroh://endpoint_id`, and `iroh://...?relay=URL&direct=IP:PORT`
-  combinations. Full iroh-dns/pkarr resolution is supported
-  inside iroh itself but isn't yet exposed as its own URL scheme
-  here; pass a pre-resolved `EndpointAddr` via the builder API if
-  you need it.
+- **No reconnect.** `ensure_peer_connection` caches the first
+  successful iroh `Connection` in a `OnceCell` and never re-dials.
+  If the peer reboots or the path breaks, subscribers silently see
+  `Ok(None)` and clients hang. PLAN §C is the fix.
+- **`Subscriber::take()` cannot distinguish empty queue from
+  peer-gone** today — both return `Ok(None)`. PLAN §C.1 adds
+  `Error::Disconnected`.
+- **Best-effort publish.** `RemotePublisher::publish` pushes onto a
+  256-deep `broadcast::Sender`. If no subscriber is attached, the
+  send is silently dropped. The `Lagged(n)` path is observed on the
+  subscriber but the publisher gets no feedback. PLAN §B.2 surfaces
+  per-publisher / per-subscriber counters.
+- **Pod-only payloads on the wire.** The remote transport sends
+  raw bytemuck bytes; `serde` for non-Pod payloads is not yet wired
+  in.
+- **Type identity uses `std::any::type_name::<T>()`** hashed with
+  FNV-1a. `type_name` is documented as not stable across compiler
+  versions, so two endpoints built with different toolchains can
+  reject each other on the same nominal type. PLAN §D.1 replaces
+  this.
+- **No peer authentication beyond ALPN match.** Any peer that knows
+  the ALPN can dial the endpoint and subscribe to any topic. The
+  `identity("name")` deterministic-key path is documented as
+  impersonable; there is currently no allowlist on the accept side.
+  PLAN §D.3 adds one.
+- **One iroh `Endpoint` per `RemoteTransport`** (the low-level
+  type). `Node` collapses this back down to one endpoint for the
+  whole process; most users should be on `Node`.
+- **`wait_for_direct_addresses` is an unbounded spin** — if iroh
+  never publishes an address, the call hangs forever. PLAN §C.5
+  adds a timeout.
 
-### FFI / Python
+### Identity
 
-- **Byte-oriented.** The C ABI moves raw `slot_size` byte buffers
-  in and out; payload types are the caller's concern.
-- **Single-threaded handles.** `quicbit_publisher_t` /
-  `quicbit_subscriber_t` are not safe to share across threads
-  without external synchronization. Build a separate
-  publisher/subscriber per thread.
-- **Python `Subscriber.take()` returns a `Sample`** that exposes
-  the SHM slot via the buffer protocol. `memoryview(sample)` is a
-  zero-copy view into Rust-owned shared memory; the slot is held
-  until the `Sample` is garbage-collected. Use `sample.to_bytes()`
-  if you want an owned copy.
-- **Python floor is 3.11** (`abi3-py311`). The buffer protocol via
-  `__getbuffer__` is gated on `Py_3_11+` in the stable ABI; older
-  Python versions are not supported. Python 3.9 + 3.10 reach EOL
-  before this crate's 0.1.0 ships, so the bump is a non-event.
+- **`identity("name")` is impersonable.** The literal string hashes
+  to a deterministic `SecretKey`; anyone who knows the string can
+  dial as that identity. Fine on a trusted LAN, *not* fine on the
+  open internet. Use `identity_file(path)` for the
+  cryptographically meaningful path.
+- **`identity_file` stores 32 raw bytes** and sets `0600` on Unix
+  on first generation. The file is *not* re-permissioned on
+  subsequent reads — if an operator copies it without preserving
+  mode, the key may end up world-readable.
 
 ## Panic / unwrap audit
 
@@ -191,7 +156,8 @@ non-test code fall into two categories:
 2. **`Mutex::lock().unwrap_or_else(|p| p.into_inner())`** on the
    transport's internal hash maps. Lock poisoning only occurs if a
    thread panics while holding the lock; we recover the inner
-   value rather than propagate.
+   value rather than propagate. Recovery is silent; PLAN §B.1 adds
+   a `tracing::warn!` so it does not disappear in prod.
 
 There are **no** `expect()` or `panic!()` calls on a runtime path
 in non-test code.
@@ -199,7 +165,8 @@ in non-test code.
 ## Benchmark snapshot
 
 From `cargo run --release --example bench_local` (single thread,
-single publisher, single subscriber, 100,000 64-byte messages):
+single publisher, single subscriber, 100 000 64-byte messages on
+the iceoryx2 transport):
 
 | Metric                | Value (this machine)   |
 |-----------------------|------------------------|

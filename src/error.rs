@@ -23,6 +23,12 @@ pub enum Error {
     #[error("subscriber lagged; {dropped} samples dropped")]
     Lagged { dropped: u64 },
 
+    #[error("peer disconnected")]
+    Disconnected,
+
+    #[error("operation timed out after {0:?}")]
+    Timeout(std::time::Duration),
+
     #[error("payload too large: {actual} bytes > slot capacity {capacity}")]
     PayloadTooLarge { actual: usize, capacity: usize },
 
@@ -38,9 +44,28 @@ pub enum Error {
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
 
+    #[error("connect failed: {0}")]
+    ConnectFailed(String),
+
+    #[error("handshake version mismatch: local={local} peer={peer}")]
+    HandshakeVersionMismatch { local: u32, peer: u32 },
+
+    #[error("handshake malformed: {0}")]
+    HandshakeMalformed(String),
+
+    #[error("frame too large: {actual} bytes > limit {limit}")]
+    FrameTooLarge { actual: u64, limit: u64 },
+
+    #[error("topic name too long: {len} bytes > limit {limit}")]
+    TopicNameTooLong { len: usize, limit: usize },
+
+    /// Catch-all for transport-layer failures (iroh send/recv, etc.)
+    /// where the specific variant isn't load-bearing for callers.
     #[error("remote transport error: {0}")]
     Remote(String),
 
+    /// Last-resort escape hatch. Prefer one of the structured
+    /// variants above for any error users may want to match on.
     #[error("{0}")]
     Other(String),
 }

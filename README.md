@@ -89,6 +89,63 @@ process using the same `identity` + `topic`), the subscriber
 attaches to its SHM slot and reads with zero copy. Otherwise it
 dials over iroh. **Same call either way.**
 
+### Cross-host
+
+For a real cross-host dial you need the publisher's full transport
+address, not just its identity string. `IntoPeer` accepts an
+`EndpointAddr`:
+
+```rust,ignore
+// publisher side
+let pub_node = Node::builder().identity_file("/etc/rover.key").bind()?;
+pub_node.wait_for_direct_addresses(std::time::Duration::from_secs(5))?;
+let pub_addr = pub_node.endpoint_addr(); // share this with peers
+
+// subscriber side
+let mut sub = sub_node.subscriber::<Pose>(pub_addr, "rover/pose")?;
+```
+
+If the iroh `Connection` drops mid-stream, the subscriber's
+background loop redials with bounded exponential backoff (100 ms
+→ 10 s cap) and re-issues the handshake automatically — the
+caller stays oblivious unless they explicitly look at
+`Subscriber::stats()`. `take()` returns `Err(Error::Disconnected)`
+only after the foreground channel itself goes away.
+
+### Observability
+
+Each publisher and subscriber tracks lifetime counters readable
+via `.stats()`:
+
+```rust,ignore
+let s = sub.stats();      // received, disconnects
+let p = pubr.stats();     // published, remote_dropped
+let n = node.stats();     // publisher_topics, cached_peers
+```
+
+For structured logs, enable the `tracing` feature. quicbit then
+emits events at accept / connect / disconnect / handshake-mismatch
+/ broadcast-lag boundaries; the loan-publish-consume hot path
+stays uninstrumented to keep it free of overhead.
+
+### Limiting who can dial in
+
+By default a `Node` accepts any peer that knows the ALPN. To pin
+the inbound set, hand the builder one or more allowlisted peer
+ids:
+
+```rust,ignore
+let node = Node::builder()
+    .identity_file("/etc/rover.key")
+    .allow_peer(planner_endpoint_id)
+    .allow_peer(logger_endpoint_id)
+    .bind()?;
+```
+
+Non-allowlisted peers are closed immediately after the QUIC
+handshake completes; no streams open. Outbound dials are not
+affected.
+
 ### Payload type requirements
 
 Every `T` you publish/subscribe must satisfy three traits:
@@ -156,21 +213,22 @@ direct usage.
 
 ```text
 nix develop              # stable toolchain (default)
-nix develop .#nightly    # adds miri for unsafe-code audits
+nix develop .#nightly    # nightly toolchain for forward-compat checks
 ```
 
 The shells export `LIBCLANG_PATH` and `LD_LIBRARY_PATH` so
-iceoryx2's `bindgen` step finds libclang + the C++ runtime.
+iceoryx2's `bindgen` step finds libclang + the C++ runtime. CI
+installs `libclang-dev` for the same reason.
 
 ## Cargo features
 
 `quicbit` ships with iceoryx2 and iroh always on — there are no
 feature flags for the transports. The only optional knobs:
 
-| Feature   | Adds                                          |
-|-----------|-----------------------------------------------|
-| `tracing` | tracing spans around loan / publish / consume |
-| `config`  | service-discovery config files (TOML / JSON)  |
+| Feature   | Adds                                                              |
+|-----------|-------------------------------------------------------------------|
+| `tracing` | structured events at accept / connect / disconnect / lag / errors |
+| `config`  | service-discovery config files (TOML / JSON)                      |
 
 So `cargo build` / `cargo test` / `cargo run --example <name>`
 just work — no `--features ...` needed.
@@ -181,6 +239,14 @@ The previous custom-SHM C ABI and Python bindings were retired in
 the iceoryx2 migration. If you need them back, the cleanest path
 is a thin shim around iceoryx2's own C bindings; happy to revisit
 on request.
+
+## Status
+
+Pre-1.0 (`0.0.x`). The wire format and public API are documented
+but **not stable** between minor releases. See
+[`PLAN.md`](PLAN.md) for the production-readiness roadmap and
+[`LIMITATIONS.md`](LIMITATIONS.md) for the current known sharp
+edges.
 
 ## See also
 

@@ -1,10 +1,9 @@
 //! Cross-cutting types for request/response.
 //!
-//! The local req/resp implementation lives in
-//! [`crate::local::reqresp`]; the remote (iroh) implementation in
-//! [`crate::remote::reqresp`]. Both share the [`Envelope`] payload
-//! shape so messages on the wire are bit-for-bit identical between
-//! transports.
+//! The local req/resp implementation lives in [`crate::local`];
+//! the remote (iroh) implementation in [`crate::remote`]. Both
+//! share the [`Envelope`] payload shape so messages on the wire
+//! are bit-for-bit identical between transports.
 //!
 //! Correlation is by `req_id`, a monotonically increasing `u64`
 //! handed out by the client. The server echoes the same `req_id`

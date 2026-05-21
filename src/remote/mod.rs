@@ -7,8 +7,8 @@
 //! is on, the wire protocol is the same:
 //!
 //! 1. The subscribing side opens an `open_bi` stream on the iroh
-//!    connection and writes the topic handshake ([`handshake`]),
-//!    then `finish()`es the send half.
+//!    connection and writes the topic handshake (magic + version +
+//!    type hash + topic name), then `finish()`es the send half.
 //! 2. The publishing side accepts the bi stream, reads the
 //!    handshake, looks up its local broadcast queue, and copies
 //!    every broadcast message onto the bi stream's send half.
@@ -25,8 +25,9 @@ pub(crate) mod runtime;
 pub(crate) mod transport;
 
 pub use handshake::{HANDSHAKE_MAGIC, HANDSHAKE_VERSION, REQRESP_MAGIC};
-pub use reqresp::RemoteClient;
+pub use reqresp::{parse_request_handshake_tail, RemoteClient};
 pub use transport::{
-    RemoteLoan, RemotePublisher, RemoteSample, RemoteSubscriber, RemoteTransport,
-    RemoteTransportBuilder,
+    parse_frame, parse_pubsub_handshake_tail, RemoteLoan, RemotePublisher,
+    RemotePublisherStats, RemoteSample, RemoteSubscriber, RemoteSubscriberStats,
+    RemoteTransport, RemoteTransportBuilder,
 };

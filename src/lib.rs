@@ -44,6 +44,7 @@ pub mod local;
 pub mod node;
 pub mod remote;
 pub mod reqresp;
+mod trace;
 pub mod transport;
 
 pub use error::{Error, Result};
@@ -51,7 +52,10 @@ pub use local::{
     LocalClient, LocalConfig, LocalPublisher, LocalReqRespService, LocalRequestServer,
     LocalService, LocalSubscriber, LocalTransport, Loan, ReplyHandle, Sample,
 };
-pub use node::{IntoPeer, Node, NodeBuilder, NodeSample, Peer, Publisher, Subscriber};
+pub use node::{
+    IntoPeer, Node, NodeBuilder, NodeSample, NodeStats, Peer, Publisher, PublisherStats,
+    Subscriber, SubscriberStats,
+};
 pub use remote::{RemoteTransport, RemoteTransportBuilder};
 pub use reqresp::Envelope;
 pub use async_adapter::{AsyncPublisher, AsyncSubscriber};

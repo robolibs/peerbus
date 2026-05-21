@@ -14,15 +14,40 @@ use std::ops::{Deref, DerefMut};
 
 use crate::error::Result;
 
-/// FNV-1a (64-bit) — used to hash `std::any::type_name::<T>()`
-/// across publisher and subscriber so the iroh handshake can
-/// detect a payload-type mismatch quickly. Kept here because the
-/// historical home (`local::layout`) is gone after the iceoryx2
-/// migration.
+/// FNV-1a (64-bit). Used internally to hash type-layout descriptors
+/// for the wire handshake. Public so tests / callers that build
+/// their own headers can stay aligned with the crate's hashing.
 pub fn fnv1a64(s: &str) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in s.as_bytes() {
         h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+/// Hash a type's wire identity from its memory layout.
+///
+/// Two peers running different rustc versions saw a `type_name`
+/// mismatch on the same nominal type — the old scheme. Hashing
+/// `size_of::<T>()` and `align_of::<T>()` instead is stable across
+/// toolchains. The cost is precision: two unrelated types with
+/// identical size + alignment hash the same. For robotics
+/// payloads, where types are intentionally designed, this is
+/// rare; size mismatches are still caught at frame-decode time
+/// via the explicit `payload_size` field in the handshake.
+///
+/// The hash output drives [`HANDSHAKE_VERSION`](crate::remote::HANDSHAKE_VERSION)
+/// version 2; older peers using the `type_name` scheme will fail
+/// version negotiation cleanly.
+pub fn wire_type_hash<T>() -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for byte in (std::mem::size_of::<T>() as u64).to_le_bytes() {
+        h ^= byte as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    for byte in (std::mem::align_of::<T>() as u64).to_le_bytes() {
+        h ^= byte as u64;
         h = h.wrapping_mul(0x100000001b3);
     }
     h

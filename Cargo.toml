@@ -2,15 +2,20 @@
 name = "quicbit"
 version = "0.0.1"
 edition = "2024"
+rust-version = "1.85"
+authors = ["Trim Bresilla <trim.bresilla@gmail.com>"]
 description = "Typed zero-copy messaging for robotics: loan-publish-consume pub/sub over shared memory on the same host, iroh peer-to-peer QUIC streams over the network, one service-oriented API for both"
 license = "MIT"
 readme = "README.md"
+repository = "https://codeberg.org/robolibs/quicbit"
+homepage = "https://codeberg.org/robolibs/quicbit"
+keywords = ["robotics", "ipc", "pubsub", "quic", "shared-memory"]
+categories = ["network-programming", "concurrency", "embedded"]
 publish = false
 include = [
     "Cargo.toml",
-    "pyproject.toml",
     "README.md",
-    "include/**/*.h",
+    "LIMITATIONS.md",
     "src/**/*.rs",
     "examples/**/*.rs",
     "tests/**/*.rs",

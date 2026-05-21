@@ -15,7 +15,6 @@
 //! Payloads use `bytemuck::Pod` for serialization (same as the
 //! pub/sub path — Phase 4 doesn't bring serde in yet).
 
-use std::any::type_name;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -23,7 +22,7 @@ use bytemuck::Pod;
 use iroh::endpoint::{RecvStream, SendStream};
 
 use crate::error::{Error, Result};
-use crate::transport::fnv1a64;
+use crate::transport::wire_type_hash;
 use crate::remote::handshake::{HANDSHAKE_VERSION, MAX_TOPIC_LEN, REQRESP_MAGIC};
 use crate::remote::transport::{
     ensure_peer_connection, read_frame, write_frame, ErasedReqHandler, InnerShared,
@@ -42,8 +41,8 @@ impl RemoteTransport {
     {
         let req_size = std::mem::size_of::<Req>() as u32;
         let resp_size = std::mem::size_of::<Resp>() as u32;
-        let req_hash = fnv1a64(type_name::<Req>());
-        let resp_hash = fnv1a64(type_name::<Resp>());
+        let req_hash = wire_type_hash::<Req>();
+        let resp_hash = wire_type_hash::<Resp>();
 
         let handler = Arc::new(handler);
         let erased: ErasedReqHandler = Arc::new(move |bytes: &[u8]| {
@@ -120,8 +119,8 @@ where
         let topic = self.topic.clone();
         let shared = self.shared.clone();
         let req_bytes = bytemuck::bytes_of(&req).to_vec();
-        let req_hash = fnv1a64(type_name::<Req>());
-        let resp_hash = fnv1a64(type_name::<Resp>());
+        let req_hash = wire_type_hash::<Req>();
+        let resp_hash = wire_type_hash::<Resp>();
         let req_size = std::mem::size_of::<Req>() as u32;
         let resp_size = std::mem::size_of::<Resp>() as u32;
 
@@ -222,7 +221,10 @@ async fn write_request_handshake(
     resp_size: u32,
 ) -> Result<()> {
     if topic.len() > MAX_TOPIC_LEN as usize {
-        return Err(Error::invalid_argument("topic name too long"));
+        return Err(Error::TopicNameTooLong {
+            len: topic.len(),
+            limit: MAX_TOPIC_LEN as usize,
+        });
     }
     let mut buf = Vec::with_capacity(4 + 4 + 8 + 8 + 4 + 4 + 2 + topic.len());
     buf.extend_from_slice(&REQRESP_MAGIC.to_le_bytes());
@@ -246,26 +248,60 @@ async fn read_request_handshake_tail(
     let mut header = [0u8; 4 + 8 + 8 + 4 + 4 + 2];
     recv.read_exact(&mut header)
         .await
-        .map_err(|e| Error::Remote(format!("request handshake: {e}")))?;
-    let version = u32::from_le_bytes(header[0..4].try_into().unwrap());
-    if version != HANDSHAKE_VERSION {
-        return Err(Error::Remote(format!(
-            "handshake version mismatch: peer={version} local={HANDSHAKE_VERSION}"
-        )));
-    }
-    let req_hash = u64::from_le_bytes(header[4..12].try_into().unwrap());
-    let resp_hash = u64::from_le_bytes(header[12..20].try_into().unwrap());
-    let req_size = u32::from_le_bytes(header[20..24].try_into().unwrap());
-    let resp_size = u32::from_le_bytes(header[24..28].try_into().unwrap());
-    let topic_len = u16::from_le_bytes(header[28..30].try_into().unwrap());
-    if topic_len > MAX_TOPIC_LEN {
-        return Err(Error::Remote(format!("topic too long: {topic_len}")));
-    }
-    let mut topic_buf = vec![0u8; topic_len as usize];
+        .map_err(|e| Error::HandshakeMalformed(format!("request handshake: {e}")))?;
+    let topic_len = u16::from_le_bytes(header[28..30].try_into().unwrap()) as usize;
+    let mut topic_buf = vec![0u8; topic_len];
     recv.read_exact(&mut topic_buf)
         .await
-        .map_err(|e| Error::Remote(format!("topic name: {e}")))?;
-    let topic = String::from_utf8(topic_buf)
-        .map_err(|_| Error::Remote("topic name is not UTF-8".to_string()))?;
+        .map_err(|e| Error::HandshakeMalformed(format!("topic name: {e}")))?;
+    let mut buf = Vec::with_capacity(header.len() + topic_buf.len());
+    buf.extend_from_slice(&header);
+    buf.extend_from_slice(&topic_buf);
+    parse_request_handshake_tail(&buf)
+}
+
+/// Pure-byte parser for the req/resp handshake tail (everything
+/// after the 4-byte [`REQRESP_MAGIC`]). Exposed for fuzz tests.
+///
+/// Layout: `[u32 version][u64 req_hash][u64 resp_hash][u32 req_size]
+/// [u32 resp_size][u16 topic_len][topic_bytes]`.
+pub fn parse_request_handshake_tail(
+    bytes: &[u8],
+) -> Result<(String, u64, u64, u32, u32)> {
+    if bytes.len() < 4 + 8 + 8 + 4 + 4 + 2 {
+        return Err(Error::HandshakeMalformed(format!(
+            "req handshake tail truncated: {} bytes",
+            bytes.len()
+        )));
+    }
+    let version = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+    if version != HANDSHAKE_VERSION {
+        return Err(Error::HandshakeVersionMismatch {
+            local: HANDSHAKE_VERSION,
+            peer: version,
+        });
+    }
+    let req_hash = u64::from_le_bytes(bytes[4..12].try_into().unwrap());
+    let resp_hash = u64::from_le_bytes(bytes[12..20].try_into().unwrap());
+    let req_size = u32::from_le_bytes(bytes[20..24].try_into().unwrap());
+    let resp_size = u32::from_le_bytes(bytes[24..28].try_into().unwrap());
+    let topic_len = u16::from_le_bytes(bytes[28..30].try_into().unwrap());
+    if topic_len > MAX_TOPIC_LEN {
+        return Err(Error::TopicNameTooLong {
+            len: topic_len as usize,
+            limit: MAX_TOPIC_LEN as usize,
+        });
+    }
+    let topic_end = 30usize.saturating_add(topic_len as usize);
+    if bytes.len() < topic_end {
+        return Err(Error::HandshakeMalformed(format!(
+            "topic name truncated: declared {} bytes, have {}",
+            topic_len,
+            bytes.len().saturating_sub(30)
+        )));
+    }
+    let topic = std::str::from_utf8(&bytes[30..topic_end])
+        .map_err(|_| Error::HandshakeMalformed("topic name is not UTF-8".to_string()))?
+        .to_string();
     Ok((topic, req_hash, resp_hash, req_size, resp_size))
 }

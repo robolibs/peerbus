@@ -38,7 +38,14 @@ pub const HANDSHAKE_MAGIC: u32 = 0x3152_4251;
 pub const REQRESP_MAGIC: u32 = 0x3252_4251;
 
 /// Stream protocol version. Bump on any breaking wire change.
-pub const HANDSHAKE_VERSION: u32 = 1;
+///
+/// History:
+/// * `1` — type identity hashed from `std::any::type_name::<T>()`.
+///   Unstable across rustc versions; retired.
+/// * `2` — type identity hashed from `(size_of::<T>(), align_of::<T>())`
+///   via [`crate::transport::wire_type_hash`]. Stable across
+///   toolchains; coarser (size+align collisions possible).
+pub const HANDSHAKE_VERSION: u32 = 2;
 
 /// Maximum topic name length on the wire.
 pub const MAX_TOPIC_LEN: u16 = 1024;

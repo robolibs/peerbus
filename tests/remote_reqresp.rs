@@ -1,6 +1,8 @@
 //! Loopback test for the iroh-backed req/resp transport.
 
 
+use std::time::Duration;
+
 use bytemuck::{Pod, Zeroable};
 use iceoryx2::prelude::ZeroCopySend;
 use quicbit::RemoteTransport;
@@ -26,7 +28,7 @@ fn remote_reqresp_call_roundtrip() {
         .build_blocking()
         .expect("server endpoint");
     server_side
-        .wait_for_direct_addresses()
+        .wait_for_direct_addresses(Duration::from_secs(5))
         .expect("addresses");
 
     server_side
