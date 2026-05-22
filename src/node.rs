@@ -15,20 +15,17 @@
 //! User-facing API:
 //!
 //! ```no_run
-//! use bytemuck::{Pod, Zeroable};
-//! use iceoryx2::prelude::ZeroCopySend;
 //! use quicbit::Node;
 //!
 //! # fn run() -> quicbit::Result<()> {
-//! # #[repr(C)]
-//! # #[derive(Clone, Copy, Debug, Pod, Zeroable, ZeroCopySend)] struct Pose;
+//! # #[datapod::datapod]
+//! # struct Pose { x: f32, y: f32, yaw: f32 }
 //! let node = Node::builder().no_relay().bind()?;
 //! let mut pubr = node.publisher::<Pose>("rover/pose")?;
-//! // *pubr.loan()?... pubr.publish(loan)?;
+//! pubr.send(&Pose { x: 0.0, y: 0.0, yaw: 0.0 })?;
 //! # Ok(()) }
 //! ```
 
-use core::fmt::Debug;
 use std::any::type_name;
 use std::collections::HashMap;
 use std::fs;
@@ -38,8 +35,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bytemuck::Pod;
-use iceoryx2::prelude::ZeroCopySend;
 use iroh::endpoint::{Connection, presets};
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 use tokio::runtime::Runtime;
@@ -434,7 +429,7 @@ impl Node {
     ///   serves attached remote subscribers.
     pub fn publisher<T>(&self, topic: &str) -> Result<Publisher<T>>
     where
-        T: Pod + ZeroCopySend + Debug + 'static,
+        T: datapod::DataPod + 'static,
     {
         let type_name = type_name::<T>();
         let type_hash = wire_type_hash::<T>();
@@ -490,7 +485,7 @@ impl Node {
     ///   internal queue.
     pub fn subscriber<T>(&self, peer: impl IntoPeer, topic: &str) -> Result<Subscriber<T>>
     where
-        T: Pod + ZeroCopySend + Debug + 'static,
+        T: datapod::DataPod + 'static,
     {
         let peer = peer.into_peer();
         let peer_bytes: [u8; 32] = *peer.endpoint_id.as_bytes();
@@ -663,7 +658,7 @@ pub struct PublisherStats {
     pub remote_dropped: u64,
 }
 
-pub struct Publisher<T: Pod + ZeroCopySend + Debug + 'static> {
+pub struct Publisher<T: datapod::DataPod + 'static> {
     local_publisher: LocalPublisher<T>,
     _local_service: LocalService<T>,
     iroh_tx: broadcast::Sender<Vec<u8>>,
@@ -671,28 +666,37 @@ pub struct Publisher<T: Pod + ZeroCopySend + Debug + 'static> {
     remote_dropped: Arc<AtomicU64>,
 }
 
-impl<T: Pod + ZeroCopySend + Debug + 'static> Publisher<T> {
-    pub fn loan(&mut self) -> Result<Loan<T>> {
-        self.local_publisher.loan()
+impl<T: datapod::DataPod + 'static> Publisher<T> {
+    /// Loan a slot with `byte_count` payload bytes. The returned
+    /// [`Loan`] exposes a `T::Header` plus a writable `[u8]` slice.
+    /// For fixed-Pod `T` pass `0`; for heap-bearing `T` pass the
+    /// expected byte length of the cast payload.
+    pub fn loan(&mut self, byte_count: usize) -> Result<Loan<T>> {
+        self.local_publisher.loan(byte_count)
     }
 
     pub fn publish(&mut self, loan: Loan<T>) -> Result<u64> {
-        // Snapshot bytes before the loan transfers ownership into
-        // iceoryx2's send path; cheap copy of size_of::<T>() bytes.
-        let bytes: Vec<u8> = bytemuck::bytes_of(&*loan).to_vec();
+        // Snapshot header + payload bytes before iceoryx2 consumes
+        // the loan; needed for the iroh broadcast.
+        let header_bytes = bytemuck::bytes_of(loan.header()).to_vec();
+        let payload_bytes = loan.payload().to_vec();
+        let mut frame = Vec::with_capacity(header_bytes.len() + payload_bytes.len());
+        frame.extend_from_slice(&header_bytes);
+        frame.extend_from_slice(&payload_bytes);
         let seq = self.local_publisher.publish(loan)?;
-        if self.iroh_tx.send(bytes).is_err() {
-            // `broadcast::send` only fails when there are zero
-            // receivers attached to the topic.
+        if self.iroh_tx.send(frame).is_err() {
             self.remote_dropped.fetch_add(1, Ordering::Relaxed);
         }
         self.published.fetch_add(1, Ordering::Relaxed);
         Ok(seq)
     }
 
-    pub fn send(&mut self, value: T) -> Result<u64> {
-        let mut loan = self.loan()?;
-        *loan = value;
+    /// Convenience: build header + bytes from `value` and publish.
+    pub fn send(&mut self, value: &T) -> Result<u64> {
+        let bytes = value.payload_bytes();
+        let mut loan = self.loan(bytes.len())?;
+        *loan.header_mut() = value.header();
+        loan.payload_mut().copy_from_slice(bytes);
         self.publish(loan)
     }
 
@@ -719,13 +723,13 @@ pub struct SubscriberStats {
     pub disconnects: u64,
 }
 
-pub struct Subscriber<T: Pod + ZeroCopySend + Debug + 'static> {
+pub struct Subscriber<T: datapod::DataPod + 'static> {
     source: SubscriberSource<T>,
     received: AtomicU64,
     disconnects: AtomicU64,
 }
 
-enum SubscriberSource<T: Pod + ZeroCopySend + Debug + 'static> {
+enum SubscriberSource<T: datapod::DataPod + 'static> {
     Local {
         sub: LocalSubscriber<T>,
         _svc: LocalService<T>,
@@ -735,21 +739,23 @@ enum SubscriberSource<T: Pod + ZeroCopySend + Debug + 'static> {
     },
 }
 
-impl<T: Pod + ZeroCopySend + Debug + 'static> Subscriber<T> {
+impl<T: datapod::DataPod + 'static> Subscriber<T> {
     pub fn take(&mut self) -> Result<Option<NodeSample<T>>> {
         let result = match &mut self.source {
             SubscriberSource::Local { sub, .. } => Ok(sub.take()?.map(NodeSample::Local)),
             SubscriberSource::Remote { rx } => match rx.try_recv() {
                 Ok(bytes) => {
-                    if bytes.len() != std::mem::size_of::<T>() {
+                    let header_size = std::mem::size_of::<T::Header>();
+                    if bytes.len() < header_size {
                         return Err(Error::Remote(format!(
-                            "frame size mismatch: got {} bytes, expected {}",
+                            "frame too small: got {} bytes, expected at least {} (header)",
                             bytes.len(),
-                            std::mem::size_of::<T>()
+                            header_size,
                         )));
                     }
-                    let value: T = *bytemuck::from_bytes(&bytes);
-                    Ok(Some(NodeSample::Remote { value }))
+                    let header: T::Header = *bytemuck::from_bytes(&bytes[..header_size]);
+                    let payload = bytes[header_size..].to_vec();
+                    Ok(Some(NodeSample::Remote { header, payload }))
                 }
                 Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Ok(None),
                 Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
@@ -773,18 +779,28 @@ impl<T: Pod + ZeroCopySend + Debug + 'static> Subscriber<T> {
     }
 }
 
-/// Unified sample, derefs to `T` regardless of transport.
-pub enum NodeSample<T: Pod + ZeroCopySend + Debug + 'static> {
+/// Unified sample. Exposes the wire-shape (`header()` + `payload()`)
+/// regardless of whether the message arrived via iceoryx2 (Local) or
+/// iroh (Remote). Reconstructing a full `T` from these is up to the
+/// caller — fixed-Pod types just read the header; heap types pair
+/// the header with `bytemuck::cast_slice` on the payload.
+pub enum NodeSample<T: datapod::DataPod + 'static> {
     Local(Sample<T>),
-    Remote { value: T },
+    Remote { header: T::Header, payload: Vec<u8> },
 }
 
-impl<T: Pod + ZeroCopySend + Debug + 'static> std::ops::Deref for NodeSample<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
+impl<T: datapod::DataPod + 'static> NodeSample<T> {
+    pub fn header(&self) -> &T::Header {
         match self {
-            NodeSample::Local(s) => s,
-            NodeSample::Remote { value } => value,
+            NodeSample::Local(s) => s.header(),
+            NodeSample::Remote { header, .. } => header,
+        }
+    }
+
+    pub fn payload(&self) -> &[u8] {
+        match self {
+            NodeSample::Local(s) => s.payload(),
+            NodeSample::Remote { payload, .. } => payload,
         }
     }
 }

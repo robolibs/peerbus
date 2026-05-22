@@ -1,12 +1,8 @@
 //! Async adapter smoke test.
 
-
-use bytemuck::{Pod, Zeroable};
-use iceoryx2::prelude::ZeroCopySend;
 use quicbit::{AsyncPublisher, AsyncSubscriber, LocalConfig, LocalService};
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq, ZeroCopySend)]
+#[datapod::datapod]
 struct Tick {
     seq: u32,
     payload: u32,
@@ -27,10 +23,10 @@ async fn async_local_round_trip() {
     let mut pubr = AsyncPublisher::new(svc.publisher().unwrap());
     let mut sub = AsyncSubscriber::new(svc.subscriber().unwrap());
 
-    let mut loan = pubr.loan().await.unwrap();
-    *loan = Tick { seq: 1, payload: 42 };
+    let mut loan = pubr.loan(0).await.unwrap();
+    *loan.header_mut() = Tick { seq: 1, payload: 42 };
     pubr.publish(loan).await.unwrap();
 
     let sample = sub.take().await.unwrap().expect("sample should be available");
-    assert_eq!(*sample, Tick { seq: 1, payload: 42 });
+    assert_eq!(*sample.header(), Tick { seq: 1, payload: 42 });
 }

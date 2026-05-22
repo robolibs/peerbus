@@ -7,13 +7,10 @@
 use std::thread;
 use std::time::Duration;
 
-use bytemuck::{Pod, Zeroable};
-use iceoryx2::prelude::ZeroCopySend;
 use quicbit::transport::{PublisherOps, SubscriberOps};
 use quicbit::{RemoteTransport, Transport};
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Debug, ZeroCopySend)]
+#[datapod::datapod]
 struct Tick {
     seq: u32,
     payload: u32,
@@ -42,15 +39,15 @@ fn main() {
     let consumer = thread::spawn(move || {
         for _ in 0..200 {
             if let Some(sample) = sub.take().unwrap() {
-                println!("got: {:?}", *sample);
+                println!("got: {:?}", sample.header());
             }
             thread::sleep(Duration::from_millis(20));
         }
     });
 
     for i in 1..=10 {
-        let mut loan = pubr.loan().expect("loan");
-        *loan = Tick {
+        let mut loan = pubr.loan(0).expect("loan");
+        loan.header = Tick {
             seq: i,
             payload: i * 100,
         };

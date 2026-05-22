@@ -5,19 +5,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use bytemuck::{Pod, Zeroable};
-use iceoryx2::prelude::ZeroCopySend;
 use quicbit::{LocalConfig, LocalReqRespService};
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq, ZeroCopySend)]
+#[datapod::datapod]
 struct Add {
     a: i32,
     b: i32,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq, ZeroCopySend)]
+#[datapod::datapod]
 struct Sum {
     value: i32,
 }
@@ -44,8 +40,9 @@ fn single_client_single_server_roundtrip() {
     let server_thread = thread::spawn(move || {
         while !stop_for_thread.load(Ordering::Acquire) {
             if let Some((req, reply)) = server.take_request().unwrap() {
-                let sum = Sum { value: req.payload.a + req.payload.b };
-                reply.respond(sum).unwrap();
+                let h = *req.header();
+                let sum = Sum { value: h.a + h.b };
+                reply.respond(&sum).unwrap();
             } else {
                 thread::sleep(Duration::from_micros(100));
             }
@@ -53,8 +50,8 @@ fn single_client_single_server_roundtrip() {
     });
 
     for i in 0..10 {
-        let resp = client.call(Add { a: i, b: i * 2 }).unwrap();
-        assert_eq!(resp, Sum { value: i + i * 2 });
+        let resp = client.call(&Add { a: i, b: i * 2 }).unwrap();
+        assert_eq!(*resp.header(), Sum { value: i + i * 2 });
     }
 
     stop.store(true, Ordering::Release);
@@ -67,6 +64,6 @@ fn timeout_when_no_server() {
         LocalReqRespService::<Add, Sum>::create(&name("timeout"), LocalConfig::default())
             .unwrap();
     let mut client = svc.client().unwrap();
-    let r = client.call_with_timeout(Add { a: 1, b: 2 }, Duration::from_millis(100));
+    let r = client.call_with_timeout(&Add { a: 1, b: 2 }, Duration::from_millis(100));
     assert!(r.is_err(), "expected timeout error");
 }

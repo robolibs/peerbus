@@ -1,35 +1,47 @@
 //! Cross-cutting types for request/response.
 //!
-//! The local req/resp implementation lives in [`crate::local`];
-//! the remote (iroh) implementation in [`crate::remote`]. Both
-//! share the [`Envelope`] payload shape so messages on the wire
-//! are bit-for-bit identical between transports.
-//!
-//! Correlation is by `req_id`, a monotonically increasing `u64`
-//! handed out by the client. The server echoes the same `req_id`
-//! in its response so multiple concurrent clients can disambiguate
-//! their replies on a shared response channel.
+//! `Envelope<H>` is the user_header used by the reqresp services:
+//! a `u64` correlation id plus a Pod metadata header `H`. For
+//! fixed-Pod request/response types `T`, `H = T` and the entire
+//! value rides in this header. For heap-bearing types, `H = T::Header`
+//! and the bytes ride in the iceoryx2 slice payload alongside.
 
 use bytemuck::{Pod, Zeroable};
 use iceoryx2::prelude::ZeroCopySend;
 
-/// `#[repr(C)]` wrapper carrying a request/response id alongside a
-/// `Pod` payload. The local transport places `Envelope<T>` directly
-/// into iceoryx2 SHM slots; the remote transport serializes it
-/// as bytes.
+/// Request/response envelope. The `H` parameter is `T::Header` for
+/// whichever `T: datapod::DataPod` the service ships.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct Envelope<T: Pod + ZeroCopySend> {
+pub struct Envelope<H>
+where
+    H: Pod + Zeroable + ZeroCopySend + Copy + 'static,
+{
     pub req_id: u64,
-    pub payload: T,
+    pub header: H,
 }
 
-// SAFETY: `Envelope<T>` is `#[repr(C)]`, contains only a `u64` and a
-// `Pod + ZeroCopySend` payload, and has no padding when `T`'s
-// alignment is ≤ 8 (the common case for the types we accept).
-unsafe impl<T: Pod + ZeroCopySend> Pod for Envelope<T> {}
-unsafe impl<T: Pod + ZeroCopySend> Zeroable for Envelope<T> {}
-unsafe impl<T: Pod + ZeroCopySend> ZeroCopySend for Envelope<T> {}
+// SAFETY: `Envelope<H>` is `#[repr(C)]`, contains only a `u64` and a
+// `Pod` header `H`. When `H`'s alignment is ≤ 8 (the common case)
+// the struct has no internal padding.
+unsafe impl<H> Pod for Envelope<H> where H: Pod + Zeroable + ZeroCopySend + Copy + 'static {}
+unsafe impl<H> Zeroable for Envelope<H> where H: Pod + Zeroable + ZeroCopySend + Copy + 'static {}
+unsafe impl<H> ZeroCopySend for Envelope<H> where H: Pod + Zeroable + ZeroCopySend + Copy + 'static {}
+
+// `loan_slice_uninit` zero-initialises the iceoryx2 user_header via
+// `UserHeader::default()`. We can't derive `Default` (H may not be
+// Default), but H is `Zeroable`, so an all-zeros envelope is valid.
+impl<H> Default for Envelope<H>
+where
+    H: Pod + Zeroable + ZeroCopySend + Copy + 'static,
+{
+    fn default() -> Self {
+        Self {
+            req_id: 0,
+            header: H::zeroed(),
+        }
+    }
+}
 
 /// Default timeout for `Client::call` if the user does not override.
 pub const DEFAULT_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);

@@ -9,12 +9,9 @@
 
 use std::time::{Duration, Instant};
 
-use bytemuck::{Pod, Zeroable};
-use iceoryx2::prelude::ZeroCopySend;
 use quicbit::Node;
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Debug, ZeroCopySend)]
+#[datapod::datapod]
 struct Pose {
     x: f32,
     y: f32,
@@ -33,7 +30,7 @@ fn main() -> quicbit::Result<()> {
 
     let publisher = std::thread::spawn(move || {
         for i in 0..5 {
-            pubr.send(Pose {
+            pubr.send(&Pose {
                 x: i as f32,
                 y: 2.0 * i as f32,
                 yaw: 0.1 * i as f32,
@@ -49,7 +46,7 @@ fn main() -> quicbit::Result<()> {
         while Instant::now() < deadline && seen < 5 {
             match sub.take() {
                 Ok(Some(s)) => {
-                    println!("received: {:?}", *s);
+                    println!("received: {:?}", s.header());
                     seen += 1;
                 }
                 Ok(None) => std::thread::sleep(Duration::from_millis(10)),

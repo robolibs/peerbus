@@ -1,22 +1,26 @@
-//! Transport abstraction.
+//! Transport abstractions.
 //!
-//! A [`Transport`] is the seam between the messaging layer (this
-//! crate) and the bytes-in-flight layer (SHM slots locally, QUIC
-//! streams remotely). The trait is intentionally small: each
-//! implementation defines its own associated `Publisher` /
-//! `Subscriber` types so the same `Service<T>` user code works
-//! against every backend with no boxing on the hot path.
+//! quicbit ships two transports today: [`crate::local::LocalTransport`]
+//! (iceoryx2 SHM) and [`crate::remote::RemoteTransport`] (iroh QUIC).
+//! Both implement the [`Transport`] trait so higher layers can be
+//! generic over them.
 //!
-//! See [`crate::local::LocalTransport`] and (with the `remote`
-//! feature) [`crate::remote::RemoteTransport`] for concrete impls.
-
-use std::ops::{Deref, DerefMut};
+//! Every payload `T` shipped over a quicbit transport implements
+//! [`datapod::DataPod`]. That trait provides:
+//!
+//! * A Pod **header** `T::Header` — fixed size, lives in the wire's
+//!   metadata slot.
+//! * An optional byte **payload** `T::Payload` (= `()` or `[u8]`) —
+//!   variable-length data carrying the heap bytes for types like
+//!   `Polygon`, `Grid`, `Linestring`, etc.
+//!
+//! For fixed-Pod types (e.g. `Point`, `Pose`, `Joint`) `T::Header = T`,
+//! so the entire value rides in the header and the payload is empty.
 
 use crate::error::Result;
 
 /// FNV-1a (64-bit). Used internally to hash type-layout descriptors
-/// for the wire handshake. Public so tests / callers that build
-/// their own headers can stay aligned with the crate's hashing.
+/// for the wire handshake.
 pub fn fnv1a64(s: &str) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in s.as_bytes() {
@@ -26,20 +30,8 @@ pub fn fnv1a64(s: &str) -> u64 {
     h
 }
 
-/// Hash a type's wire identity from its memory layout.
-///
-/// Two peers running different rustc versions saw a `type_name`
-/// mismatch on the same nominal type — the old scheme. Hashing
-/// `size_of::<T>()` and `align_of::<T>()` instead is stable across
-/// toolchains. The cost is precision: two unrelated types with
-/// identical size + alignment hash the same. For robotics
-/// payloads, where types are intentionally designed, this is
-/// rare; size mismatches are still caught at frame-decode time
-/// via the explicit `payload_size` field in the handshake.
-///
-/// The hash output drives [`HANDSHAKE_VERSION`](crate::remote::HANDSHAKE_VERSION)
-/// version 2; older peers using the `type_name` scheme will fail
-/// version negotiation cleanly.
+/// Hash a type's wire identity from its memory layout (size + align).
+/// Stable across rustc versions, unlike `core::any::type_name`.
 pub fn wire_type_hash<T>() -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for byte in (std::mem::size_of::<T>() as u64).to_le_bytes() {
@@ -53,34 +45,21 @@ pub fn wire_type_hash<T>() -> u64 {
     h
 }
 
-/// Marker trait for types you can send/receive locally.
-///
-/// Three constraints:
-/// * `bytemuck::Pod` — fixed memory layout, valid bit pattern for
-///   any byte sequence of the right size. We use this for the iroh
-///   remote path's byte-level (de)serialisation.
-/// * `iceoryx2::ZeroCopySend` — iceoryx2's marker that a type may
-///   ride in shared memory between processes. In practice it
-///   requires `#[repr(C)]` + no pointers / references / heap.
-///   `Pod` satisfies the safety contract, but the trait must be
-///   `unsafe impl`'d (or `#[derive(ZeroCopySend)]`) for each user
-///   type because the orphan rules prevent us from doing it
-///   automatically.
-/// * `Debug` — iceoryx2's `Sample` / `SampleMut` types require it.
-pub trait LocalPayload:
-    bytemuck::Pod + iceoryx2::prelude::ZeroCopySend + core::fmt::Debug + 'static
-{
-}
-impl<T> LocalPayload for T where
-    T: bytemuck::Pod + iceoryx2::prelude::ZeroCopySend + core::fmt::Debug + 'static
+/// Marker trait for the local-transport payload bound. Adds a
+/// `Send + Sync` bound to `T::Header` so loans/samples carrying a
+/// `T::Header` value across threads (e.g. via `tokio::spawn_blocking`)
+/// type-check. `Pod` types are always thread-safe in practice;
+/// stating it here lets us be generic over `T: LocalPayload` without
+/// repeating the bound at every impl site.
+pub trait LocalPayload: datapod::DataPod<Header: Send + Sync> + 'static {}
+impl<T> LocalPayload for T
+where
+    T: datapod::DataPod + 'static,
+    T::Header: Send + Sync,
 {
 }
 
-/// Marker trait for types you can send/receive across the network.
-///
-/// Adds `serde::Serialize + DeserializeOwned` on top of [`LocalPayload`].
-/// `Pod` is *not* required — the remote transport serializes through
-/// `postcard`, which can handle non-POD types.
+/// Marker trait for the remote-transport (iroh) payload bound.
 pub trait RemotePayload:
     serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
 {
@@ -91,16 +70,17 @@ impl<T> RemotePayload for T where
 {
 }
 
-/// Operations a publisher handle must support.
-pub trait PublisherOps<T>: Send {
-    /// RAII handle that derefs mutably to `T`. The publisher writes
-    /// in-place and then hands it back via [`publish`].
-    ///
-    /// [`publish`]: PublisherOps::publish
-    type Loan: DerefMut<Target = T>;
+/// Operations a publisher handle must support. Loans are
+/// fixed-shape "header + variable-byte payload" containers; the
+/// publisher writes both halves in place and hands the loan back
+/// via [`publish`](PublisherOps::publish).
+pub trait PublisherOps<T: LocalPayload>: Send {
+    type Loan: Send;
 
-    /// Reserve a slot for in-place writes.
-    fn loan(&mut self) -> Result<Self::Loan>;
+    /// Reserve a slot with `byte_count` payload bytes. Pass 0 for
+    /// fixed-Pod types (`T::Payload = ()`); pass the cast-byte
+    /// length for heap-bearing types (`T::Payload = [u8]`).
+    fn loan(&mut self, byte_count: usize) -> Result<Self::Loan>;
 
     /// Hand the loan over to subscribers. Returns a transport-defined
     /// sequence number (monotonically increasing).
@@ -108,11 +88,8 @@ pub trait PublisherOps<T>: Send {
 }
 
 /// Operations a subscriber handle must support.
-pub trait SubscriberOps<T>: Send {
-    /// RAII handle that derefs to `T`. Borrows shared bytes on the
-    /// local path and an owned (deserialized) value on the remote
-    /// path; both expose the same `Deref` surface.
-    type Sample: Deref<Target = T>;
+pub trait SubscriberOps<T: LocalPayload>: Send {
+    type Sample: Send;
 
     /// Non-blocking take. `Ok(None)` means "no new sample".
     fn take(&mut self) -> Result<Option<Self::Sample>>;

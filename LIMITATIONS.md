@@ -19,11 +19,11 @@ Integration tests in `tests/`:
 | `local_inproc`        |     4 | iceoryx2 loan/publish/take, in-process           |
 | `local_reqresp`       |     2 | iceoryx2-backed req/resp                         |
 | `node`                |     7 | unified `Node` API, local + remote routing + ACL |
-| `remote_loopback`     |     2 | iroh pub/sub round-trip on 127.0.0.1             |
+| `remote_loopback`     |     3 | iroh pub/sub round-trip + publisher-drop survive |
 | `remote_reqresp`      |     1 | iroh req/resp round-trip                         |
 | `async_adapter`       |     1 | `AsyncPublisher` / `AsyncSubscriber` smoke       |
 | `auto_traits`         |     2 | compile-time `Send`/`Sync` assertions            |
-| `datapod_payload`     |     5 | `datapod` Pod types crossing the wire            |
+| `datapod_payload`     |     5 | `datapod` types crossing the wire                |
 | `wire_parsers`        |    11 | edge cases on the pure-byte wire parsers         |
 | Doc tests             |     2 | top-of-crate + `Node` examples                   |
 
@@ -50,9 +50,10 @@ See `PLAN.md` §F for the planned coverage. The big absences today:
   prove the protocol round-trips between two endpoints in one
   process), but cross-machine connectivity is demonstrated manually
   rather than baked into CI.
-- **Connection-drop / reconnect** — there is currently no test that
-  the transport recovers when a peer endpoint vanishes and returns.
-  The crate also does not yet *implement* recovery; see PLAN §C.
+- **Connection-drop / reconnect across reboots** — the
+  `node_subscriber_survives_publisher_drop` test covers in-process
+  publisher loss with the reconnect loop in place. Recovery across
+  machine reboots / network partition is exercised manually only.
 - **Malicious / adversarial peer suite** — the wire parsers
   (`read_*_handshake_tail`, `read_frame`) are bounded but unfuzzed.
 - **Sustained-load endurance** — `examples/bench_local.rs` is a
@@ -99,37 +100,42 @@ same reason.
 
 ### Remote (iroh) transport
 
-- **No reconnect.** `ensure_peer_connection` caches the first
-  successful iroh `Connection` in a `OnceCell` and never re-dials.
-  If the peer reboots or the path breaks, subscribers silently see
-  `Ok(None)` and clients hang. PLAN §C is the fix.
-- **`Subscriber::take()` cannot distinguish empty queue from
-  peer-gone** today — both return `Ok(None)`. PLAN §C.1 adds
-  `Error::Disconnected`.
+- **Reconnect is best-effort.** `ensure_peer_connection` checks the
+  cached `Connection`'s `close_reason()` on every use and re-dials
+  if it's dead. The `Node` subscriber loop wraps that in bounded
+  exponential backoff (100 ms → 10 s cap), and `Subscriber::take()`
+  surfaces `Err(Error::Disconnected)` when the foreground channel
+  drops. Recovery across machine reboots / network partition is
+  not tested; the in-process `node_subscriber_survives_publisher_drop`
+  test covers the publisher-vanishes case.
 - **Best-effort publish.** `RemotePublisher::publish` pushes onto a
   256-deep `broadcast::Sender`. If no subscriber is attached, the
   send is silently dropped. The `Lagged(n)` path is observed on the
   subscriber but the publisher gets no feedback. PLAN §B.2 surfaces
   per-publisher / per-subscriber counters.
-- **Pod-only payloads on the wire.** The remote transport sends
-  raw bytemuck bytes; `serde` for non-Pod payloads is not yet wired
-  in.
-- **Type identity uses `std::any::type_name::<T>()`** hashed with
-  FNV-1a. `type_name` is documented as not stable across compiler
-  versions, so two endpoints built with different toolchains can
-  reject each other on the same nominal type. PLAN §D.1 replaces
-  this.
-- **No peer authentication beyond ALPN match.** Any peer that knows
-  the ALPN can dial the endpoint and subscribe to any topic. The
-  `identity("name")` deterministic-key path is documented as
-  impersonable; there is currently no allowlist on the accept side.
-  PLAN §D.3 adds one.
+- **`datapod::DataPod` payloads only on the wire.** Both transports
+  ride the `header + bytes` split that `DataPod` exposes — the Pod
+  header rides as iceoryx2's `user_header` / iroh's frame prefix,
+  the optional byte payload as iceoryx2's slice payload / iroh's
+  frame body. `serde`-shaped payloads are not yet wired in; types
+  carrying owned heap data participate via `#[datapod::datapod]` +
+  `#[dp(bytes)]`.
+- **Type identity uses size + alignment** hashed with FNV-1a
+  (`transport::wire_type_hash::<T>()`). The hash is stable across
+  rustc versions, but two unrelated types with identical size and
+  alignment hash the same; size mismatches are still caught at
+  frame-decode time via the explicit `payload_size` field in the
+  handshake.
+- **Peer ACL is opt-in.** Without any `.allow_peer(...)` on the
+  builder, every peer that knows the ALPN can dial the endpoint and
+  subscribe to any topic. Pin the inbound set with one or more
+  `.allow_peer` calls (see the `rejects_unallowlisted_peer` test).
+  The `identity("name")` deterministic-key path is documented as
+  impersonable, so still prefer `identity_file(path)` on untrusted
+  networks.
 - **One iroh `Endpoint` per `RemoteTransport`** (the low-level
   type). `Node` collapses this back down to one endpoint for the
   whole process; most users should be on `Node`.
-- **`wait_for_direct_addresses` is an unbounded spin** — if iroh
-  never publishes an address, the call hangs forever. PLAN §C.5
-  adds a timeout.
 
 ### Identity
 

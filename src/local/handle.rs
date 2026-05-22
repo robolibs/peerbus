@@ -1,64 +1,63 @@
 //! RAII handles for borrowed iceoryx2 samples.
 //!
-//! [`Loan<T>`] wraps an `iceoryx2::SampleMut`. The publisher fills
-//! the payload in place via `DerefMut` and hands it back to the
-//! publisher's `publish()`, which calls `send()` under the hood.
-//!
-//! [`Sample<T>`] wraps an `iceoryx2::Sample`. The subscriber reads
-//! the payload via `Deref`. Drop releases the underlying iceoryx2
-//! sample, which returns the SHM slot to the publisher's pool.
+//! Both [`Loan<T>`] and [`Sample<T>`] expose the header+payload split:
+//! `header()` returns the small Pod metadata (a `T::Header`), and
+//! `payload()` returns the variable-length byte slice. For fixed-Pod
+//! types, the payload slice has length 0 and all data is in the
+//! header. For heap-bearing types, the payload bytes are the
+//! `bytemuck::cast_slice` view of the type's internal `Vec<...>`.
 
-use core::fmt::Debug;
-use std::ops::{Deref, DerefMut};
-
-use bytemuck::Pod;
 use iceoryx2::prelude::*;
 use iceoryx2::sample::Sample as IoxSample;
 use iceoryx2::sample_mut::SampleMut as IoxSampleMut;
 
-/// Writable handle to an in-flight iceoryx2 sample. Derefs mutably
-/// to `T`. Hand back to `LocalPublisher::publish` to send.
-///
-/// On `Drop` without publish, the underlying iceoryx2 sample is
-/// released and the slot returns to the publisher's pool — same
-/// semantics as our old SHM allocator's rollback path.
-pub struct Loan<T: Pod + ZeroCopySend + Debug + 'static> {
-    pub(crate) inner: IoxSampleMut<ipc_threadsafe::Service, T, ()>,
+use crate::local::slot::Slot;
+
+/// Writable handle to an in-flight iceoryx2 sample.
+pub struct Loan<T: datapod::DataPod + 'static> {
+    pub(crate) inner: IoxSampleMut<ipc_threadsafe::Service, [u8], Slot<T::Header>>,
 }
 
-impl<T: Pod + ZeroCopySend + Debug + 'static> Deref for Loan<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
+impl<T: datapod::DataPod + 'static> Loan<T> {
+    /// Read the header.
+    pub fn header(&self) -> &T::Header {
+        &self.inner.user_header().0
+    }
+
+    /// Mutate the header. For fixed-Pod `T`, set this to the full value.
+    pub fn header_mut(&mut self) -> &mut T::Header {
+        &mut self.inner.user_header_mut().0
+    }
+
+    /// Read the variable-length payload bytes.
+    pub fn payload(&self) -> &[u8] {
         self.inner.payload()
     }
-}
 
-impl<T: Pod + ZeroCopySend + Debug + 'static> DerefMut for Loan<T> {
-    fn deref_mut(&mut self) -> &mut T {
+    /// Mutate the variable-length payload bytes. For heap-bearing
+    /// `T`, copy the cast bytes of the inner `Vec<...>` here.
+    pub fn payload_mut(&mut self) -> &mut [u8] {
         self.inner.payload_mut()
     }
 }
 
-/// Read-only handle to a received iceoryx2 sample. Derefs to `T`.
-/// On `Drop`, the iceoryx2 sample is released; the publisher's
-/// slot becomes available again once every subscriber has dropped
-/// its view.
-pub struct Sample<T: Pod + ZeroCopySend + Debug + 'static> {
-    pub(crate) inner: IoxSample<ipc_threadsafe::Service, T, ()>,
+/// Read-only handle to a received iceoryx2 sample.
+pub struct Sample<T: datapod::DataPod + 'static> {
+    pub(crate) inner: IoxSample<ipc_threadsafe::Service, [u8], Slot<T::Header>>,
 }
 
-impl<T: Pod + ZeroCopySend + Debug + 'static> Sample<T> {
-    /// iceoryx2 doesn't surface a per-publish sequence number on
-    /// the sample's `Header` in v0.7. We provide a placeholder for
-    /// API parity with the old SHM allocator's `Sample::sequence`.
+impl<T: datapod::DataPod + 'static> Sample<T> {
+    pub fn header(&self) -> &T::Header {
+        &self.inner.user_header().0
+    }
+
+    pub fn payload(&self) -> &[u8] {
+        self.inner.payload()
+    }
+
+    /// Placeholder for per-publish sequence number — iceoryx2 v0.7
+    /// doesn't surface this on the sample's header.
     pub fn sequence(&self) -> u64 {
         0
-    }
-}
-
-impl<T: Pod + ZeroCopySend + Debug + 'static> Deref for Sample<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        self.inner.payload()
     }
 }

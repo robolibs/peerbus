@@ -12,27 +12,19 @@
 //! still useful: it lets the calling runtime keep doing other work
 //! while the internal runtime handles QUIC traffic.
 
-use std::ops::{Deref, DerefMut};
-
 use crate::error::{Error, Result};
-use crate::transport::{PublisherOps, SubscriberOps};
+use crate::transport::{LocalPayload, PublisherOps, SubscriberOps};
 
 /// Async wrapper around any [`PublisherOps`] impl.
-///
-/// `T` is the payload type, `P` is the concrete publisher
-/// (`LocalPublisherTyped<T>`, `RemotePublisher<T>`, `AnyPublisher<T>`).
 pub struct AsyncPublisher<T, P> {
-    /// `Option` so we can `take()` the publisher for the duration of
-    /// a `spawn_blocking` hop and put it back after.
     inner: Option<P>,
     _phantom: std::marker::PhantomData<fn() -> T>,
 }
 
 impl<T, P> AsyncPublisher<T, P>
 where
-    T: Send + 'static,
+    T: LocalPayload + Send,
     P: PublisherOps<T> + Send + 'static,
-    P::Loan: DerefMut<Target = T> + Send + 'static,
 {
     pub fn new(inner: P) -> Self {
         Self {
@@ -41,11 +33,11 @@ where
         }
     }
 
-    /// Reserve a slot.
-    pub async fn loan(&mut self) -> Result<P::Loan> {
+    /// Reserve a slot with `byte_count` payload bytes.
+    pub async fn loan(&mut self, byte_count: usize) -> Result<P::Loan> {
         let mut inner = self.take_inner()?;
         let (inner, result) = tokio::task::spawn_blocking(move || {
-            let r = inner.loan();
+            let r = inner.loan(byte_count);
             (inner, r)
         })
         .await
@@ -86,9 +78,8 @@ pub struct AsyncSubscriber<T, S> {
 
 impl<T, S> AsyncSubscriber<T, S>
 where
-    T: Send + 'static,
+    T: LocalPayload + Send,
     S: SubscriberOps<T> + Send + 'static,
-    S::Sample: Deref<Target = T> + Send + 'static,
 {
     pub fn new(inner: S) -> Self {
         Self {

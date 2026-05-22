@@ -8,12 +8,9 @@
 use std::thread;
 use std::time::Duration;
 
-use bytemuck::{Pod, Zeroable};
-use iceoryx2::prelude::ZeroCopySend;
 use quicbit::{Error, LocalConfig, LocalService};
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Debug, ZeroCopySend)]
+#[datapod::datapod]
 struct Pose {
     x: f32,
     y: f32,
@@ -30,14 +27,14 @@ fn main() -> Result<(), Error> {
         let mut sub = sub_svc.subscriber().unwrap();
         for _ in 0..50 {
             if let Some(sample) = sub.take().unwrap() {
-                println!("pose: {:?}", *sample);
+                println!("pose: {:?}", sample.header());
             }
             thread::sleep(Duration::from_millis(20));
         }
     });
 
     for i in 0..5 {
-        pubr.send(Pose {
+        pubr.send(&Pose {
             x: i as f32,
             y: 2.0 * i as f32,
             yaw: 0.1 * i as f32,

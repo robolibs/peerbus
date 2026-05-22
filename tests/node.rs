@@ -7,15 +7,11 @@
 //! iroh. So all the local tests below use `.identity(...)` so the
 //! routing has something to match.
 
-
 use std::time::{Duration, Instant};
 
-use bytemuck::{Pod, Zeroable};
-use iceoryx2::prelude::ZeroCopySend;
 use quicbit::Node;
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq, ZeroCopySend)]
+#[datapod::datapod]
 struct Tick {
     seq: u32,
     payload: u32,
@@ -51,11 +47,11 @@ fn local_routing_two_nodes_same_process() {
         .subscriber::<Tick>("local_pub", "rover/pose")
         .expect("local subscribe");
 
-    pubr.send(Tick { seq: 1, payload: 42 }).unwrap();
+    pubr.send(&Tick { seq: 1, payload: 42 }).unwrap();
 
     let sample = poll_for(Duration::from_secs(2), || sub.take().unwrap())
         .expect("subscriber should receive");
-    assert_eq!(*sample, Tick { seq: 1, payload: 42 });
+    assert_eq!(*sample.header(), Tick { seq: 1, payload: 42 });
 }
 
 #[test]
@@ -153,10 +149,10 @@ fn name_based_local_routing() {
         .subscriber::<Tick>("sensors", "imu/raw")
         .unwrap();
 
-    pubr.send(Tick { seq: 7, payload: 700 }).unwrap();
+    pubr.send(&Tick { seq: 7, payload: 700 }).unwrap();
     let s = poll_for(Duration::from_secs(2), || sub.take().unwrap())
         .expect("subscriber should receive");
-    assert_eq!(*s, Tick { seq: 7, payload: 700 });
+    assert_eq!(*s.header(), Tick { seq: 7, payload: 700 });
 }
 
 #[test]

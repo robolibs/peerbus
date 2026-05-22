@@ -64,12 +64,9 @@ One entry point: `Node`. Two strings: who **I** am, who I'm
 listening to.
 
 ```rust,ignore
-use bytemuck::{Pod, Zeroable};
-use iceoryx2::prelude::ZeroCopySend;
 use quicbit::Node;
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Debug, ZeroCopySend)]
+#[datapod::datapod]
 struct Pose { x: f32, y: f32, yaw: f32 }
 
 let node = Node::builder().identity("rover-a").no_relay().bind()?;
@@ -77,9 +74,9 @@ let node = Node::builder().identity("rover-a").no_relay().bind()?;
 let mut pubr = node.publisher::<Pose>("rover/pose")?;
 let mut sub  = node.subscriber::<Pose>("rover-a", "rover/pose")?;
 
-pubr.send(Pose { x: 1.0, y: 2.0, yaw: 0.1 })?;
+pubr.send(&Pose { x: 1.0, y: 2.0, yaw: 0.1 })?;
 if let Some(s) = sub.take()? {
-    println!("pose: {:?}", *s);
+    println!("pose: {:?}", s.header());
 }
 # Ok::<_, quicbit::Error>(())
 ```
@@ -148,21 +145,35 @@ affected.
 
 ### Payload type requirements
 
-Every `T` you publish/subscribe must satisfy three traits:
+Every `T` you publish/subscribe must implement
+[`datapod::DataPod`](https://codeberg.org/robolibs/datapod). The
+trait splits a message into:
 
-- `bytemuck::Pod + bytemuck::Zeroable` — fixed memory layout for
-  the iroh wire path.
-- `iceoryx2::ZeroCopySend` — marker that the type may ride in
-  shared memory between processes.
-- `Debug` — required by iceoryx2's `Sample` / `SampleMut`.
+- a Pod **header** (`T::Header`) that rides in iceoryx2's `user_header`
+  slot / iroh's frame prefix, and
+- an optional byte **payload** (`T::Payload = ()` or `[u8]`) for
+  variable-length data (e.g. `Polygon`, `Grid`, `Linestring`).
 
-In practice that's one struct annotation:
+For fixed-size messages (a `Pose`, `Joint`, custom struct …) the
+type IS its own header and there's no byte payload. One annotation:
 
 ```rust,ignore
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Debug, ZeroCopySend)]
-struct MyMessage { /* ... */ }
+#[datapod::datapod]
+struct MyMessage {
+    x: f32,
+    y: f32,
+    yaw: f32,
+}
 ```
+
+That emits the `#[repr(C)]`, `bytemuck::Pod + Zeroable`,
+`iceoryx2::ZeroCopySend`, and `DataPod` impls. Heap-bearing types
+annotate one `Vec<...>` field with `#[dp(bytes)]`; see datapod's
+docs for the full pattern.
+
+Samples expose the split via `sample.header()` (`&T::Header`) and
+`sample.payload()` (`&[u8]`). For fixed-Pod `T`, `T::Header = T`
+and the payload slice has length 0.
 
 ### Identity
 
@@ -188,11 +199,12 @@ use quicbit::{LocalConfig, LocalReqRespService};
 let svc = LocalReqRespService::<Ping, Pong>::create("calc", LocalConfig::default())?;
 let mut server = svc.server()?;
 while let Some((req, reply)) = server.take_request()? {
-    reply.respond(handle(&*req))?;
+    reply.respond(&handle(req.header()))?;
 }
 
 let mut client = svc.client()?;
-let pong: Pong = client.call(Ping { /* ... */ })?;
+let resp = client.call(&Ping { /* ... */ })?;
+let pong: Pong = *resp.header();
 # Ok::<_, quicbit::Error>(())
 ```
 

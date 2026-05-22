@@ -1,16 +1,19 @@
 //! Typed entrypoint to the iceoryx2-backed local transport.
 //!
-//! Replaces the previous home-grown SHM allocator. A
-//! `LocalService<T>` is one iceoryx2 publish/subscribe service
-//! scoped to one payload type `T`. Multiple publishers and
-//! subscribers can attach to the same service name on the same
-//! host; iceoryx2 handles SHM allocation, slot recycling, and
-//! cross-process discovery.
+//! Each `LocalService<T>` maps to one iceoryx2 publish/subscribe
+//! service. The mapping uses iceoryx2's `[u8]` slice payload for
+//! variable-length data plus its `UserHeader` slot for the small
+//! Pod header `T::Header`. This unifies both shapes of `DataPod`:
+//!
+//! - **Fixed-Pod `T`** (`type Header = T; type Payload = ()`): the
+//!   entire value rides in `user_header`; the slice payload has
+//!   length 0.
+//! - **Heap-bearing `T`** (`type Header = TH; type Payload = [u8]`):
+//!   the metadata rides in `user_header`; the cast bytes of `T`'s
+//!   internal `Vec<...>` ride in the slice payload.
 
-use core::fmt::Debug;
 use std::sync::Arc;
 
-use bytemuck::Pod;
 use iceoryx2::node::Node as IoxNode;
 use iceoryx2::node::NodeBuilder;
 use iceoryx2::port::publisher::Publisher as IoxPublisher;
@@ -20,24 +23,20 @@ use iceoryx2::service::port_factory::publish_subscribe::PortFactory;
 
 use crate::error::{Error, Result};
 use crate::local::handle::{Loan, Sample};
+use crate::local::slot::Slot;
 
 /// Configurable parameters. iceoryx2 wires its own defaults so
 /// most fields are advisory; we keep the struct for API parity
 /// with the old allocator and to leave room for future tuning.
 #[derive(Debug, Clone)]
 pub struct LocalConfig {
-    /// Maximum concurrent publishers that may attach to the
-    /// service. iceoryx2 default is 2; we expose the knob.
     pub max_publishers: u32,
-    /// Maximum concurrent subscribers.
     pub max_subscribers: u32,
-    /// Per-subscriber sample buffer size. Subscribers that fall
-    /// behind by more than this number of unread samples observe
-    /// loss.
     pub subscriber_buffer: u32,
-    /// History length kept on the publisher side for late-joining
-    /// subscribers.
     pub history_depth: u32,
+    /// Default max byte-count provisioned per loan. Increase for
+    /// services that ship large heap payloads (e.g. images).
+    pub max_payload_bytes: usize,
 }
 
 impl Default for LocalConfig {
@@ -47,36 +46,30 @@ impl Default for LocalConfig {
             max_subscribers: 8,
             subscriber_buffer: 16,
             history_depth: 1,
+            max_payload_bytes: 16 * 1024 * 1024,
         }
     }
 }
 
-/// Typed handle to an iceoryx2 publish-subscribe service.
-///
-/// Cheap to clone — internally an `Arc<IoxNode>` and an
-/// `Arc<PortFactory>`. The first process to call `create_or_open`
-/// for a given name owns the service definition; subsequent
-/// callers attach.
-pub struct LocalService<T: Pod + ZeroCopySend + Debug + 'static> {
+/// Typed handle to an iceoryx2 publish-subscribe service. Cheap
+/// to clone — internally an `Arc<IoxNode>` and an `Arc<PortFactory>`.
+pub struct LocalService<T: datapod::DataPod + 'static> {
     iox_node: Arc<IoxNode<ipc_threadsafe::Service>>,
-    factory: Arc<PortFactory<ipc_threadsafe::Service, T, ()>>,
+    factory: Arc<PortFactory<ipc_threadsafe::Service, [u8], Slot<T::Header>>>,
+    cfg: LocalConfig,
 }
 
-impl<T: Pod + ZeroCopySend + Debug + 'static> Clone for LocalService<T> {
+impl<T: datapod::DataPod + 'static> Clone for LocalService<T> {
     fn clone(&self) -> Self {
         Self {
             iox_node: self.iox_node.clone(),
             factory: self.factory.clone(),
+            cfg: self.cfg.clone(),
         }
     }
 }
 
-impl<T: Pod + ZeroCopySend + Debug + 'static> LocalService<T> {
-    /// Open the service named `name`, creating it if necessary.
-    /// The first caller pins the QoS settings from `cfg`;
-    /// subsequent attaches reuse the existing definition (their
-    /// `cfg` is ignored beyond compatibility checks iceoryx2
-    /// performs internally).
+impl<T: datapod::DataPod + 'static> LocalService<T> {
     pub fn open_or_create(name: &str, cfg: LocalConfig) -> Result<Self> {
         let iox_node = NodeBuilder::new()
             .create::<ipc_threadsafe::Service>()
@@ -88,7 +81,8 @@ impl<T: Pod + ZeroCopySend + Debug + 'static> LocalService<T> {
 
         let factory = iox_node
             .service_builder(&service_name)
-            .publish_subscribe::<T>()
+            .publish_subscribe::<[u8]>()
+            .user_header::<Slot<T::Header>>()
             .max_publishers(cfg.max_publishers as usize)
             .max_subscribers(cfg.max_subscribers as usize)
             .subscriber_max_buffer_size(cfg.subscriber_buffer as usize)
@@ -99,25 +93,18 @@ impl<T: Pod + ZeroCopySend + Debug + 'static> LocalService<T> {
         Ok(Self {
             iox_node: Arc::new(iox_node),
             factory: Arc::new(factory),
+            cfg,
         })
     }
 
-    /// Alias preserved for API parity with the old allocator.
     pub fn create(name: &str, cfg: LocalConfig) -> Result<Self> {
         Self::open_or_create(name, cfg)
     }
 
-    /// Alias preserved for API parity. Same as `open_or_create`
-    /// with default QoS.
     pub fn attach(name: &str) -> Result<Self> {
         Self::open_or_create(name, LocalConfig::default())
     }
 
-    /// Open an existing service — does NOT create one if missing.
-    /// Returns `Err` if no other process has created the service.
-    /// quicbit uses this for same-host detection: if a publisher
-    /// is registered for the topic name we route locally;
-    /// otherwise we fall through to iroh.
     pub fn open_existing(name: &str) -> Result<Self> {
         let iox_node = NodeBuilder::new()
             .create::<ipc_threadsafe::Service>()
@@ -129,31 +116,28 @@ impl<T: Pod + ZeroCopySend + Debug + 'static> LocalService<T> {
 
         let factory = iox_node
             .service_builder(&service_name)
-            .publish_subscribe::<T>()
+            .publish_subscribe::<[u8]>()
+            .user_header::<Slot<T::Header>>()
             .open()
             .map_err(|e| Error::Other(format!("iox service open: {e}")))?;
 
         Ok(Self {
             iox_node: Arc::new(iox_node),
             factory: Arc::new(factory),
+            cfg: LocalConfig::default(),
         })
     }
 
-    /// Number of publishers currently attached to this service —
-    /// useful as a "is anyone broadcasting?" signal.
     pub fn publisher_count(&self) -> usize {
-        use iceoryx2::service::port_factory::publish_subscribe::PortFactory as PF;
-        // PortFactory's dynamic_config() lives on a trait, drag it in.
         use iceoryx2::service::port_factory::PortFactory as _;
-        let _: &PF<ipc_threadsafe::Service, T, ()> = &self.factory;
         self.factory.dynamic_config().number_of_publishers()
     }
 
-    /// Build a publisher.
     pub fn publisher(&self) -> Result<LocalPublisher<T>> {
         let publisher = self
             .factory
             .publisher_builder()
+            .initial_max_slice_len(self.cfg.max_payload_bytes)
             .create()
             .map_err(|e| Error::Other(format!("iox publisher_builder: {e}")))?;
         Ok(LocalPublisher {
@@ -162,7 +146,6 @@ impl<T: Pod + ZeroCopySend + Debug + 'static> LocalService<T> {
         })
     }
 
-    /// Build a subscriber whose cursor starts at the next publish.
     pub fn subscriber(&self) -> Result<LocalSubscriber<T>> {
         let subscriber = self
             .factory
@@ -176,58 +159,52 @@ impl<T: Pod + ZeroCopySend + Debug + 'static> LocalService<T> {
     }
 }
 
-/// Publisher port. Loan a slot, write the payload in place,
-/// publish.
-pub struct LocalPublisher<T: Pod + ZeroCopySend + Debug + 'static> {
-    inner: IoxPublisher<ipc_threadsafe::Service, T, ()>,
+/// Publisher port. Loan a slot (specifying byte count for the
+/// payload), fill the header + bytes, publish.
+pub struct LocalPublisher<T: datapod::DataPod + 'static> {
+    pub(crate) inner: IoxPublisher<ipc_threadsafe::Service, [u8], Slot<T::Header>>,
     _service: LocalService<T>,
 }
 
-impl<T: Pod + ZeroCopySend + Debug + 'static> LocalPublisher<T> {
-    /// Loan an in-flight slot. Returned [`Loan<T>`] derefs mutably
-    /// to a zero-initialised `T` living in shared memory. Mutate
-    /// in place, then call [`publish`](Self::publish).
-    pub fn loan(&mut self) -> Result<Loan<T>> {
-        // `loan_uninit` gives a `SampleMut<MaybeUninit<T>>`; we
-        // initialise it to all-zeros (which is a valid Pod value)
-        // so the caller can DerefMut into a `&mut T` without
-        // first having to assemble the full struct.
+impl<T: datapod::DataPod + 'static> LocalPublisher<T> {
+    /// Loan an in-flight slot with `byte_count` payload bytes. The
+    /// header is zero-initialised; the payload bytes are
+    /// uninitialised (write before publish).
+    pub fn loan(&mut self, byte_count: usize) -> Result<Loan<T>> {
         let uninit = self
             .inner
-            .loan_uninit()
-            .map_err(|e| Error::Other(format!("iox loan_uninit: {e}")))?;
-        let initialised = uninit.write_payload(T::zeroed());
+            .loan_slice_uninit(byte_count)
+            .map_err(|e| Error::Other(format!("iox loan_slice_uninit: {e}")))?;
+        // Zero-init the payload so callers can safely overwrite it.
+        let initialised = uninit.write_from_fn(|_| 0u8);
         Ok(Loan { inner: initialised })
     }
 
-    /// Hand the loan back to the publisher; the iceoryx2 backend
-    /// dispatches the sample to all attached subscribers without a
-    /// copy.
+    /// Hand the loan back to the publisher.
     pub fn publish(&mut self, loan: Loan<T>) -> Result<u64> {
         loan.inner
             .send()
             .map_err(|e| Error::Other(format!("iox send: {e}")))?;
-        Ok(0) // iceoryx2 doesn't surface a per-publish seq #
+        Ok(0)
     }
 
-    /// Convenience: loan + write + publish.
-    pub fn send(&mut self, value: T) -> Result<u64> {
-        let mut loan = self.loan()?;
-        *loan = value;
+    /// Convenience: build header + bytes from a `&T` and send.
+    pub fn send(&mut self, value: &T) -> Result<u64> {
+        let bytes = value.payload_bytes();
+        let mut loan = self.loan(bytes.len())?;
+        *loan.header_mut() = value.header();
+        loan.payload_mut().copy_from_slice(bytes);
         self.publish(loan)
     }
 }
 
 /// Subscriber port. Non-blocking `take`.
-pub struct LocalSubscriber<T: Pod + ZeroCopySend + Debug + 'static> {
-    inner: IoxSubscriber<ipc_threadsafe::Service, T, ()>,
+pub struct LocalSubscriber<T: datapod::DataPod + 'static> {
+    pub(crate) inner: IoxSubscriber<ipc_threadsafe::Service, [u8], Slot<T::Header>>,
     _service: LocalService<T>,
 }
 
-impl<T: Pod + ZeroCopySend + Debug + 'static> LocalSubscriber<T> {
-    /// Take the next sample if available. Returns
-    /// `Ok(Some(Sample))` when a sample is ready, `Ok(None)` when
-    /// the queue is empty, `Err` on backend failure.
+impl<T: datapod::DataPod + 'static> LocalSubscriber<T> {
     pub fn take(&mut self) -> Result<Option<Sample<T>>> {
         match self
             .inner

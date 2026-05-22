@@ -18,12 +18,9 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use bytemuck::{Pod, Zeroable};
-use iceoryx2::prelude::ZeroCopySend;
 use quicbit::{LocalConfig, LocalService};
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Debug, ZeroCopySend)]
+#[datapod::datapod]
 struct Sample {
     sent_nanos: u64,
     seq: u64,
@@ -53,6 +50,7 @@ fn main() {
             max_subscribers: 2,
             subscriber_buffer: 64,
             history_depth: 1,
+            ..LocalConfig::default()
         },
     )
     .expect("create");
@@ -73,11 +71,12 @@ fn main() {
         loop {
             match sub.take() {
                 Ok(Some(s)) => {
-                    total_latency_ns += (now_ns() - s.sent_nanos) as u128;
+                    let h = s.header();
+                    total_latency_ns += (now_ns() - h.sent_nanos) as u128;
                     received += 1;
-                    last_seen_seq = s.seq;
+                    last_seen_seq = h.seq;
                     last_progress = Instant::now();
-                    if s.seq == total {
+                    if h.seq == total {
                         break;
                     }
                 }
@@ -103,7 +102,7 @@ fn main() {
     let mut backoffs: u64 = 0;
     while emitted < total {
         let loan_start = Instant::now();
-        let mut loan = match pubr.loan() {
+        let mut loan = match pubr.loan(0) {
             Ok(l) => l,
             Err(_) => {
                 // Slot pool full — back off briefly.
@@ -112,8 +111,9 @@ fn main() {
                 continue;
             }
         };
-        loan.sent_nanos = now_ns();
-        loan.seq = emitted + 1;
+        let h = loan.header_mut();
+        h.sent_nanos = now_ns();
+        h.seq = emitted + 1;
         pubr.publish(loan).expect("publish");
         publish_latency_ns += loan_start.elapsed().as_nanos();
         emitted += 1;

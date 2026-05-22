@@ -8,11 +8,6 @@
 //! simulates a slowly-moving robot reporting its pose every 100 ms
 //! over the topic `"rover/pose"`. The subscriber attaches by the
 //! publisher's identity name and prints what it sees.
-//!
-//! Because `datapod::Pose` derives `Pod + ZeroCopySend`, it goes
-//! straight into / out of the SHM slot — no serialization step,
-//! no schema metadata on the wire. Both sides just `use
-//! datapod::Pose;` and the Rust type system enforces agreement.
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -52,7 +47,7 @@ fn main() -> quicbit::Result<()> {
                     (0.05 * i as f64).sin(),
                 ),
             };
-            pubr.send(pose).expect("publish");
+            pubr.send(&pose).expect("publish");
             thread::sleep(Duration::from_millis(100));
         }
     });
@@ -63,15 +58,16 @@ fn main() -> quicbit::Result<()> {
         while Instant::now() < deadline && seen < 5 {
             match sub.take() {
                 Ok(Some(s)) => {
+                    let h = s.header();
                     println!(
                         "got pose:  ({:.2}, {:.2}, {:.2})   q=({:.3}, {:.3}, {:.3}, {:.3})",
-                        s.point.x,
-                        s.point.y,
-                        s.point.z,
-                        s.rotation.w,
-                        s.rotation.x,
-                        s.rotation.y,
-                        s.rotation.z,
+                        h.point.x,
+                        h.point.y,
+                        h.point.z,
+                        h.rotation.w,
+                        h.rotation.x,
+                        h.rotation.y,
+                        h.rotation.z,
                     );
                     seen += 1;
                 }

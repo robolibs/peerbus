@@ -34,7 +34,7 @@ tracing = ["dep:tracing"]
 config = ["dep:serde_json", "dep:toml"]
 
 [dependencies]
-datapod = { git = "https://codeberg.org/robolibs/datapod.git", rev = "9c080d97c4edd7c13762fb933ba8a255066711e9" }
+datapod = { git = "https://codeberg.org/robolibs/datapod.git", rev = "4547e328826fb4fd788b7acac29c2f70efc62746" }
 thiserror = "2.0"
 bytes = "1"
 bon = "3"
@@ -72,11 +72,4 @@ proptest = { version = "1.5", default-features = false, features = ["std"] }
 # wirebit is quicbit's TEST substrate, not a runtime dep. iroh wraps
 # its own UDP socket so plugging wirebit's TunLink underneath is
 # nontrivial; see PLAN §Phase 6 for the current testing strategy.
-wirebit = { path = "../wirebit" }
-
-# Local override for development: the ZeroCopySend derives on
-# datapod's Pod types live in a staged-but-not-yet-pushed commit
-# locally. Drop this block once that commit lands on codeberg
-# (then bump the `rev = ...` above to the published SHA).
-[patch."https://codeberg.org/robolibs/datapod.git"]
-datapod = { path = "../datapod" }
+wirebit = { git = "https://codeberg.org/robolibs/wirebit.git", rev = "f4b72c4c2c16563a8897e3f7f0fe6efbfee97441" }

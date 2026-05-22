@@ -5,16 +5,12 @@
 //! sample round-trips. Verifies the Phase 3 wire protocol end-to-end
 //! without relying on external relay infrastructure.
 
-
 use std::time::{Duration, Instant};
 
-use bytemuck::{Pod, Zeroable};
-use iceoryx2::prelude::ZeroCopySend;
 use quicbit::transport::{PublisherOps, SubscriberOps};
 use quicbit::{Node, RemoteTransport, Transport};
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq, ZeroCopySend)]
+#[datapod::datapod]
 struct Tick {
     seq: u32,
     payload: u32,
@@ -51,10 +47,10 @@ fn remote_loopback_pub_sub_roundtrip() {
     // publish would just be missed if no subscriber stream is open
     // yet.)
     let connect_deadline = Instant::now() + Duration::from_secs(5);
-    let mut received = None;
+    let mut received: Option<Tick> = None;
     while Instant::now() < connect_deadline && received.is_none() {
-        let mut loan = pubr.loan().unwrap();
-        *loan = Tick {
+        let mut loan = pubr.loan(0).unwrap();
+        loan.header = Tick {
             seq: 1,
             payload: 9999,
         };
@@ -64,8 +60,8 @@ fn remote_loopback_pub_sub_roundtrip() {
         // The subscriber's mpsc may have multiple messages buffered;
         // drain until we find one matching our payload.
         while let Some(s) = sub.take().unwrap() {
-            if s.payload == 9999 {
-                received = Some(*s);
+            if s.header().payload == 9999 {
+                received = Some(*s.header());
                 break;
             }
         }
@@ -101,19 +97,19 @@ fn remote_loopback_multi_subscriber_fanout() {
     let mut got_a = false;
     let mut got_b = false;
     while Instant::now() < deadline && !(got_a && got_b) {
-        let mut loan = pubr.loan().unwrap();
-        *loan = Tick { seq: 1, payload: 7777 };
+        let mut loan = pubr.loan(0).unwrap();
+        loan.header = Tick { seq: 1, payload: 7777 };
         pubr.publish(loan).unwrap();
         std::thread::sleep(Duration::from_millis(50));
 
         while let Some(s) = sub_a.take().unwrap() {
-            if s.payload == 7777 {
+            if s.header().payload == 7777 {
                 got_a = true;
                 break;
             }
         }
         while let Some(s) = sub_b.take().unwrap() {
-            if s.payload == 7777 {
+            if s.header().payload == 7777 {
                 got_b = true;
                 break;
             }
@@ -161,10 +157,10 @@ fn node_subscriber_survives_publisher_drop() {
     let mut got = false;
     let deadline = Instant::now() + Duration::from_secs(3);
     while !got && Instant::now() < deadline {
-        pubr.send(Tick { seq: 1, payload: 100 }).unwrap();
+        pubr.send(&Tick { seq: 1, payload: 100 }).unwrap();
         std::thread::sleep(Duration::from_millis(50));
         while let Some(s) = sub.take().expect("take should not error during normal op") {
-            if s.payload == 100 {
+            if s.header().payload == 100 {
                 got = true;
                 break;
             }

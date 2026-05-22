@@ -13,13 +13,10 @@
 //!   if the service doesn't exist on this host, it dials over iroh.
 //!
 //! ```no_run
-//! use bytemuck::{Pod, Zeroable};
-//! use iceoryx2::prelude::ZeroCopySend;
 //! use quicbit::Node;
 //!
 //! # fn main() -> quicbit::Result<()> {
-//! #[repr(C)]
-//! #[derive(Clone, Copy, Pod, Zeroable, Debug, ZeroCopySend)]
+//! #[datapod::datapod]
 //! struct Pose { x: f32, y: f32, yaw: f32 }
 //!
 //! let node = Node::builder().identity("rover-a").no_relay().bind()?;
@@ -27,9 +24,9 @@
 //! let mut pubr = node.publisher::<Pose>("rover/pose")?;
 //! let mut sub  = node.subscriber::<Pose>("rover-a", "rover/pose")?;
 //!
-//! pubr.send(Pose { x: 1.0, y: 2.0, yaw: 0.1 })?;
+//! pubr.send(&Pose { x: 1.0, y: 2.0, yaw: 0.1 })?;
 //! if let Some(s) = sub.take()? {
-//!     println!("pose: {:?}", *s);
+//!     println!("pose: {:?}", s.header());
 //! }
 //! # Ok(()) }
 //! ```

@@ -25,11 +25,9 @@
 use std::any::type_name;
 use std::collections::HashMap;
 use std::marker::PhantomData;
-use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use bytemuck::Pod;
 use iroh::endpoint::presets;
 use iroh::endpoint::Connection;
 use iroh::endpoint::{RecvStream, SendStream};
@@ -417,41 +415,37 @@ impl<T> RemotePublisher<T> {
 }
 
 /// Owned writable handle the publisher fills before `publish`.
-pub struct RemoteLoan<T: Pod> {
-    value: T,
+///
+/// Mirrors the local transport's header+payload split: `header` is
+/// the small Pod metadata (a `T::Header`), `payload` is the
+/// variable-length byte buffer.
+pub struct RemoteLoan<T: LocalPayload> {
+    pub header: T::Header,
+    pub payload: Vec<u8>,
 }
 
-impl<T: Pod> RemoteLoan<T> {
-    fn new() -> Self {
+impl<T: LocalPayload> RemoteLoan<T> {
+    fn new(byte_count: usize) -> Self {
         Self {
-            // SAFETY: `T: Pod` implies all-zeros is a valid value.
-            value: bytemuck::Zeroable::zeroed(),
+            header: <T::Header as bytemuck::Zeroable>::zeroed(),
+            payload: vec![0u8; byte_count],
         }
-    }
-}
-
-impl<T: Pod> Deref for RemoteLoan<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        &self.value
-    }
-}
-
-impl<T: Pod> DerefMut for RemoteLoan<T> {
-    fn deref_mut(&mut self) -> &mut T {
-        &mut self.value
     }
 }
 
 impl<T: LocalPayload> PublisherOps<T> for RemotePublisher<T> {
     type Loan = RemoteLoan<T>;
 
-    fn loan(&mut self) -> Result<Self::Loan> {
-        Ok(RemoteLoan::new())
+    fn loan(&mut self, byte_count: usize) -> Result<Self::Loan> {
+        Ok(RemoteLoan::new(byte_count))
     }
 
     fn publish(&mut self, loan: Self::Loan) -> Result<u64> {
-        let bytes: Arc<[u8]> = Arc::from(bytemuck::bytes_of(&loan.value).to_vec().into_boxed_slice());
+        let header_bytes = bytemuck::bytes_of(&loan.header);
+        let mut frame = Vec::with_capacity(header_bytes.len() + loan.payload.len());
+        frame.extend_from_slice(header_bytes);
+        frame.extend_from_slice(&loan.payload);
+        let bytes: Arc<[u8]> = Arc::from(frame.into_boxed_slice());
         // `broadcast::send` returns Err only when there are no
         // subscribers; treat that as a no-op rather than an error,
         // but count the drop so operators can see it.
@@ -505,16 +499,22 @@ impl<T> RemoteSubscriber<T> {
     }
 }
 
-/// Owned sample handed back from the subscriber. Decoded once on
-/// receive; `Deref` is a plain field read.
-pub struct RemoteSample<T: Pod> {
-    value: T,
+/// Owned sample handed back from the subscriber. The wire frame
+/// is split into the Pod header (decoded eagerly via
+/// `bytemuck::from_bytes`) and the trailing variable-length byte
+/// payload (kept as `Vec<u8>` for the caller to reinterpret).
+pub struct RemoteSample<T: LocalPayload> {
+    pub header: T::Header,
+    pub payload: Vec<u8>,
 }
 
-impl<T: Pod> Deref for RemoteSample<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        &self.value
+impl<T: LocalPayload> RemoteSample<T> {
+    pub fn header(&self) -> &T::Header {
+        &self.header
+    }
+
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
     }
 }
 
@@ -524,19 +524,18 @@ impl<T: LocalPayload> SubscriberOps<T> for RemoteSubscriber<T> {
     fn take(&mut self) -> Result<Option<Self::Sample>> {
         match self.rx.try_recv() {
             Ok(bytes) => {
-                if bytes.len() != std::mem::size_of::<T>() {
+                let header_size = std::mem::size_of::<T::Header>();
+                if bytes.len() < header_size {
                     return Err(Error::Remote(format!(
-                        "frame size mismatch: got {} bytes, expected {}",
+                        "frame too small: got {} bytes, expected at least {} (header)",
                         bytes.len(),
-                        std::mem::size_of::<T>()
+                        header_size,
                     )));
                 }
-                // SAFETY: `T: Pod` guarantees the byte representation
-                // is valid; the size check above ensures alignment-
-                // free transmute is in-bounds.
-                let value: T = *bytemuck::from_bytes(&bytes);
+                let header: T::Header = *bytemuck::from_bytes(&bytes[..header_size]);
+                let payload = bytes[header_size..].to_vec();
                 self.received.fetch_add(1, Ordering::Relaxed);
-                Ok(Some(RemoteSample { value }))
+                Ok(Some(RemoteSample { header, payload }))
             }
             Err(broadcast::error::TryRecvError::Empty) => Ok(None),
             Err(broadcast::error::TryRecvError::Closed) => {

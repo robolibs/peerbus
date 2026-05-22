@@ -15,6 +15,7 @@
 pub mod handle;
 pub mod reqresp;
 pub mod service;
+pub(crate) mod slot;
 pub mod transport;
 
 pub use handle::{Loan, Sample};

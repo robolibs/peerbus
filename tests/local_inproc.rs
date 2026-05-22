@@ -14,16 +14,18 @@
 //!   old SHM ring and need their own dedicated tests in a later
 //!   pass.
 
-use bytemuck::{Pod, Zeroable};
-use iceoryx2::prelude::ZeroCopySend;
 use quicbit::{LocalConfig, LocalService};
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq, ZeroCopySend)]
+#[datapod::datapod]
 struct Pose {
     x: f32,
     y: f32,
     yaw: f32,
+}
+
+#[datapod::datapod]
+struct U32Box {
+    value: u32,
 }
 
 fn unique_name(stem: &str) -> String {
@@ -43,12 +45,12 @@ fn loan_publish_take_roundtrip() {
     let mut pubr = svc.publisher().unwrap();
     let mut sub = svc.subscriber().unwrap();
 
-    let mut loan = pubr.loan().unwrap();
-    *loan = Pose { x: 1.0, y: 2.0, yaw: 0.5 };
+    let mut loan = pubr.loan(0).unwrap();
+    *loan.header_mut() = Pose { x: 1.0, y: 2.0, yaw: 0.5 };
     pubr.publish(loan).unwrap();
 
     let sample = sub.take().unwrap().expect("a sample should be available");
-    assert_eq!(*sample, Pose { x: 1.0, y: 2.0, yaw: 0.5 });
+    assert_eq!(*sample.header(), Pose { x: 1.0, y: 2.0, yaw: 0.5 });
 }
 
 #[test]
@@ -67,7 +69,7 @@ fn fanout_to_two_subscribers() {
     let mut sub_a = svc.subscriber().unwrap();
     let mut sub_b = svc.subscriber().unwrap();
 
-    pubr.send(Pose { x: 1.0, y: 2.0, yaw: 3.0 }).unwrap();
+    pubr.send(&Pose { x: 1.0, y: 2.0, yaw: 3.0 }).unwrap();
 
     let a = sub_a
         .take()
@@ -77,8 +79,8 @@ fn fanout_to_two_subscribers() {
         .take()
         .unwrap()
         .expect("subscriber B should see the publish");
-    assert_eq!(*a, *b);
-    assert_eq!(*a, Pose { x: 1.0, y: 2.0, yaw: 3.0 });
+    assert_eq!(*a.header(), *b.header());
+    assert_eq!(*a.header(), Pose { x: 1.0, y: 2.0, yaw: 3.0 });
 }
 
 #[test]
@@ -87,22 +89,22 @@ fn late_subscriber_eventually_sees_new_publishes() {
     // `history_depth` retained samples (default 1). Either way it
     // MUST also see whatever the publisher emits afterwards.
     let svc =
-        LocalService::<u32>::create(&unique_name("late"), LocalConfig::default()).unwrap();
+        LocalService::<U32Box>::create(&unique_name("late"), LocalConfig::default()).unwrap();
     let mut pubr = svc.publisher().unwrap();
 
-    pubr.send(1).unwrap();
-    pubr.send(2).unwrap();
+    pubr.send(&U32Box { value: 1 }).unwrap();
+    pubr.send(&U32Box { value: 2 }).unwrap();
 
     let mut sub = svc.subscriber().unwrap();
     // Drain any retained historical samples first.
     while sub.take().unwrap().is_some() {}
 
-    pubr.send(99).unwrap();
+    pubr.send(&U32Box { value: 99 }).unwrap();
 
     // Poll briefly for the post-attach publish.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
-        if let Some(s) = sub.take().unwrap() && *s == 99 {
+        if let Some(s) = sub.take().unwrap() && s.header().value == 99 {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));

@@ -3,11 +3,7 @@
 //! Each `LocalTransport` is bound to one service name. Publisher
 //! and subscriber construction lazily open the iceoryx2 service.
 
-use core::fmt::Debug;
 use std::marker::PhantomData;
-
-use bytemuck::Pod;
-use iceoryx2::prelude::ZeroCopySend;
 
 use crate::error::Result;
 use crate::local::handle::{Loan, Sample};
@@ -29,7 +25,7 @@ impl LocalTransport {
         }
     }
 
-    fn open<T: Pod + ZeroCopySend + Debug + 'static>(&self) -> Result<LocalService<T>> {
+    fn open<T: datapod::DataPod + 'static>(&self) -> Result<LocalService<T>> {
         LocalService::<T>::open_or_create(&self.name, self.cfg.clone())
     }
 }
@@ -59,7 +55,7 @@ impl Transport for LocalTransport {
 
 /// Holds a `LocalService` to keep the iceoryx2 service alive for
 /// the publisher's lifetime.
-pub struct LocalPublisherTyped<T: Pod + ZeroCopySend + Debug + 'static> {
+pub struct LocalPublisherTyped<T: datapod::DataPod + 'static> {
     inner: LocalPublisher<T>,
     _service: LocalService<T>,
     _phantom: PhantomData<fn() -> T>,
@@ -68,8 +64,8 @@ pub struct LocalPublisherTyped<T: Pod + ZeroCopySend + Debug + 'static> {
 impl<T: LocalPayload> PublisherOps<T> for LocalPublisherTyped<T> {
     type Loan = Loan<T>;
 
-    fn loan(&mut self) -> Result<Self::Loan> {
-        self.inner.loan()
+    fn loan(&mut self, byte_count: usize) -> Result<Self::Loan> {
+        self.inner.loan(byte_count)
     }
 
     fn publish(&mut self, loan: Self::Loan) -> Result<u64> {
@@ -77,7 +73,7 @@ impl<T: LocalPayload> PublisherOps<T> for LocalPublisherTyped<T> {
     }
 }
 
-pub struct LocalSubscriberTyped<T: Pod + ZeroCopySend + Debug + 'static> {
+pub struct LocalSubscriberTyped<T: datapod::DataPod + 'static> {
     inner: LocalSubscriber<T>,
     _service: LocalService<T>,
     _phantom: PhantomData<fn() -> T>,
@@ -97,8 +93,8 @@ impl<T: LocalPayload> SubscriberOps<T> for LocalSubscriberTyped<T> {
 impl<T: LocalPayload> PublisherOps<T> for LocalPublisher<T> {
     type Loan = Loan<T>;
 
-    fn loan(&mut self) -> Result<Self::Loan> {
-        LocalPublisher::loan(self)
+    fn loan(&mut self, byte_count: usize) -> Result<Self::Loan> {
+        LocalPublisher::loan(self, byte_count)
     }
 
     fn publish(&mut self, loan: Self::Loan) -> Result<u64> {
