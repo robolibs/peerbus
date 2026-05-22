@@ -66,3 +66,23 @@ macro_rules! qb_trace {
 macro_rules! qb_trace {
     ($($t:tt)*) => {{}};
 }
+
+/// Take a `LockResult` and recover poisoned guards. Emits a
+/// `qb_warn!` when poisoning is observed so the silent-recovery
+/// case still shows up in logs.
+pub(crate) fn recover_poison<T>(
+    res: std::sync::LockResult<T>,
+    #[cfg_attr(not(feature = "tracing"), allow(unused_variables))] lock: &'static str,
+) -> T {
+    match res {
+        Ok(g) => g,
+        Err(p) => {
+            crate::qb_warn!(
+                target: "quicbit",
+                lock = lock,
+                "recovering from poisoned mutex; a thread panicked while holding it"
+            );
+            p.into_inner()
+        }
+    }
+}

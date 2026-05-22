@@ -271,10 +271,8 @@ impl NodeBuilder {
                 let _ = run_accept_loop(inner).await;
             })
         };
-        *inner
-            .accept_handle
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = Some(accept_handle);
+        *crate::trace::recover_poison(inner.accept_handle.lock(), "Node::accept_handle") =
+            Some(accept_handle);
 
         Ok(Node { inner, rt })
     }
@@ -283,11 +281,8 @@ impl NodeBuilder {
 impl Drop for NodeInner {
     fn drop(&mut self) {
         // Stop accepting new inbound connections.
-        if let Some(handle) = self
-            .accept_handle
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .take()
+        if let Some(handle) =
+            crate::trace::recover_poison(self.accept_handle.lock(), "Node::accept_handle").take()
         {
             handle.abort();
         }
@@ -389,18 +384,16 @@ impl Node {
     /// the publisher/peer maps' locks briefly to read sizes.
     pub fn stats(&self) -> NodeStats {
         NodeStats {
-            publisher_topics: self
-                .inner
-                .publisher_topics
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .len(),
-            cached_peers: self
-                .inner
-                .peer_connections
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .len(),
+            publisher_topics: crate::trace::recover_poison(
+                self.inner.publisher_topics.lock(),
+                "Node::publisher_topics",
+            )
+            .len(),
+            cached_peers: crate::trace::recover_poison(
+                self.inner.peer_connections.lock(),
+                "Node::peer_connections",
+            )
+            .len(),
         }
     }
 
@@ -431,16 +424,16 @@ impl Node {
     where
         T: datapod::DataPod + 'static,
     {
+        validate_topic(topic)?;
         let type_name = type_name::<T>();
         let type_hash = wire_type_hash::<T>();
         let payload_size = std::mem::size_of::<T>() as u32;
 
         let iroh_tx = {
-            let mut map = self
-                .inner
-                .publisher_topics
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
+            let mut map = crate::trace::recover_poison(
+                self.inner.publisher_topics.lock(),
+                "Node::publisher_topics",
+            );
             let entry = map.entry(topic.to_string()).or_insert_with(|| {
                 let (tx, _rx) = broadcast::channel(DEFAULT_BROADCAST_CAPACITY);
                 PublisherTopicState {
@@ -487,6 +480,7 @@ impl Node {
     where
         T: datapod::DataPod + 'static,
     {
+        validate_topic(topic)?;
         let peer = peer.into_peer();
         let peer_bytes: [u8; 32] = *peer.endpoint_id.as_bytes();
 
@@ -887,10 +881,8 @@ async fn serve_bi(
         "subscriber handshake received"
     );
     let mut rx = {
-        let map = inner
-            .publisher_topics
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let map =
+            crate::trace::recover_poison(inner.publisher_topics.lock(), "Node::publisher_topics");
         match map.get(&topic) {
             Some(state) => {
                 if state.type_hash != type_hash || state.payload_size != payload_size {
@@ -1051,10 +1043,8 @@ async fn ensure_peer_connection(
     addr_hint: Option<EndpointAddr>,
 ) -> Result<Connection> {
     let slot = {
-        let mut map = inner
-            .peer_connections
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut map =
+            crate::trace::recover_poison(inner.peer_connections.lock(), "Node::peer_connections");
         map.entry(*peer.as_bytes())
             .or_insert_with(|| Arc::new(AsyncMutex::new(PeerSlot::default())))
             .clone()
@@ -1158,6 +1148,12 @@ fn load_or_generate_key(path: &Path) -> Result<SecretKey> {
             fs::File::open(path).map_err(|e| Error::Other(format!("open key file: {e}")))?;
         f.read_exact(&mut buf)
             .map_err(|e| Error::Other(format!("read key file: {e}")))?;
+        // Re-enforce 0600 on every read. If an operator copied the
+        // file without preserving mode, the next bind corrects it
+        // and logs a warning. Failures (mounted read-only, foreign
+        // FS) downgrade to a warn so the bind doesn't refuse on
+        // pre-existing keys.
+        enforce_key_perms(path);
         Ok(SecretKey::from_bytes(&buf))
     } else {
         let key = SecretKey::generate();
@@ -1166,15 +1162,33 @@ fn load_or_generate_key(path: &Path) -> Result<SecretKey> {
             fs::File::create(path).map_err(|e| Error::Other(format!("create key file: {e}")))?;
         f.write_all(&bytes)
             .map_err(|e| Error::Other(format!("write key file: {e}")))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ =
-                fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-        }
+        enforce_key_perms(path);
         Ok(key)
     }
 }
+
+#[cfg(unix)]
+fn enforce_key_perms(path: &Path) {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let needs_chmod = match fs::metadata(path) {
+        Ok(meta) => (meta.mode() & 0o777) != 0o600,
+        Err(_) => true,
+    };
+    if needs_chmod {
+        if let Err(e) = fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+            let _ = &e;
+            qb_warn!(
+                target: "quicbit::node",
+                path = %path.display(),
+                error = %e,
+                "could not enforce 0600 on identity key file; check permissions manually"
+            );
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn enforce_key_perms(_path: &Path) {}
 
 // ---- service-name composition ----
 
@@ -1201,4 +1215,34 @@ pub fn service_name(
 
 fn sanitise(s: &str) -> String {
     s.replace([' '], "_")
+}
+
+/// Maximum byte length for a topic name. iceoryx2's `ServiceName` has a
+/// hard internal cap; we surface a slightly smaller one so the composed
+/// `<identity>__<topic>` still fits.
+pub const MAX_TOPIC_BYTES: usize = 200;
+
+/// Validate a user-supplied topic string. Allowed characters:
+/// `A-Z`, `a-z`, `0-9`, and `._/-`. Empty strings and overlong strings
+/// are also rejected.
+pub(crate) fn validate_topic(topic: &str) -> Result<()> {
+    if topic.is_empty() {
+        return Err(Error::invalid_argument("topic name must not be empty"));
+    }
+    if topic.len() > MAX_TOPIC_BYTES {
+        return Err(Error::invalid_argument(format!(
+            "topic name '{topic}' is {} bytes; cap is {MAX_TOPIC_BYTES}",
+            topic.len()
+        )));
+    }
+    for c in topic.chars() {
+        let ok = c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-');
+        if !ok {
+            return Err(Error::invalid_argument(format!(
+                "topic name '{topic}' contains invalid character {c:?}; \
+                 allowed: A-Z a-z 0-9 . _ / -"
+            )));
+        }
+    }
+    Ok(())
 }

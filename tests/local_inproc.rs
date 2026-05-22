@@ -84,6 +84,44 @@ fn fanout_to_two_subscribers() {
 }
 
 #[test]
+fn multi_publisher_one_subscriber() {
+    // Two publishers attached to the same iceoryx2 service; one
+    // subscriber must observe samples from both. iceoryx2 caps
+    // attached publishers via `max_publishers` (default 2); raise
+    // it slightly here to leave headroom for any cross-thread races.
+    let cfg = LocalConfig {
+        max_publishers: 4,
+        ..LocalConfig::default()
+    };
+    let svc = LocalService::<U32Box>::create(&unique_name("multipub"), cfg).unwrap();
+
+    let mut pub_a = svc.publisher().unwrap();
+    let mut pub_b = svc.publisher().unwrap();
+    let mut sub = svc.subscriber().unwrap();
+
+    pub_a.send(&U32Box { value: 1 }).unwrap();
+    pub_b.send(&U32Box { value: 2 }).unwrap();
+
+    // Drain until we've seen both values or we time out.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut saw_a = false;
+    let mut saw_b = false;
+    while std::time::Instant::now() < deadline && !(saw_a && saw_b) {
+        if let Some(s) = sub.take().unwrap() {
+            match s.header().value {
+                1 => saw_a = true,
+                2 => saw_b = true,
+                _ => {}
+            }
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+    assert!(saw_a, "subscriber should have seen publisher A's sample");
+    assert!(saw_b, "subscriber should have seen publisher B's sample");
+}
+
+#[test]
 fn late_subscriber_eventually_sees_new_publishes() {
     // With iceoryx2 the late subscriber may see up to
     // `history_depth` retained samples (default 1). Either way it

@@ -293,7 +293,10 @@ impl Transport for RemoteTransport {
         let type_hash = wire_type_hash::<T>();
         let payload_size = std::mem::size_of::<T>() as u32;
 
-        let mut topics = self.inner.shared.publisher_topics.lock().unwrap_or_else(|p| p.into_inner());
+        let mut topics = crate::trace::recover_poison(
+            self.inner.shared.publisher_topics.lock(),
+            "RemoteTransport::publisher_topics",
+        );
         let entry = topics.entry(topic.clone()).or_insert_with(|| {
             let (tx, _rx) = broadcast::channel(CHANNEL_CAPACITY);
             PublisherTopic {
@@ -333,12 +336,10 @@ impl Transport for RemoteTransport {
         // wire into the broadcast) is spawned at most once per
         // topic.
         let (receiver, needs_dispatcher) = {
-            let mut topics = self
-                .inner
-                .shared
-                .subscriber_topics
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
+            let mut topics = crate::trace::recover_poison(
+                self.inner.shared.subscriber_topics.lock(),
+                "RemoteTransport::subscriber_topics",
+            );
             let entry = topics.entry(topic.clone()).or_insert_with(|| {
                 let (tx, _initial_rx) = broadcast::channel(CHANNEL_CAPACITY);
                 SubscriberTopic {
@@ -631,7 +632,10 @@ async fn serve_pubsub_bi(
     let (topic, type_hash, payload_size) = read_pubsub_handshake_tail(&mut recv).await?;
 
     let (broadcast_rx, expected_type_hash, expected_size) = {
-        let map = inner.publisher_topics.lock().unwrap_or_else(|p| p.into_inner());
+        let map = crate::trace::recover_poison(
+            inner.publisher_topics.lock(),
+            "RemoteTransport::publisher_topics",
+        );
         let entry = match map.get(&topic) {
             Some(e) => e,
             None => return Ok(()), // No publisher; drop quietly.
@@ -698,10 +702,10 @@ async fn run_subscriber(
     let mut backoff = RECONNECT_BACKOFF_MIN;
     loop {
         let sender = {
-            let map = inner
-                .subscriber_topics
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
+            let map = crate::trace::recover_poison(
+                inner.subscriber_topics.lock(),
+                "RemoteTransport::subscriber_topics",
+            );
             match map.get(&topic) {
                 Some(t) => t.tx.clone(),
                 // Topic state is gone — the transport is being

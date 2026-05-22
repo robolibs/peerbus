@@ -162,6 +162,30 @@ fn ephemeral_key_changes_each_bind() {
     assert_ne!(id1, id2, "fresh keys each time when no path is supplied");
 }
 
+#[test]
+fn topic_validation_rejects_bad_chars() {
+    use quicbit::Error;
+    let node = Node::builder().no_relay().identity("v").bind().unwrap();
+
+    // Empty topic.
+    assert!(matches!(
+        node.publisher::<Tick>(""),
+        Err(Error::InvalidArgument(_))
+    ));
+    // Disallowed char (space).
+    assert!(matches!(
+        node.publisher::<Tick>("rover pose"),
+        Err(Error::InvalidArgument(_))
+    ));
+    // Disallowed char (colon).
+    assert!(matches!(
+        node.subscriber::<Tick>("v", "rover:pose"),
+        Err(Error::InvalidArgument(_))
+    ));
+    // The allowed set still passes.
+    assert!(node.publisher::<Tick>("rover/pose.v2-final_1").is_ok());
+}
+
 /// Connection from an un-allowlisted peer must be rejected by the
 /// accept loop before any data flows. We exercise this by binding a
 /// publisher with an empty allowlist (`.allow_peer(<unrelated>)`)

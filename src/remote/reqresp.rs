@@ -62,7 +62,10 @@ impl RemoteTransport {
 
         let topic = self.name().to_string();
         let shared = self.shared();
-        let mut servers = shared.request_servers.lock().unwrap_or_else(|p| p.into_inner());
+        let mut servers = crate::trace::recover_poison(
+            shared.request_servers.lock(),
+            "RemoteTransport::request_servers",
+        );
         if servers.contains_key(&topic) {
             return Err(Error::invalid_argument(
                 "a request server is already registered for this topic",
@@ -175,7 +178,10 @@ pub(crate) async fn serve_request_bi(
         read_request_handshake_tail(&mut recv).await?;
 
     let entry = {
-        let map = inner.request_servers.lock().unwrap_or_else(|p| p.into_inner());
+        let map = crate::trace::recover_poison(
+            inner.request_servers.lock(),
+            "RemoteTransport::request_servers",
+        );
         match map.get(&topic) {
             Some(e) => RequestServerEntry {
                 handler: e.handler.clone(),
