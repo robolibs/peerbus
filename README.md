@@ -1,69 +1,23 @@
 # quicbit
 
-`quicbit` is a Rust **typed zero-copy messaging** library for
-robotics. One service-oriented API, two transports under the hood
-— both always on:
+Typed zero-copy messaging for robotics. One API, two transports:
 
-- **Local (same host)** — loan-publish-consume pub/sub on top of
-  [iceoryx2]'s production-grade shared-memory IPC. Publisher
-  writes the payload *in place* into a slot, hands over a pointer;
-  subscribers read the same bytes. No serialization, no copy
-  across the process boundary.
-- **Remote (across hosts)** — pub/sub over [iroh] peer-to-peer
-  QUIC. Peers are identified by ed25519 `EndpointId`s rather than
-  IP\:port. NAT hole punching + relay fallback are handled by iroh,
-  TLS 1.3 is mandatory (and PKI-free — the `SecretKey` *is* the
-  identity). Topics map to QUIC streams; back-pressure is the
-  stream's own flow control.
+- **iceoryx2** when both ends are on the same host — shared-memory, no copy, no serialization.
+- **iroh** when they aren't — peer-to-peer QUIC with NAT traversal and TLS 1.3.
 
-[iceoryx2]: https://github.com/eclipse-iceoryx/iceoryx2
-[iroh]: https://github.com/n0-computer/iroh
+The routing decision happens once at `subscriber()` and is invisible afterwards.
 
-A `quicbit::Node` is the same to callers regardless of where its
-subscribers live — local-only, remote-only, or a mixed fan-out.
-The routing decision (SHM vs iroh) happens automatically at
-`subscriber()` time.
+## Install
 
-## What quicbit is NOT
-
-- **Not a simulator.** [`wirebit`](https://codeberg.org/robolibs/wirebit)
-  is the bus simulator + HIL bridge; quicbit *uses* it as a test
-  substrate, not as its runtime transport.
-- **Not ROS.** No CDR, no DDS, no ROS graph. Interop with ROS 2 is
-  a future sidecar (quicbit ⇄ Zenoh ⇄ DDS), not in-process.
-- **Not RPC.** Req/resp is a native pattern, but this is message
-  middleware, not a full RPC framework (no service registry, no
-  codegen).
-
-## Architecture
-
-```text
-                 ┌────────────────────────────────┐
-                 │       Application              │
-                 └───────────┬────────────────────┘
-                             │  loan / publish / subscribe / call
-                 ┌───────────▼────────────────────┐
-                 │           Node                 │   <- this crate
-                 │  (pub/sub + req/resp, typed)   │
-                 └───────────┬────────────────────┘
-                             │
-              ┌──────────────┴──────────────────┐
-              │                                 │
-     ┌────────▼─────────┐              ┌────────▼─────────┐
-     │   LocalTransport │              │  RemoteTransport │
-     │  (iceoryx2 SHM)  │              │  (iroh / QUIC)   │
-     └──────────────────┘              └──────────────────┘
-       same-host,                         across hosts,
-       true zero-copy,                    TLS 1.3, hole punching,
-       lock-free                          per-topic streams
+```toml
+quicbit = { git = "https://codeberg.org/robolibs/quicbit" }
 ```
 
-## Quick start
+Build needs `libclang` (iceoryx2's `bindgen`). On Nix: `nix develop`.
 
-One entry point: `Node`. Two strings: who **I** am, who I'm
-listening to.
+## Publish and subscribe
 
-```rust,ignore
+```rust
 use quicbit::Node;
 
 #[datapod::datapod]
@@ -76,196 +30,112 @@ let mut sub  = node.subscriber::<Pose>("rover-a", "rover/pose")?;
 
 pubr.send(&Pose { x: 1.0, y: 2.0, yaw: 0.1 })?;
 if let Some(s) = sub.take()? {
-    println!("pose: {:?}", s.header());
+    println!("{:?}", s.header());
 }
 # Ok::<_, quicbit::Error>(())
 ```
 
-If the publisher's iceoryx2 service exists on this host (any
-process using the same `identity` + `topic`), the subscriber
-attaches to its SHM slot and reads with zero copy. Otherwise it
-dials over iroh. **Same call either way.**
+Payload types implement `datapod::DataPod` — typically a one-line `#[datapod::datapod]` annotation. Fixed-size types ride entirely in the iceoryx2 user-header / iroh frame prefix; heap-bearing types (one `#[dp(bytes)]` field) ride the variable-length payload too.
 
-### Cross-host
+## Addressing a peer
 
-For a real cross-host dial you need the publisher's full transport
-address, not just its identity string. `IntoPeer` accepts an
-`EndpointAddr`:
+A subscriber names *who* it's listening to. `IntoPeer` accepts:
 
-```rust,ignore
-// publisher side
-let pub_node = Node::builder().identity_file("/etc/rover.key").bind()?;
-pub_node.wait_for_direct_addresses(std::time::Duration::from_secs(5))?;
-let pub_addr = pub_node.endpoint_addr(); // share this with peers
+| Form                              | Routes locally? | Use when                                 |
+|-----------------------------------|-----------------|------------------------------------------|
+| `"rover-a"` (string)              | yes             | Trusted LAN — string hashes to a key.    |
+| `did:key:z6Mk…` (W3C DID:KEY)     | yes             | Sharing a public key out-of-band.        |
+| `EndpointId` / `EndpointAddr`     | yes             | Already holding the iroh object.         |
 
-// subscriber side
-let mut sub = sub_node.subscriber::<Pose>(pub_addr, "rover/pose")?;
+All three resolve to the same 32-byte Ed25519 key. `Node::endpoint_did_key()` prints your own identity in DID:KEY form.
+
+For cross-host you need the publisher's full `EndpointAddr`, not just an identifier:
+
+```rust
+let pub_addr = pub_node.endpoint_addr();          // share this with peers
+let mut sub  = sub_node.subscriber::<Pose>(pub_addr, "rover/pose")?;
 ```
 
-If the iroh `Connection` drops mid-stream, the subscriber's
-background loop redials with bounded exponential backoff (100 ms
-→ 10 s cap) and re-issues the handshake automatically — the
-caller stays oblivious unless they explicitly look at
-`Subscriber::stats()`. `take()` returns `Err(Error::Disconnected)`
-only after the foreground channel itself goes away.
+## Your own identity
 
-### Observability
-
-Each publisher and subscriber tracks lifetime counters readable
-via `.stats()`:
-
-```rust,ignore
-let s = sub.stats();      // received, disconnects
-let p = pubr.stats();     // published, remote_dropped
-let n = node.stats();     // publisher_topics, cached_peers
+```rust
+.identity("rover-a")              // string → impersonable, dev only
+.identity_env("ROVER_ID")         // string from env var
+.identity_file("/etc/rover.key")  // 32 raw bytes on disk, mode 0600
 ```
 
-For structured logs, enable the `tracing` feature. quicbit then
-emits events at accept / connect / disconnect / handshake-mismatch
-/ broadcast-lag boundaries; the loan-publish-consume hot path
-stays uninstrumented to keep it free of overhead.
+`identity_file` is the only path that can't be impersonated. Mode is re-enforced (`0600`) on every read.
 
-### Limiting who can dial in
+## Limiting who can dial in
 
-By default a `Node` accepts any peer that knows the ALPN. To pin
-the inbound set, hand the builder one or more allowlisted peer
-ids:
-
-```rust,ignore
+```rust
 let node = Node::builder()
     .identity_file("/etc/rover.key")
-    .allow_peer(planner_endpoint_id)
-    .allow_peer(logger_endpoint_id)
+    .allow_peer(planner_id)
+    .allow_peer(logger_id)
     .bind()?;
 ```
 
-Non-allowlisted peers are closed immediately after the QUIC
-handshake completes; no streams open. Outbound dials are not
-affected.
-
-### Payload type requirements
-
-Every `T` you publish/subscribe must implement
-[`datapod::DataPod`](https://codeberg.org/robolibs/datapod). The
-trait splits a message into:
-
-- a Pod **header** (`T::Header`) that rides in iceoryx2's `user_header`
-  slot / iroh's frame prefix, and
-- an optional byte **payload** (`T::Payload = ()` or `[u8]`) for
-  variable-length data (e.g. `Polygon`, `Grid`, `Linestring`).
-
-For fixed-size messages (a `Pose`, `Joint`, custom struct …) the
-type IS its own header and there's no byte payload. One annotation:
-
-```rust,ignore
-#[datapod::datapod]
-struct MyMessage {
-    x: f32,
-    y: f32,
-    yaw: f32,
-}
-```
-
-That emits the `#[repr(C)]`, `bytemuck::Pod + Zeroable`,
-`iceoryx2::ZeroCopySend`, and `DataPod` impls. Heap-bearing types
-annotate one `Vec<...>` field with `#[dp(bytes)]`; see datapod's
-docs for the full pattern.
-
-Samples expose the split via `sample.header()` (`&T::Header`) and
-`sample.payload()` (`&[u8]`). For fixed-Pod `T`, `T::Header = T`
-and the payload slice has length 0.
-
-### Identity
-
-Three ways to pin a `Node`'s iroh identity:
-
-```rust,ignore
-.identity("rover-a")              // string in code — dev / trusted networks
-.identity_env("ROVER_ID")         // string from an env var
-.identity_file("/etc/rover.key")  // random key, persisted — production
-```
-
-String identities hash to a deterministic `SecretKey` (and so to a
-stable `EndpointId`). Anyone with the string can impersonate; only
-use in trusted contexts. The `_file` variant is the
-cryptographically meaningful path — the file holds 32 raw bytes
-and is generated on first run.
+Without `allow_peer`, any peer that knows the ALPN can subscribe. Once one is set, every other connection is closed immediately after the QUIC handshake.
 
 ## Request / response
 
-```rust,ignore
+```rust
 use quicbit::{LocalConfig, LocalReqRespService};
 
 let svc = LocalReqRespService::<Ping, Pong>::create("calc", LocalConfig::default())?;
+
+// server
 let mut server = svc.server()?;
 while let Some((req, reply)) = server.take_request()? {
     reply.respond(&handle(req.header()))?;
 }
 
+// client
 let mut client = svc.client()?;
-let resp = client.call(&Ping { /* ... */ })?;
+let resp = client.call(&Ping { /* … */ })?;
 let pong: Pong = *resp.header();
 # Ok::<_, quicbit::Error>(())
 ```
 
-## Lower-level building blocks
+Correlated by `req_id` on the shared `Envelope<H>` wire format.
 
-`Node` is the recommended entry point. The pieces it composes are
-also public if you want direct control:
+## Observability
 
-- `LocalTransport` / `LocalService<T>` — iceoryx2-backed local pub/sub.
-- `RemoteTransport` — iroh-backed remote pub/sub.
-- `AsyncPublisher` / `AsyncSubscriber` — `async fn` shims over the
-  sync core, for callers running in a tokio runtime.
-
-See `examples/local_pose.rs` and `examples/remote_loopback.rs` for
-direct usage.
-
-## Development shells (Nix)
-
-```text
-nix develop              # stable toolchain (default)
-nix develop .#nightly    # nightly toolchain for forward-compat checks
+```rust
+node.stats();    // publisher_topics, cached_peers
+pubr.stats();    // published, remote_dropped
+sub.stats();     // received, disconnects
 ```
 
-The shells export `LIBCLANG_PATH` and `LD_LIBRARY_PATH` so
-iceoryx2's `bindgen` step finds libclang + the C++ runtime. CI
-installs `libclang-dev` for the same reason.
+Enable the `tracing` feature for structured events on accept / connect / disconnect / handshake mismatch / broadcast lag / poisoned-mutex recovery. The loan-publish-take hot path stays uninstrumented.
+
+## When things go wrong
+
+- **Connection drops.** The subscriber loop redials with bounded backoff (100 ms → 10 s). `take()` only returns `Err(Disconnected)` after the foreground channel itself goes away.
+- **Slow subscriber.** iceoryx2's default `history_depth = 1` means a subscriber that polls slower than the publisher misses samples. Bump `LocalConfig::history_depth`.
+- **No subscriber attached.** Remote publishes silently drop; counted under `remote_dropped` on `pubr.stats()`.
 
 ## Cargo features
-
-`quicbit` ships with iceoryx2 and iroh always on — there are no
-feature flags for the transports. The only optional knobs:
 
 | Feature   | Adds                                                              |
 |-----------|-------------------------------------------------------------------|
 | `tracing` | structured events at accept / connect / disconnect / lag / errors |
 | `config`  | service-discovery config files (TOML / JSON)                      |
 
-So `cargo build` / `cargo test` / `cargo run --example <name>`
-just work — no `--features ...` needed.
+iceoryx2 and iroh are always on; there is no feature gate for either transport.
 
-## C / Python bindings
+## Lower-level building blocks
 
-The previous custom-SHM C ABI and Python bindings were retired in
-the iceoryx2 migration. If you need them back, the cleanest path
-is a thin shim around iceoryx2's own C bindings; happy to revisit
-on request.
+`Node` is the recommended entry point. The pieces it composes are also public:
+
+- `LocalTransport` / `LocalService<T>` — iceoryx2 pub/sub directly.
+- `RemoteTransport` — iroh pub/sub directly.
+- `AsyncPublisher` / `AsyncSubscriber` — `async fn` shims over the sync core.
+- `did_key::endpoint_id_to_did_key` / `did_key_to_endpoint_id` — DID:KEY adapter (delegates to [`authbox`](https://codeberg.org/robolibs/authbox)).
+
+See `examples/` for direct usage.
 
 ## Status
 
-Pre-1.0 (`0.0.x`). The wire format and public API are documented
-but **not stable** between minor releases. See
-[`PLAN.md`](PLAN.md) for the production-readiness roadmap and
-[`LIMITATIONS.md`](LIMITATIONS.md) for the current known sharp
-edges.
-
-## See also
-
-- [`iceoryx2`](https://github.com/eclipse-iceoryx/iceoryx2) —
-  zero-copy SHM IPC; the substrate of `LocalTransport`.
-- [`iroh`](https://github.com/n0-computer/iroh) — peer-to-peer
-  QUIC with built-in NAT traversal; the wire for the remote
-  transport.
-- [`wirebit`](https://codeberg.org/robolibs/wirebit) — the bus
-  simulator / HIL bridge used as quicbit's test substrate.
+`0.0.x` — pre-1.0. Wire format documented in [`PLAN.md`](PLAN.md), not stable between minor releases. Sharp edges in [`LIMITATIONS.md`](LIMITATIONS.md).

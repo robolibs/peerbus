@@ -119,6 +119,19 @@ impl IntoPeer for EndpointAddr {
 
 impl IntoPeer for &str {
     fn into_peer(self) -> Peer {
+        // `did:key:z…` strings carry the literal ed25519 public key
+        // (no derivation) and are routed via iceoryx2 by EndpointId
+        // rather than identity name. Bare strings still hash to a
+        // deterministic key by name for the trusted-LAN path.
+        if crate::did_key::looks_like_did_key(self)
+            && let Ok(id) = crate::did_key::did_key_to_endpoint_id(self)
+        {
+            return Peer {
+                endpoint_id: id,
+                name: None,
+                addr: None,
+            };
+        }
         let secret = derive_secret_from_name(self);
         Peer {
             endpoint_id: secret.public(),
@@ -130,6 +143,15 @@ impl IntoPeer for &str {
 
 impl IntoPeer for String {
     fn into_peer(self) -> Peer {
+        if crate::did_key::looks_like_did_key(&self)
+            && let Ok(id) = crate::did_key::did_key_to_endpoint_id(&self)
+        {
+            return Peer {
+                endpoint_id: id,
+                name: None,
+                addr: None,
+            };
+        }
         let secret = derive_secret_from_name(&self);
         Peer {
             endpoint_id: secret.public(),
@@ -380,6 +402,14 @@ impl Node {
         self.inner.endpoint.addr()
     }
 
+    /// This node's `EndpointId` formatted as a W3C `did:key:z6Mk…`
+    /// URI. The same 32-byte ed25519 public key, just wrapped in
+    /// the DID multibase encoding so it can be exchanged with
+    /// DID-aware tooling.
+    pub fn endpoint_did_key(&self) -> String {
+        crate::did_key::endpoint_id_to_did_key(&self.inner.endpoint_id)
+    }
+
     /// Snapshot of node-level operational counters. Cheap; takes
     /// the publisher/peer maps' locks briefly to read sizes.
     pub fn stats(&self) -> NodeStats {
@@ -459,9 +489,30 @@ impl Node {
         let service = LocalService::<T>::open_or_create(&svc_name, self.inner.local_cfg.clone())?;
         let local_publisher = service.publisher()?;
 
+        // Auto-alias: when the primary service name uses an
+        // identity_name (e.g. `.identity("rover-a")`), also open an
+        // alias service under the hex-EndpointId composition so
+        // subscribers that only know the public key (`did:key:…`
+        // strings, bare `EndpointId`) can also route locally instead
+        // of falling back to iroh loopback. No-op when the publisher
+        // already composes by hex (`identity_file` / ephemeral).
+        let alias = if self.inner.identity_name.is_some() {
+            let hex_name = service_name(None, self.inner.endpoint_id.as_bytes(), topic);
+            let alias_service =
+                LocalService::<T>::open_or_create(&hex_name, self.inner.local_cfg.clone())?;
+            let alias_publisher = alias_service.publisher()?;
+            Some(PublisherAlias {
+                publisher: alias_publisher,
+                _service: alias_service,
+            })
+        } else {
+            None
+        };
+
         Ok(Publisher {
             local_publisher,
             _local_service: service,
+            alias,
             iroh_tx,
             published: Arc::new(AtomicU64::new(0)),
             remote_dropped: Arc::new(AtomicU64::new(0)),
@@ -484,11 +535,19 @@ impl Node {
         let peer = peer.into_peer();
         let peer_bytes: [u8; 32] = *peer.endpoint_id.as_bytes();
 
-        // Try local first if we have a name (iceoryx2's open-only
-        // call returns Err if the service hasn't been created
-        // anywhere on the host).
+        // Try local first. iceoryx2's open-only call returns Err if
+        // the service hasn't been created anywhere on the host. We
+        // try the named composition first (if any) then fall through
+        // to the hex-EndpointId composition — that second probe is
+        // what makes `did:key:` and bare-EndpointId peers route to a
+        // local publisher whose identity is also un-named (i.e. an
+        // `identity_file` or ephemeral key).
+        let mut candidates: Vec<String> = Vec::with_capacity(2);
         if peer.name.is_some() {
-            let svc_name = service_name(peer.name.as_deref(), &peer_bytes, topic);
+            candidates.push(service_name(peer.name.as_deref(), &peer_bytes, topic));
+        }
+        candidates.push(service_name(None, &peer_bytes, topic));
+        for svc_name in candidates {
             if let Ok(svc) = LocalService::<T>::open_existing(&svc_name) {
                 let local_sub = svc.subscriber()?;
                 return Ok(Subscriber {
@@ -652,9 +711,17 @@ pub struct PublisherStats {
     pub remote_dropped: u64,
 }
 
+/// Mirror publisher kept alive under the hex-EndpointId name when
+/// the primary publisher used an identity-name. See `Publisher`.
+struct PublisherAlias<T: datapod::DataPod + 'static> {
+    publisher: LocalPublisher<T>,
+    _service: LocalService<T>,
+}
+
 pub struct Publisher<T: datapod::DataPod + 'static> {
     local_publisher: LocalPublisher<T>,
     _local_service: LocalService<T>,
+    alias: Option<PublisherAlias<T>>,
     iroh_tx: broadcast::Sender<Vec<u8>>,
     published: Arc<AtomicU64>,
     remote_dropped: Arc<AtomicU64>,
@@ -671,13 +738,27 @@ impl<T: datapod::DataPod + 'static> Publisher<T> {
 
     pub fn publish(&mut self, loan: Loan<T>) -> Result<u64> {
         // Snapshot header + payload bytes before iceoryx2 consumes
-        // the loan; needed for the iroh broadcast.
+        // the loan; needed for the iroh broadcast and (when present)
+        // the hex-aliased publisher's mirror loan.
         let header_bytes = bytemuck::bytes_of(loan.header()).to_vec();
         let payload_bytes = loan.payload().to_vec();
         let mut frame = Vec::with_capacity(header_bytes.len() + payload_bytes.len());
         frame.extend_from_slice(&header_bytes);
         frame.extend_from_slice(&payload_bytes);
         let seq = self.local_publisher.publish(loan)?;
+        if let Some(alias) = self.alias.as_mut() {
+            // Best-effort mirror. A failed alias publish should not
+            // break the primary path; downgrade to a warning so the
+            // operator notices if the hex service falls behind.
+            if let Err(e) = mirror_publish::<T>(alias, &header_bytes, &payload_bytes) {
+                let _ = &e;
+                qb_warn!(
+                    target: "quicbit::node",
+                    error = %e,
+                    "publisher hex-alias mirror failed; DID:KEY subscribers may fall back to iroh"
+                );
+            }
+        }
         if self.iroh_tx.send(frame).is_err() {
             self.remote_dropped.fetch_add(1, Ordering::Relaxed);
         }
@@ -701,6 +782,20 @@ impl<T: datapod::DataPod + 'static> Publisher<T> {
             remote_dropped: self.remote_dropped.load(Ordering::Relaxed),
         }
     }
+}
+
+fn mirror_publish<T: datapod::DataPod + 'static>(
+    alias: &mut PublisherAlias<T>,
+    header_bytes: &[u8],
+    payload_bytes: &[u8],
+) -> Result<()> {
+    let mut loan = alias.publisher.loan(payload_bytes.len())?;
+    // Copy the header back into the alias slot. `bytemuck::bytes_of_mut`
+    // gives us a writeable byte view of the same fixed-size header.
+    bytemuck::bytes_of_mut(loan.header_mut()).copy_from_slice(header_bytes);
+    loan.payload_mut().copy_from_slice(payload_bytes);
+    alias.publisher.publish(loan)?;
+    Ok(())
 }
 
 // ---- subscriber ----

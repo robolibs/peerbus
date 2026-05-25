@@ -64,6 +64,14 @@ between minor releases.
   to a deterministic `SecretKey`; anyone who knows the string can
   dial as that identity. Fine on a trusted LAN, *not* fine on the
   open internet. Use `identity_file(path)` on untrusted networks.
+- **Named publishers carry a hex-alias mirror.** When a publisher
+  uses `.identity("name")`, the iceoryx2 service is opened under
+  *two* names — the canonical `<name>__<topic>` and an alias
+  `<hex(EndpointId)>__<topic>` — so DID:KEY / bare-EndpointId
+  subscribers can still route locally. Each publish does an extra
+  loan + byte-copy on the alias service; the cost is per-message
+  and scales with payload size. `identity_file` / ephemeral
+  publishers compose by hex directly and pay no alias cost.
 - **`identity_file` stores 32 raw bytes** and sets `0600` on Unix.
   Mode is enforced on every read; chmod failures (read-only mount,
   foreign FS) downgrade to a warning so the bind doesn't refuse on
