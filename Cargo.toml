@@ -77,3 +77,6 @@ proptest = { version = "1.5", default-features = false, features = ["std"] }
 # its own UDP socket so plugging wirebit's TunLink underneath is
 # nontrivial; see PLAN §Phase 6 for the current testing strategy.
 wirebit = { git = "https://codeberg.org/robolibs/wirebit.git", rev = "f4b72c4c2c16563a8897e3f7f0fe6efbfee97441" }
+# minifb is for the video subscriber example only — single-window
+# raw framebuffer. Pulls X11/Wayland on Linux; not a runtime dep.
+minifb = "0.27"

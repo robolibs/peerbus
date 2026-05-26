@@ -1,89 +1,108 @@
 {
-  description = "quicbit Rust library development shell";
+  description = "bevy_mara — reusable glass-themed Bevy + egui editor UI kit, development shell";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    rust-overlay.url = "github:oxalica/rust-overlay";
+    # Pinned to a rev that still accepts the `kernel` arg in
+    # nvidia-x11/generic.nix. Newer nixpkgs (post 2026-04) dropped
+    # that arg, which breaks nixGL until upstream catches up. Bump
+    # together with nixgl when its corresponding fix lands.
+    nixpkgs.url = "github:NixOS/nixpkgs?rev=4c1018dae018162ec878d42fec712642d214fdfa";
+    rust-overlay.url = "github:oxalica/rust-overlay?rev=3c27f4c92a7d977556dd2c10bb564d9c61b375e9";
     flake-utils.url = "github:numtide/flake-utils";
+    nixgl.url = "github:nix-community/nixGL";
   };
 
   outputs =
-    { nixpkgs, rust-overlay, flake-utils, ... }:
+    { self, nixpkgs, rust-overlay, flake-utils, nixgl, ... }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        overlays = [ (import rust-overlay) ];
+        overlays = [
+          (final: prev: {
+            xorg = prev.xorg // {
+              libX11 = final.libx11;
+              libxcb = final.libxcb;
+              libxshmfence = final.libxshmfence;
+            };
+          })
+          (import rust-overlay)
+        ];
 
         pkgs = import nixpkgs {
           inherit system overlays;
+          config = {
+            allowUnfree = true;
+            nvidia.acceptLicense = true;
+          };
         };
 
-        # Stable: default day-to-day toolchain.
-        stableToolchain = pkgs.rust-bin.stable.latest.default.override {
-          extensions = [ "rust-src" "rustfmt" "clippy" ];
+        nvidiaVersion = let v = builtins.getEnv "NVIDIA_VERSION";
+        in if v != "" then v
+           else throw "bevy_mara: NVIDIA_VERSION is unset — is direnv loaded and is the NVIDIA driver running?";
+
+        nixglPkgs = import "${nixgl}/default.nix" {
+          inherit pkgs nvidiaVersion;
+          nvidiaHash = null;
         };
 
-        # Nightly: for miri (unsafe-code auditor).
-        # Only miri requires nightly; everything else
-        # (build, test, clippy, fmt) lives on stable.
-        nightlyToolchain = pkgs.rust-bin.selectLatestNightlyWith (
-          toolchain:
-          toolchain.default.override {
-            extensions = [ "rust-src" "miri" "rustfmt" "clippy" ];
-          }
-        );
+        nixGLAlias = pkgs.runCommand "nixGL" { } ''
+          mkdir -p $out/bin
+          ln -s ${nixglPkgs.nixGLNvidia}/bin/nixGLNvidia-${nvidiaVersion} $out/bin/nixGL
+        '';
+        nixVulkanAlias = pkgs.runCommand "nixVulkan" { } ''
+          mkdir -p $out/bin
+          ln -s ${nixglPkgs.nixVulkanNvidia}/bin/nixVulkanNvidia-${nvidiaVersion} $out/bin/nixVulkan
+        '';
 
-        common = [
-          pkgs.clang
-          pkgs.mold
-          pkgs.pkg-config
-          # iceoryx2 has C bindings; its build.rs runs bindgen,
-          # which needs libclang + the C++ runtime resolvable at
-          # link time.
-          pkgs.libclang.lib
-          pkgs.stdenv.cc.cc.lib
+        bevyLibs = with pkgs; [
+          alsa-lib
+          udev
+          vulkan-loader
+          libxkbcommon
+          wayland
+          libx11
+          libxcursor
+          libxi
+          libxrandr
         ];
 
-        # Env vars exported into every devShell so bindgen finds
-        # libclang and the dynamic linker finds libstdc++.
-        shellEnv = {
-          LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
-          LD_LIBRARY_PATH = nixpkgs.lib.makeLibraryPath [
-            pkgs.stdenv.cc.cc.lib
-            pkgs.libclang.lib
-          ];
-        };
+        # iceoryx2 has C bindings; its build.rs runs bindgen which
+        # needs libclang on LIBCLANG_PATH and libstdc++ resolvable
+        # via LD_LIBRARY_PATH. Without these, bindgen falls back to
+        # /usr/lib/llvm-* and fails on libstdc++.so.6.
+        nativeBuildLibs = with pkgs; [
+          libclang.lib
+          stdenv.cc.cc.lib
+        ];
       in
       {
-        devShells = {
-          # `nix develop`  →  stable shell, used for all normal work.
-          default = pkgs.mkShell ({
-            packages = [ stableToolchain ] ++ common;
-            RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
-          } // shellEnv);
+        devShells.default = pkgs.mkShell {
+          packages = [
+            (pkgs.rust-bin.stable.latest.default.override {
+              extensions = [ "rust-src" "rustfmt" "clippy" ];
+              targets = [ "wasm32-unknown-unknown" ];
+            })
+            pkgs.clang
+            pkgs.mold
+            pkgs.pkg-config
 
-          # `nix develop .#nightly`  →  adds miri.
-          # Use for:
-          #   cargo miri test --lib
-          nightly = pkgs.mkShell ({
-            packages = [
-              nightlyToolchain
-            ] ++ common;
-          } // shellEnv);
+            pkgs.trunk
 
-          # `nix develop .#python`  →  adds Python + maturin so the
-          # `python` feature links and Python tests run.
-          # Build a wheel with:
-          #   maturin build --release --features python-extension
-          python = pkgs.mkShell ({
-            packages = [
-              stableToolchain
-              pkgs.python312
-              pkgs.python312Packages.pip
-              pkgs.maturin
-            ] ++ common;
-            RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
-          } // shellEnv);
+            (pkgs.python3.withPackages (ps: with ps; [ fonttools brotli ]))
+
+            nixGLAlias
+            nixVulkanAlias
+            nixglPkgs.nixGLNvidia
+            nixglPkgs.nixVulkanNvidia
+            nixglPkgs.nixGLIntel
+            nixglPkgs.nixVulkanIntel
+          ] ++ bevyLibs ++ nativeBuildLibs;
+
+          RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
+          LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (bevyLibs ++ nativeBuildLibs);
+          WGPU_VALIDATION = "0";
+          WGPU_DEBUG = "0";
         };
       }
     );
