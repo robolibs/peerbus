@@ -811,8 +811,7 @@ dependencies = [
 
 [[package]]
 name = "datapod"
-version = "0.0.1"
-source = "git+https://codeberg.org/robolibs/datapod.git?rev=4547e328826fb4fd788b7acac29c2f70efc62746#4547e328826fb4fd788b7acac29c2f70efc62746"
+version = "0.1.0"
 dependencies = [
  "bytemuck",
  "datapod-macros",
@@ -822,7 +821,6 @@ dependencies = [
 [[package]]
 name = "datapod-macros"
 version = "0.0.1"
-source = "git+https://codeberg.org/robolibs/datapod.git?rev=4547e328826fb4fd788b7acac29c2f70efc62746#4547e328826fb4fd788b7acac29c2f70efc62746"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3649,6 +3647,7 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "tracing-subscriber",
  "wirebit",
 ]
 

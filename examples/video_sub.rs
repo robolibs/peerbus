@@ -18,6 +18,8 @@ use quicbit::{LocalConfig, Node};
 const TOPIC: &str = "demo/video";
 
 fn main() -> quicbit::Result<()> {
+    init_tracing();
+
     let did = std::env::args()
         .nth(1)
         .expect("usage: video_sub <did:key:z…>");
@@ -98,6 +100,13 @@ fn main() -> quicbit::Result<()> {
         }
     }
     Ok(())
+}
+
+fn init_tracing() {
+    // RUST_LOG=iroh=info,quicbit=debug … cargo run --example …
+    use tracing_subscriber::{fmt, EnvFilter};
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
+    let _ = fmt().with_env_filter(filter).try_init();
 }
 
 fn copy_payload_into(payload: &[u8], dst: &mut [u32]) {

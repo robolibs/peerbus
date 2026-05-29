@@ -29,7 +29,16 @@ fn now_ns() -> u64 {
         .as_nanos() as u64
 }
 
+fn init_tracing() {
+    // RUST_LOG=iroh=info,quicbit=debug … cargo run --example …
+    use tracing_subscriber::{fmt, EnvFilter};
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
+    let _ = fmt().with_env_filter(filter).try_init();
+}
+
 fn main() -> quicbit::Result<()> {
+    init_tracing();
+
     let pixel_count = WIDTH as usize * HEIGHT as usize;
     let bytes_per_frame = pixel_count * 4;
 
@@ -49,6 +58,18 @@ fn main() -> quicbit::Result<()> {
     let did = node.endpoint_did_key();
     println!("publisher ready: {WIDTH}x{HEIGHT} @ {FPS} fps");
     println!("identity: {did}");
+
+    // Wait for iroh to publish at least one transport address.
+    // Without this, a remote subscriber dialing immediately would
+    // not be able to look us up.
+    eprintln!("waiting for iroh to publish addresses …");
+    if let Err(e) = node.wait_for_direct_addresses(Duration::from_secs(15)) {
+        eprintln!("warning: addresses not ready after 15s: {e}");
+        eprintln!("(same-host subscribers still work via SHM)");
+    } else {
+        eprintln!("addresses ready, remote subscribers can dial");
+    }
+
     println!();
     println!("run subscriber:");
     println!("    cargo run --release --example video_sub -- {did}");
