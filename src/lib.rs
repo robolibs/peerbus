@@ -36,6 +36,7 @@
 //! callers who want direct control. Most users want [`Node`].
 
 pub mod async_adapter;
+pub mod demo;
 pub mod did_key;
 pub mod error;
 pub mod local;
