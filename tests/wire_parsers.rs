@@ -4,10 +4,10 @@
 //! topic / frame, version mismatch) so a regression in any of them
 //! shows up in CI even without running `cargo fuzz`.
 
-use quicbit::remote::{
-    parse_frame, parse_pubsub_handshake_tail, parse_request_handshake_tail, HANDSHAKE_VERSION,
-};
 use quicbit::Error;
+use quicbit::remote::{
+    HANDSHAKE_VERSION, parse_frame, parse_pubsub_handshake_tail, parse_request_handshake_tail,
+};
 
 #[test]
 fn pubsub_handshake_rejects_empty() {

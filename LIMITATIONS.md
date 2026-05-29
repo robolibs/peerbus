@@ -5,23 +5,33 @@ Known sharp edges. Pair with [`PLAN.md`](PLAN.md) for the roadmap.
 `0.0.x` — pre-1.0. Wire formats are documented but **not stable**
 between minor releases.
 
-## Local transport (iceoryx2)
+## Local transport (shared-memory ring)
 
 - **Topic names** must match `[A-Za-z0-9._/-]+` and be at most
   `node::MAX_TOPIC_BYTES` (200 bytes). `Node::publisher` /
   `Node::subscriber` reject anything else with
   `Error::InvalidArgument`. Direct `LocalService::open_or_create`
-  calls still pass the composed name straight to iceoryx2.
+  calls hash the name to a short OS shared-memory id.
 - **History default is 1.** A subscriber that polls slower than the
   publisher will miss samples; the publish side drops the oldest
   in-flight sample. Tune `LocalConfig::history_depth` to your
   worst-case subscriber latency.
 - **`max_publishers` defaults to 2 and `max_subscribers` to 8.**
-  These are iceoryx2 service-creation parameters and are *pinned*
-  by the first creator; subsequent attaches must be compatible.
-- **Deep multi-publisher contention isn't stressed.** The
-  two-publisher / one-subscriber happy path is covered;
-  queue-saturation and publisher-eviction edge cases are not.
+  These are service-creation parameters and are *pinned* by the
+  first creator; subsequent attaches must be compatible.
+- **Multi-publisher contention has bounded coverage.** The suite covers
+  a two-publisher / one-subscriber happy path plus a four-thread burst
+  where history covers every sample, plus a small proptest model for
+  random publish/take/hold/drop sequences. Queue-saturation and
+  publisher-eviction edge cases are still not endurance-tested.
+- **Dead process cleanup is Linux-strong, Unix-first.** Publisher/subscriber port
+  slots carry process ids, and sample holds are tracked by
+  per-subscriber bits so the next publisher can reap a dead reader or
+  writer before returning `NoFreeSlot`. This is covered by spawned
+  child-process exit tests. On Linux, the PID is paired with the
+  `/proc/<pid>/stat` process start token to avoid fast PID-reuse
+  confusion. Remaining caveat: non-Unix targets use a conservative
+  fallback unless/until a native process-start token is added.
 
 ## Remote (iroh) transport
 
@@ -65,7 +75,7 @@ between minor releases.
   dial as that identity. Fine on a trusted LAN, *not* fine on the
   open internet. Use `identity_file(path)` on untrusted networks.
 - **Named publishers carry a hex-alias mirror.** When a publisher
-  uses `.identity("name")`, the iceoryx2 service is opened under
+  uses `.identity("name")`, the local service is opened under
   *two* names — the canonical `<name>__<topic>` and an alias
   `<hex(EndpointId)>__<topic>` — so DID:KEY / bare-EndpointId
   subscribers can still route locally. Each publish does an extra
@@ -80,5 +90,6 @@ between minor releases.
 ## Platforms
 
 Linux x86_64 + aarch64. macOS likely works (POSIX SHM + the same
-iroh stack) but is not in the test matrix. Windows is not
-supported on the local transport (no `shm_open`).
+iroh stack) but is not in the test matrix. The local backend itself is
+plausibly portable through `shared_memory` / `raw_sync`, but Windows is
+not yet exercised here.

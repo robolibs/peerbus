@@ -27,23 +27,24 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use iroh::endpoint::presets;
 use iroh::endpoint::Connection;
+use iroh::endpoint::presets;
 use iroh::endpoint::{RecvStream, SendStream};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use tokio::runtime::Runtime;
-use tokio::sync::{broadcast, Mutex as AsyncMutex};
+use tokio::sync::{Mutex as AsyncMutex, broadcast};
 use tokio::task::JoinHandle;
 
 use crate::error::{Error, Result};
-use crate::transport::wire_type_hash;
-use crate::{qb_debug, qb_info, qb_warn};
 use crate::remote::handshake::{
     HANDSHAKE_MAGIC, HANDSHAKE_VERSION, MAX_PAYLOAD_LEN, MAX_TOPIC_LEN, REQRESP_MAGIC,
 };
 use crate::remote::runtime;
+use crate::transport::wire_type_hash;
 use crate::transport::{LocalPayload, PublisherOps, SubscriberOps, Transport};
+use crate::{qb_debug, qb_info, qb_warn};
 
 /// Type-erased boxed request handler used internally.
 pub(crate) type ErasedReqHandler =
@@ -108,18 +109,43 @@ impl RemoteTransportBuilder {
         let peer = self.peer.clone();
 
         let inner = rt.block_on(async move {
-            let endpoint = if relay_disabled {
-                Endpoint::builder(presets::N0DisableRelay)
-                    .alpns(vec![alpn.clone()])
-                    .bind()
-                    .await
-                    .map_err(|e| Error::Remote(format!("bind: {e}")))?
-            } else {
-                Endpoint::builder(presets::N0)
-                    .alpns(vec![alpn.clone()])
-                    .bind()
-                    .await
-                    .map_err(|e| Error::Remote(format!("bind: {e}")))?
+            let mut last_bind_err = None;
+            let endpoint = {
+                const BIND_ATTEMPTS: usize = 80;
+                let mut bound = None;
+                for attempt in 0..BIND_ATTEMPTS {
+                    let result = if relay_disabled {
+                        Endpoint::builder(presets::N0DisableRelay)
+                            .alpns(vec![alpn.clone()])
+                            .bind()
+                            .await
+                    } else {
+                        Endpoint::builder(presets::N0)
+                            .alpns(vec![alpn.clone()])
+                            .bind()
+                            .await
+                    };
+                    match result {
+                        Ok(endpoint) => {
+                            bound = Some(endpoint);
+                            break;
+                        }
+                        Err(err) => {
+                            last_bind_err = Some(err);
+                            if attempt + 1 < BIND_ATTEMPTS {
+                                tokio::time::sleep(Duration::from_millis(50)).await;
+                            }
+                        }
+                    }
+                }
+                bound.ok_or_else(|| {
+                    Error::Remote(format!(
+                        "bind: {}",
+                        last_bind_err
+                            .map(|err| err.to_string())
+                            .unwrap_or_else(|| "exhausted bind attempts".to_string())
+                    ))
+                })?
             };
 
             let inner = Arc::new(InnerShared {
@@ -606,11 +632,7 @@ async fn serve_incoming_connection(inner: Arc<InnerShared>, conn: Connection) ->
     }
 }
 
-async fn serve_bi(
-    inner: Arc<InnerShared>,
-    send: SendStream,
-    mut recv: RecvStream,
-) -> Result<()> {
+async fn serve_bi(inner: Arc<InnerShared>, send: SendStream, mut recv: RecvStream) -> Result<()> {
     // Peek the magic so we can dispatch pub/sub vs req/resp.
     let mut magic_buf = [0u8; 4];
     recv.read_exact(&mut magic_buf)
@@ -693,12 +715,7 @@ const RECONNECT_BACKOFF_MAX: std::time::Duration = std::time::Duration::from_sec
 /// broadcast channel. Exits when the broadcast sender is dropped
 /// (i.e. the transport itself is gone).
 #[cfg_attr(not(feature = "tracing"), allow(unused_variables))]
-async fn run_subscriber(
-    inner: Arc<InnerShared>,
-    topic: String,
-    type_hash: u64,
-    payload_size: u32,
-) {
+async fn run_subscriber(inner: Arc<InnerShared>, topic: String, type_hash: u64, payload_size: u32) {
     let mut backoff = RECONNECT_BACKOFF_MIN;
     loop {
         let sender = {

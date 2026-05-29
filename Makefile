@@ -35,7 +35,18 @@ run:
 r: run
 
 test:
-	@$(CARGO) test --all-targets
+	@$(CARGO) test --test node -- --test-threads=1
+	@$(CARGO) test --test remote_loopback -- --test-threads=1
+	@$(CARGO) test --test remote_reqresp -- --test-threads=1
+	@$(CARGO) test --lib -- --test-threads=1
+	@$(CARGO) test --test async_adapter -- --test-threads=1
+	@$(CARGO) test --test auto_traits -- --test-threads=1
+	@$(CARGO) test --test datapod_payload -- --test-threads=1
+	@$(CARGO) test --test did_key -- --test-threads=1
+	@$(CARGO) test --test local_reqresp -- --test-threads=1
+	@$(CARGO) test --test wire_parsers -- --test-threads=1
+	@$(CARGO) test --test local_inproc -- --test-threads=1
+	@$(CARGO) test --examples -- --test-threads=1
 
 t: test
 

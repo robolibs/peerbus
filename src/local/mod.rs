@@ -1,21 +1,19 @@
-//! Local transport — iceoryx2-backed publish/subscribe.
+//! Local transport — pure-Rust shared-memory publish/subscribe.
 //!
 //! [`service`] exposes the typed user-facing API:
 //! [`LocalService`], [`LocalPublisher`], [`LocalSubscriber`]. The
 //! RAII handles live in [`handle`]. Request/response support sits
 //! in [`reqresp`].
 //!
-//! Earlier versions of this module shipped a hand-rolled POSIX
-//! SHM allocator (`segment.rs`, `layout.rs`, `shm.rs`, plus the
-//! cross-process `crate::registry`). All of that was retired in
-//! favour of iceoryx2 — the SHM ABA / refcount / multi-publisher
-//! work iceoryx2 has shipped in production is well beyond what
-//! we'd have built ourselves.
+//! The current backend uses `shared_memory` plus a small POD ring in
+//! [`shm`]. It intentionally keeps delivery poll-based so the async
+//! layer can continue wrapping the sync API without a cross-process
+//! wakeup primitive.
 
 pub mod handle;
 pub mod reqresp;
 pub mod service;
-pub(crate) mod slot;
+pub(crate) mod shm;
 pub mod transport;
 
 pub use handle::{Loan, Sample};

@@ -2,7 +2,7 @@
 
 Typed zero-copy messaging for robotics. One API, two transports:
 
-- **iceoryx2** when both ends are on the same host — shared-memory, no copy, no serialization.
+- **local SHM** when both ends are on the same host — shared-memory, no copy, no serialization.
 - **iroh** when they aren't — peer-to-peer QUIC with NAT traversal and TLS 1.3.
 
 The routing decision happens once at `subscriber()` and is invisible afterwards.
@@ -13,7 +13,11 @@ The routing decision happens once at `subscriber()` and is invisible afterwards.
 quicbit = { git = "https://codeberg.org/robolibs/quicbit" }
 ```
 
-Build needs `libclang` (iceoryx2's `bindgen`). On Nix: `nix develop`.
+On Nix: `nix develop`. If `NVIDIA_VERSION` is detected, the shell's
+`nixGL` / `nixVulkan` aliases target `nixGLNvidia`; otherwise they
+fall back to `nixGLIntel` / `nixVulkanIntel`. The local backend is
+pure Rust (`shared_memory` + `raw_sync`); with `datapod` 0.2.0 there is
+no iceoryx2/libclang dependency in quicbit's Cargo graph.
 
 ## Publish and subscribe
 
@@ -35,7 +39,39 @@ if let Some(s) = sub.take()? {
 # Ok::<_, quicbit::Error>(())
 ```
 
-Payload types implement `datapod::DataPod` — typically a one-line `#[datapod::datapod]` annotation. Fixed-size types ride entirely in the iceoryx2 user-header / iroh frame prefix; heap-bearing types (one `#[dp(bytes)]` field) ride the variable-length payload too.
+Payload types implement `datapod::DataPod` — typically a one-line `#[datapod::datapod]` annotation. Fixed-size types ride entirely in the local SHM header / iroh frame prefix; heap-bearing types (one `#[dp(bytes)]` field) ride the variable-length payload too.
+
+## System DID mode
+
+For multi-process systems that together form one machine, join a
+logical `did:key` system namespace and route by topic key:
+
+```rust
+let node = Node::builder()
+    .system_did("did:key:z6MkSystem...")
+    .bind()?;
+
+let mut pubr = node.publisher::<Pose>("/state/pose")?;
+let mut sub  = node.subscribe::<Pose>("/state/pose")?;
+```
+
+In this mode local SHM names derive from `system_did + topic`, not
+from the process identity. Multiple processes can therefore use
+different transport identities while joining the same system DID/topic
+namespace. If the topic is not local, add an explicit remote route:
+
+```rust
+node.add_topic_route("/state/pose", publisher_endpoint_addr)?;
+let mut sub = node.subscribe::<Pose>("/state/pose")?;
+```
+
+Or add a topic-agnostic system peer and let `subscribe(topic)` use the
+same `(system_did, topic)` route key over iroh when SHM is absent:
+
+```rust
+node.add_system_peer(remote_system_endpoint_addr)?;
+let mut sub = node.subscribe::<Pose>("/state/pose")?;
+```
 
 ## Addressing a peer
 
@@ -113,7 +149,7 @@ Enable the `tracing` feature for structured events on accept / connect / disconn
 ## When things go wrong
 
 - **Connection drops.** The subscriber loop redials with bounded backoff (100 ms → 10 s). `take()` only returns `Err(Disconnected)` after the foreground channel itself goes away.
-- **Slow subscriber.** iceoryx2's default `history_depth = 1` means a subscriber that polls slower than the publisher misses samples. Bump `LocalConfig::history_depth`.
+- **Slow subscriber.** The local ring's default `history_depth = 1` means a subscriber that polls slower than the publisher misses samples. Bump `LocalConfig::history_depth`.
 - **No subscriber attached.** Remote publishes silently drop; counted under `remote_dropped` on `pubr.stats()`.
 
 ## Cargo features
@@ -123,18 +159,21 @@ Enable the `tracing` feature for structured events on accept / connect / disconn
 | `tracing` | structured events at accept / connect / disconnect / lag / errors |
 | `config`  | service-discovery config files (TOML / JSON)                      |
 
-iceoryx2 and iroh are always on; there is no feature gate for either transport.
+The local SHM backend and iroh are always on; there is no feature gate for either transport.
 
 ## Lower-level building blocks
 
 `Node` is the recommended entry point. The pieces it composes are also public:
 
-- `LocalTransport` / `LocalService<T>` — iceoryx2 pub/sub directly.
+- `LocalTransport` / `LocalService<T>` — local SHM pub/sub directly.
 - `RemoteTransport` — iroh pub/sub directly.
 - `AsyncPublisher` / `AsyncSubscriber` — `async fn` shims over the sync core.
 - `did_key::endpoint_id_to_did_key` / `did_key_to_endpoint_id` — DID:KEY adapter (delegates to [`authbox`](https://codeberg.org/robolibs/authbox)).
 
-See `examples/` for direct usage.
+See `examples/` for direct usage. The GUI video subscriber
+(`video_sub`) is intentionally built with minifb's **Wayland-only**
+backend; run it from a Wayland session (`WAYLAND_DISPLAY` must be set).
+It will not fall back to Xorg/XWayland.
 
 ## Status
 

@@ -24,9 +24,22 @@ async fn async_local_round_trip() {
     let mut sub = AsyncSubscriber::new(svc.subscriber().unwrap());
 
     let mut loan = pubr.loan(0).await.unwrap();
-    *loan.header_mut() = Tick { seq: 1, payload: 42 };
+    *loan.header_mut() = Tick {
+        seq: 1,
+        payload: 42,
+    };
     pubr.publish(loan).await.unwrap();
 
-    let sample = sub.take().await.unwrap().expect("sample should be available");
-    assert_eq!(*sample.header(), Tick { seq: 1, payload: 42 });
+    let sample = sub
+        .take()
+        .await
+        .unwrap()
+        .expect("sample should be available");
+    assert_eq!(
+        *sample.header(),
+        Tick {
+            seq: 1,
+            payload: 42
+        }
+    );
 }

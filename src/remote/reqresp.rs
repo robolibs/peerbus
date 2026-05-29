@@ -22,12 +22,12 @@ use bytemuck::Pod;
 use iroh::endpoint::{RecvStream, SendStream};
 
 use crate::error::{Error, Result};
-use crate::transport::wire_type_hash;
 use crate::remote::handshake::{HANDSHAKE_VERSION, MAX_TOPIC_LEN, REQRESP_MAGIC};
 use crate::remote::transport::{
-    ensure_peer_connection, read_frame, write_frame, ErasedReqHandler, InnerShared,
-    RequestServerEntry, RemoteTransport,
+    ErasedReqHandler, InnerShared, RemoteTransport, RequestServerEntry, ensure_peer_connection,
+    read_frame, write_frame,
 };
+use crate::transport::wire_type_hash;
 
 impl RemoteTransport {
     /// Register a request server for this transport's topic. The
@@ -134,15 +134,8 @@ where
                 .await
                 .map_err(|e| Error::Remote(format!("open_bi: {e}")))?;
 
-            write_request_handshake(
-                &mut send,
-                &topic,
-                req_hash,
-                resp_hash,
-                req_size,
-                resp_size,
-            )
-            .await?;
+            write_request_handshake(&mut send, &topic, req_hash, resp_hash, req_size, resp_size)
+                .await?;
             write_frame(&mut send, &req_bytes).await?;
             send.finish()
                 .map_err(|e| Error::Remote(format!("finish: {e}")))?;
@@ -271,9 +264,7 @@ async fn read_request_handshake_tail(
 ///
 /// Layout: `[u32 version][u64 req_hash][u64 resp_hash][u32 req_size]
 /// [u32 resp_size][u16 topic_len][topic_bytes]`.
-pub fn parse_request_handshake_tail(
-    bytes: &[u8],
-) -> Result<(String, u64, u64, u32, u32)> {
+pub fn parse_request_handshake_tail(bytes: &[u8]) -> Result<(String, u64, u64, u32, u32)> {
     if bytes.len() < 4 + 8 + 8 + 4 + 4 + 2 {
         return Err(Error::HandshakeMalformed(format!(
             "req handshake tail truncated: {} bytes",

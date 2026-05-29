@@ -13,7 +13,7 @@
 //! cargo run --release --example bench_local
 //! ```
 //!
-//! Defaults: 1,000,000 messages, 64-byte slots, history_depth=1.
+//! Defaults: 100,000 messages, 64-byte slots, history_depth=64.
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -40,7 +40,7 @@ fn main() {
     let total: u64 = std::env::var("QUICBIT_BENCH_MSGS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(1_000_000);
+        .unwrap_or(100_000);
 
     let name = format!("quicbit_bench_{}_{}", std::process::id(), now_ns());
     let svc = LocalService::<Sample>::create(
@@ -49,7 +49,7 @@ fn main() {
             max_publishers: 2,
             max_subscribers: 2,
             subscriber_buffer: 64,
-            history_depth: 1,
+            history_depth: 64,
             ..LocalConfig::default()
         },
     )
@@ -62,7 +62,7 @@ fn main() {
     // (seq == total) or 5 seconds pass with no progress.
     let consumer = thread::spawn(move || {
         let mut received: u64 = 0;
-        let dropped: u64 = 0;
+        let mut dropped: u64 = 0;
         let mut total_latency_ns: u128 = 0;
         let mut empties: u64 = 0;
         let mut last_progress = Instant::now();
@@ -87,11 +87,22 @@ fn main() {
                     }
                     std::hint::spin_loop();
                 }
+                Err(quicbit::Error::Lagged { dropped: n }) => {
+                    dropped += n;
+                    last_progress = Instant::now();
+                }
                 Err(_) => break,
             }
         }
         let elapsed = start.elapsed();
-        (received, dropped, total_latency_ns, empties, elapsed, last_seen_seq)
+        (
+            received,
+            dropped,
+            total_latency_ns,
+            empties,
+            elapsed,
+            last_seen_seq,
+        )
     });
 
     // Publisher: publish `total` samples as fast as it can.

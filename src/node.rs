@@ -8,7 +8,7 @@
 //!   name.
 //! * Caches outbound iroh `Connection`s, one per peer, reused
 //!   across topics.
-//! * For same-host routing, asks iceoryx2 whether a service
+//! * For same-host routing, asks the local SHM backend whether a service
 //!   exists for the topic on this host; if so, attaches locally
 //!   via SHM. If not, dials the peer via iroh.
 //!
@@ -45,7 +45,8 @@ use crate::error::{Error, Result};
 use crate::local::service::{LocalConfig, LocalPublisher, LocalService, LocalSubscriber};
 use crate::local::{Loan, Sample};
 use crate::remote::runtime;
-use crate::transport::wire_type_hash;
+use crate::remote::{HANDSHAKE_MAGIC, HANDSHAKE_VERSION, parse_pubsub_handshake_tail};
+use crate::transport::{fnv1a64, wire_type_hash};
 use crate::{qb_debug, qb_info, qb_warn};
 
 const DEFAULT_ALPN: &[u8] = b"quicbit/1";
@@ -73,7 +74,7 @@ enum IdentitySource {
 /// A peer's address. We need an iroh `EndpointId` for the remote
 /// path. The optional `name` lets us route same-host without any
 /// discovery service: both publisher and subscriber name the
-/// service the same way → iceoryx2 service open succeeds → SHM.
+/// service the same way → local service open succeeds → SHM.
 #[derive(Clone, Debug)]
 pub struct Peer {
     pub endpoint_id: EndpointId,
@@ -120,7 +121,7 @@ impl IntoPeer for EndpointAddr {
 impl IntoPeer for &str {
     fn into_peer(self) -> Peer {
         // `did:key:z…` strings carry the literal ed25519 public key
-        // (no derivation) and are routed via iceoryx2 by EndpointId
+        // (no derivation) and are routed locally by EndpointId
         // rather than identity name. Bare strings still hash to a
         // deterministic key by name for the trusted-LAN path.
         if crate::did_key::looks_like_did_key(self)
@@ -165,6 +166,7 @@ impl IntoPeer for String {
 
 pub struct NodeBuilder {
     identity: IdentitySource,
+    system_did: Option<String>,
     alpn: Vec<u8>,
     no_relay: bool,
     local_cfg: LocalConfig,
@@ -176,6 +178,15 @@ pub struct NodeBuilder {
 }
 
 impl NodeBuilder {
+    /// Join a logical multi-process system namespace identified by
+    /// a `did:key:z...` URI. In system mode, high-level
+    /// [`Node::publisher`] / [`Node::subscribe`] routes are keyed by
+    /// `(system_did, topic)` instead of this process' transport id.
+    pub fn system_did(mut self, did: impl Into<String>) -> Self {
+        self.system_did = Some(did.into());
+        self
+    }
+
     /// Literal name → deterministic `SecretKey` via blake3.
     /// Same name on two machines → same `EndpointId`. Anyone with
     /// the string can impersonate — use only in trusted contexts.
@@ -237,7 +248,7 @@ impl NodeBuilder {
         self
     }
 
-    /// Tune the default iceoryx2 QoS used for publishers / subscribers
+    /// Tune the default local SHM QoS used for publishers / subscribers
     /// this node creates. Per-`publisher`/`subscriber` overrides are
     /// not exposed yet.
     pub fn local_config(mut self, cfg: LocalConfig) -> Self {
@@ -248,23 +259,46 @@ impl NodeBuilder {
     pub fn bind(self) -> Result<Node> {
         let rt = runtime::shared()?;
         let (secret, identity_name) = resolve_identity(&self.identity)?;
+        let system_did = self
+            .system_did
+            .map(|did| validate_system_did(&did).map(|_| did))
+            .transpose()?;
         let endpoint_id = secret.public();
+        let secret_bytes = secret.to_bytes();
         let alpn = self.alpn.clone();
         let no_relay = self.no_relay;
 
-        let endpoint: Endpoint = rt.block_on(async move {
-            let builder = if no_relay {
-                Endpoint::builder(presets::N0DisableRelay)
-            } else {
-                Endpoint::builder(presets::N0)
-            };
-            builder
-                .secret_key(secret)
-                .alpns(vec![alpn])
-                .bind()
-                .await
-                .map_err(|e| Error::Remote(format!("Node::bind: {e}")))
-        })?;
+        let mut last_bind_err = None;
+        let endpoint: Endpoint = 'bind: loop {
+            const BIND_ATTEMPTS: usize = 80;
+            for attempt in 0..BIND_ATTEMPTS {
+                let secret = SecretKey::from_bytes(&secret_bytes);
+                let alpn = alpn.clone();
+                let bind_result = rt.block_on(async move {
+                    let builder = if no_relay {
+                        Endpoint::builder(presets::N0DisableRelay)
+                    } else {
+                        Endpoint::builder(presets::N0)
+                    };
+                    builder
+                        .secret_key(secret)
+                        .alpns(vec![alpn])
+                        .bind()
+                        .await
+                        .map_err(|e| Error::Remote(format!("Node::bind: {e}")))
+                });
+                match bind_result {
+                    Ok(endpoint) => break 'bind endpoint,
+                    Err(err) => {
+                        last_bind_err = Some(err);
+                        if attempt + 1 < BIND_ATTEMPTS {
+                            std::thread::sleep(Duration::from_millis(50));
+                        }
+                    }
+                }
+            }
+            return Err(last_bind_err.expect("bind loop always records an error"));
+        };
 
         qb_info!(
             target: "quicbit::node",
@@ -278,9 +312,12 @@ impl NodeBuilder {
             endpoint,
             endpoint_id,
             identity_name,
+            system_did,
             alpn: self.alpn,
             local_cfg: self.local_cfg,
             publisher_topics: Mutex::new(HashMap::new()),
+            system_routes: Mutex::new(HashMap::new()),
+            system_peers: Mutex::new(Vec::new()),
             peer_connections: Mutex::new(HashMap::new()),
             allowed_peers: self.allowed_peers,
             rt: rt.clone(),
@@ -331,9 +368,15 @@ struct NodeInner {
     endpoint: Endpoint,
     endpoint_id: EndpointId,
     identity_name: Option<String>,
+    system_did: Option<String>,
     alpn: Vec<u8>,
     local_cfg: LocalConfig,
     publisher_topics: Mutex<HashMap<String, PublisherTopicState>>,
+    system_routes: Mutex<HashMap<String, EndpointAddr>>,
+    /// Explicit remote peers that participate in this node's configured
+    /// system DID. Used as a topic-agnostic fallback after local SHM and
+    /// per-topic routes.
+    system_peers: Mutex<Vec<EndpointAddr>>,
     /// Outbound iroh connections, keyed by peer endpoint id. Each
     /// slot holds the current connection (if any) and the
     /// most-recent dial address hint, so reconnect attempts can
@@ -383,6 +426,7 @@ impl Node {
     pub fn builder() -> NodeBuilder {
         NodeBuilder {
             identity: IdentitySource::Ephemeral,
+            system_did: None,
             alpn: DEFAULT_ALPN.to_vec(),
             no_relay: false,
             local_cfg: LocalConfig::default(),
@@ -408,6 +452,47 @@ impl Node {
     /// DID-aware tooling.
     pub fn endpoint_did_key(&self) -> String {
         crate::did_key::endpoint_id_to_did_key(&self.inner.endpoint_id)
+    }
+
+    /// The logical system namespace this node joined, if any.
+    ///
+    /// In system mode, high-level publishers and subscribers route by
+    /// `(system_did, topic)` so multiple processes can contribute to
+    /// one machine/system bus without sharing a process identity.
+    pub fn system_did(&self) -> Option<&str> {
+        self.inner.system_did.as_deref()
+    }
+
+    /// Add an explicit remote route for this node's configured system:
+    /// `(system_did, topic) -> endpoint address`.
+    ///
+    /// Local SHM is always tried first by [`subscribe`](Self::subscribe).
+    /// This route is the first simple remote-discovery hook for when
+    /// the topic is not present on this host.
+    pub fn add_topic_route(&self, topic: &str, endpoint: EndpointAddr) -> Result<()> {
+        validate_topic(topic)?;
+        let route = self.system_route_topic(topic)?;
+        crate::trace::recover_poison(self.inner.system_routes.lock(), "Node::system_routes")
+            .insert(route, endpoint);
+        Ok(())
+    }
+
+    /// Add a remote peer that participates in this node's configured
+    /// system DID, independent of a particular topic key.
+    ///
+    /// [`subscribe`](Self::subscribe) still tries local SHM first and a
+    /// per-topic route second; if neither exists, it dials these peers
+    /// using the high-level `(system_did, topic)` route topic.
+    pub fn add_system_peer(&self, endpoint: EndpointAddr) -> Result<()> {
+        // Validate that the node is in system mode. The returned route is not
+        // needed here; the check keeps misuse symmetric with add_topic_route.
+        let _ = self.system_route_topic("__peer__")?;
+        let mut peers =
+            crate::trace::recover_poison(self.inner.system_peers.lock(), "Node::system_peers");
+        if !peers.iter().any(|existing| existing.id == endpoint.id) {
+            peers.push(endpoint);
+        }
+        Ok(())
     }
 
     /// Snapshot of node-level operational counters. Cheap; takes
@@ -446,7 +531,7 @@ impl Node {
     }
 
     /// Build a publisher for `topic`. Writes go to both:
-    /// * iceoryx2 service named `<identity>__<topic>` (same-host
+    /// * local SHM service named `<identity>__<topic>` (same-host
     ///   subscribers attach to this and read zero-copy);
     /// * a broadcast queue feeding the iroh accept loop, which
     ///   serves attached remote subscribers.
@@ -455,6 +540,7 @@ impl Node {
         T: datapod::DataPod + 'static,
     {
         validate_topic(topic)?;
+        let route_topic = self.route_topic(topic)?;
         let type_name = type_name::<T>();
         let type_hash = wire_type_hash::<T>();
         let payload_size = std::mem::size_of::<T>() as u32;
@@ -464,7 +550,7 @@ impl Node {
                 self.inner.publisher_topics.lock(),
                 "Node::publisher_topics",
             );
-            let entry = map.entry(topic.to_string()).or_insert_with(|| {
+            let entry = map.entry(route_topic.clone()).or_insert_with(|| {
                 let (tx, _rx) = broadcast::channel(DEFAULT_BROADCAST_CAPACITY);
                 PublisherTopicState {
                     iroh_tx: tx,
@@ -481,11 +567,7 @@ impl Node {
             entry.iroh_tx.clone()
         };
 
-        let svc_name = service_name(
-            self.inner.identity_name.as_deref(),
-            self.inner.endpoint_id.as_bytes(),
-            topic,
-        );
+        let svc_name = self.primary_service_name(topic)?;
         let service = LocalService::<T>::open_or_create(&svc_name, self.inner.local_cfg.clone())?;
         let local_publisher = service.publisher()?;
 
@@ -496,7 +578,7 @@ impl Node {
         // strings, bare `EndpointId`) can also route locally instead
         // of falling back to iroh loopback. No-op when the publisher
         // already composes by hex (`identity_file` / ephemeral).
-        let alias = if self.inner.identity_name.is_some() {
+        let alias = if self.inner.system_did.is_none() && self.inner.identity_name.is_some() {
             let hex_name = service_name(None, self.inner.endpoint_id.as_bytes(), topic);
             let alias_service =
                 LocalService::<T>::open_or_create(&hex_name, self.inner.local_cfg.clone())?;
@@ -519,10 +601,60 @@ impl Node {
         })
     }
 
+    /// Subscribe to a topic in this node's configured system DID.
+    ///
+    /// Resolution order:
+    ///
+    /// 1. Try local SHM for `(system_did, topic)`.
+    /// 2. If absent, use an explicit route added via
+    ///    [`add_topic_route`](Self::add_topic_route) and subscribe over iroh.
+    pub fn subscribe<T>(&self, topic: &str) -> Result<Subscriber<T>>
+    where
+        T: datapod::DataPod + 'static,
+    {
+        validate_topic(topic)?;
+        let route_topic = self.system_route_topic(topic)?;
+        let svc_name = system_service_name(
+            self.inner
+                .system_did
+                .as_deref()
+                .expect("system_route_topic validates presence"),
+            topic,
+        );
+
+        if let Ok(svc) = LocalService::<T>::open_existing(&svc_name) {
+            let local_sub = svc.subscriber()?;
+            return Ok(Subscriber {
+                source: SubscriberSource::Local {
+                    sub: local_sub,
+                    _svc: svc,
+                },
+                received: AtomicU64::new(0),
+                disconnects: AtomicU64::new(0),
+            });
+        }
+
+        let endpoint =
+            crate::trace::recover_poison(self.inner.system_routes.lock(), "Node::system_routes")
+                .get(&route_topic)
+                .cloned()
+                .or_else(|| {
+                    crate::trace::recover_poison(
+                        self.inner.system_peers.lock(),
+                        "Node::system_peers",
+                    )
+                    .first()
+                    .cloned()
+                })
+                .ok_or_else(|| Error::ServiceNotFound(route_topic.clone()))?;
+
+        self.remote_subscriber::<T>(endpoint.id, Some(endpoint), route_topic)
+    }
+
     /// Subscribe to `peer`'s publication of `topic`.
     ///
     /// Routing:
-    /// * If we can open an existing iceoryx2 service for the
+    /// * If we can open an existing local SHM service for the
     ///   peer + topic on this host → attach locally (zero copy).
     /// * Otherwise → dial `peer` over iroh, open a bi stream,
     ///   write the topic handshake, pump received frames to an
@@ -535,7 +667,7 @@ impl Node {
         let peer = peer.into_peer();
         let peer_bytes: [u8; 32] = *peer.endpoint_id.as_bytes();
 
-        // Try local first. iceoryx2's open-only call returns Err if
+        // Try local first. The open-only call returns Err if
         // the service hasn't been created anywhere on the host. We
         // try the named composition first (if any) then fall through
         // to the hex-EndpointId composition — that second probe is
@@ -561,17 +693,25 @@ impl Node {
             }
         }
 
+        self.remote_subscriber::<T>(peer.endpoint_id, peer.addr.clone(), topic.to_string())
+    }
+
+    fn remote_subscriber<T>(
+        &self,
+        peer_id: EndpointId,
+        addr_hint: Option<EndpointAddr>,
+        topic_owned: String,
+    ) -> Result<Subscriber<T>>
+    where
+        T: datapod::DataPod + 'static,
+    {
         // Remote path. Do one synchronous dial + handshake so the
         // caller sees a hard failure if the peer is unreachable
         // *at construction time*; after that, the background loop
         // owns reconnect.
         let inner = self.inner.clone();
-        let topic_owned = topic.to_string();
         let type_hash = wire_type_hash::<T>();
         let payload_size = std::mem::size_of::<T>() as u32;
-        let peer_id = peer.endpoint_id;
-        let addr_hint = peer.addr.clone();
-
         let rx_handle = self.rt.block_on(async move {
             let recv = subscribe_once(
                 &inner,
@@ -611,6 +751,33 @@ impl Node {
             received: AtomicU64::new(0),
             disconnects: AtomicU64::new(0),
         })
+    }
+
+    fn route_topic(&self, topic: &str) -> Result<String> {
+        match self.inner.system_did.as_deref() {
+            Some(system_did) => Ok(system_route_topic(system_did, topic)),
+            None => Ok(topic.to_string()),
+        }
+    }
+
+    fn system_route_topic(&self, topic: &str) -> Result<String> {
+        let system_did = self.inner.system_did.as_deref().ok_or_else(|| {
+            Error::invalid_argument(
+                "system_did is required for system topic subscribe/add_topic_route",
+            )
+        })?;
+        Ok(system_route_topic(system_did, topic))
+    }
+
+    fn primary_service_name(&self, topic: &str) -> Result<String> {
+        match self.inner.system_did.as_deref() {
+            Some(system_did) => Ok(system_service_name(system_did, topic)),
+            None => Ok(service_name(
+                self.inner.identity_name.as_deref(),
+                self.inner.endpoint_id.as_bytes(),
+                topic,
+            )),
+        }
     }
 }
 
@@ -737,7 +904,7 @@ impl<T: datapod::DataPod + 'static> Publisher<T> {
     }
 
     pub fn publish(&mut self, loan: Loan<T>) -> Result<u64> {
-        // Snapshot header + payload bytes before iceoryx2 consumes
+        // Snapshot header + payload bytes before local publish consumes
         // the loan; needed for the iroh broadcast and (when present)
         // the hex-aliased publisher's mirror loan.
         let header_bytes = bytemuck::bytes_of(loan.header()).to_vec();
@@ -869,7 +1036,7 @@ impl<T: datapod::DataPod + 'static> Subscriber<T> {
 }
 
 /// Unified sample. Exposes the wire-shape (`header()` + `payload()`)
-/// regardless of whether the message arrived via iceoryx2 (Local) or
+/// regardless of whether the message arrived via SHM (Local) or
 /// iroh (Remote). Reconstructing a full `T` from these is up to the
 /// caller — fixed-Pod types just read the header; heap types pair
 /// the header with `bytemuck::cast_slice` on the payload.
@@ -1067,27 +1234,45 @@ async fn write_topic_handshake(
     type_hash: u64,
     payload_size: u32,
 ) -> Result<()> {
+    const NODE_TOPIC_LEN_LIMIT: usize = 1024;
     let bytes = topic.as_bytes();
-    let mut buf = Vec::with_capacity(4 + bytes.len() + 8 + 4);
-    buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-    buf.extend_from_slice(bytes);
+    if bytes.len() > NODE_TOPIC_LEN_LIMIT {
+        return Err(Error::TopicNameTooLong {
+            len: bytes.len(),
+            limit: NODE_TOPIC_LEN_LIMIT,
+        });
+    }
+    let mut buf = Vec::with_capacity(4 + 4 + 8 + 4 + 2 + bytes.len());
+    buf.extend_from_slice(&HANDSHAKE_MAGIC.to_le_bytes());
+    buf.extend_from_slice(&HANDSHAKE_VERSION.to_le_bytes());
     buf.extend_from_slice(&type_hash.to_le_bytes());
     buf.extend_from_slice(&payload_size.to_le_bytes());
+    buf.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+    buf.extend_from_slice(bytes);
     send.write_all(&buf)
         .await
         .map_err(|e| Error::Remote(format!("topic handshake write: {e}")))?;
     Ok(())
 }
 
-async fn read_topic_handshake(
-    recv: &mut iroh::endpoint::RecvStream,
-) -> Result<(String, u64, u32)> {
+async fn read_topic_handshake(recv: &mut iroh::endpoint::RecvStream) -> Result<(String, u64, u32)> {
     const NODE_TOPIC_LEN_LIMIT: usize = 1024;
-    let mut topic_len = [0u8; 4];
-    recv.read_exact(&mut topic_len)
+    let mut magic = [0u8; 4];
+    recv.read_exact(&mut magic)
         .await
-        .map_err(|e| Error::HandshakeMalformed(format!("handshake topic_len: {e}")))?;
-    let n = u32::from_le_bytes(topic_len) as usize;
+        .map_err(|e| Error::HandshakeMalformed(format!("handshake magic: {e}")))?;
+    let magic = u32::from_le_bytes(magic);
+    if magic != HANDSHAKE_MAGIC {
+        return Err(Error::HandshakeMalformed(format!(
+            "unknown pub/sub stream magic 0x{magic:x}"
+        )));
+    }
+
+    let mut fixed_tail = [0u8; 4 + 8 + 4 + 2];
+    recv.read_exact(&mut fixed_tail)
+        .await
+        .map_err(|e| Error::HandshakeMalformed(format!("handshake tail: {e}")))?;
+    let n = u16::from_le_bytes(fixed_tail[16..18].try_into().unwrap()) as usize;
     if n > NODE_TOPIC_LEN_LIMIT {
         return Err(Error::TopicNameTooLong {
             len: n,
@@ -1098,27 +1283,21 @@ async fn read_topic_handshake(
     recv.read_exact(&mut topic)
         .await
         .map_err(|e| Error::HandshakeMalformed(format!("handshake topic: {e}")))?;
-    let mut hash = [0u8; 8];
-    recv.read_exact(&mut hash)
-        .await
-        .map_err(|e| Error::Remote(format!("handshake hash: {e}")))?;
-    let mut size = [0u8; 4];
-    recv.read_exact(&mut size)
-        .await
-        .map_err(|e| Error::Remote(format!("handshake size: {e}")))?;
-    let topic = String::from_utf8(topic)
-        .map_err(|e| Error::Remote(format!("handshake topic utf8: {e}")))?;
-    Ok((
-        topic,
-        u64::from_le_bytes(hash),
-        u32::from_le_bytes(size),
-    ))
+
+    let mut tail = Vec::with_capacity(fixed_tail.len() + topic.len());
+    tail.extend_from_slice(&fixed_tail);
+    tail.extend_from_slice(&topic);
+    parse_pubsub_handshake_tail(&tail)
 }
 
-async fn write_frame(
-    send: &mut iroh::endpoint::SendStream,
-    payload: &[u8],
-) -> Result<()> {
+async fn write_frame(send: &mut iroh::endpoint::SendStream, payload: &[u8]) -> Result<()> {
+    const NODE_MAX_FRAME: usize = 16 * 1024 * 1024;
+    if payload.len() > NODE_MAX_FRAME {
+        return Err(Error::PayloadTooLarge {
+            actual: payload.len(),
+            capacity: NODE_MAX_FRAME,
+        });
+    }
     let len = payload.len() as u32;
     send.write_all(&len.to_le_bytes())
         .await
@@ -1287,14 +1466,10 @@ fn enforce_key_perms(_path: &Path) {}
 
 // ---- service-name composition ----
 
-/// iceoryx2 service name = `<identity_name|hex_endpoint_id>__<sanitised_topic>`.
-/// iceoryx2 accepts `/`, `.`, alphanumerics — we still sanitise spaces and a
-/// few oddities so the name is friendly to look at via the iceoryx2 tooling.
-pub fn service_name(
-    identity_name: Option<&str>,
-    endpoint_id: &[u8; 32],
-    topic: &str,
-) -> String {
+/// Local service name = `<identity_name|hex_endpoint_id>__<sanitised_topic>`.
+/// The SHM backend hashes this to an OS-safe id; we still sanitise spaces and a
+/// few oddities so the logical name remains friendly in logs/tests.
+pub fn service_name(identity_name: Option<&str>, endpoint_id: &[u8; 32], topic: &str) -> String {
     let topic = sanitise(topic);
     match identity_name {
         Some(name) => format!("{}__{topic}", sanitise(name)),
@@ -1312,9 +1487,29 @@ fn sanitise(s: &str) -> String {
     s.replace([' '], "_")
 }
 
-/// Maximum byte length for a topic name. iceoryx2's `ServiceName` has a
-/// hard internal cap; we surface a slightly smaller one so the composed
-/// `<identity>__<topic>` still fits.
+fn validate_system_did(did: &str) -> Result<()> {
+    if !crate::did_key::looks_like_did_key(did) {
+        return Err(Error::invalid_argument(format!(
+            "system_did must be did:key:z..., got '{did}'"
+        )));
+    }
+    crate::did_key::did_key_to_endpoint_id(did)?;
+    Ok(())
+}
+
+fn system_route_topic(system_did: &str, topic: &str) -> String {
+    format!("{system_did}::{topic}")
+}
+
+fn system_service_name(system_did: &str, topic: &str) -> String {
+    format!(
+        "sys_{:016x}",
+        fnv1a64(&system_route_topic(system_did, topic))
+    )
+}
+
+/// Maximum byte length for a topic name. The local SHM backend uses the same
+/// cap for direct services and for composed `<identity>__<topic>` names.
 pub const MAX_TOPIC_BYTES: usize = 200;
 
 /// Validate a user-supplied topic string. Allowed characters:

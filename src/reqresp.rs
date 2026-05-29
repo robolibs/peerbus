@@ -4,10 +4,10 @@
 //! a `u64` correlation id plus a Pod metadata header `H`. For
 //! fixed-Pod request/response types `T`, `H = T` and the entire
 //! value rides in this header. For heap-bearing types, `H = T::Header`
-//! and the bytes ride in the iceoryx2 slice payload alongside.
+//! and the bytes ride in the variable-length payload alongside.
 
 use bytemuck::{Pod, Zeroable};
-use iceoryx2::prelude::ZeroCopySend;
+use datapod::ZeroCopySend;
 
 /// Request/response envelope. The `H` parameter is `T::Header` for
 /// whichever `T: datapod::DataPod` the service ships.
@@ -28,9 +28,9 @@ unsafe impl<H> Pod for Envelope<H> where H: Pod + Zeroable + ZeroCopySend + Copy
 unsafe impl<H> Zeroable for Envelope<H> where H: Pod + Zeroable + ZeroCopySend + Copy + 'static {}
 unsafe impl<H> ZeroCopySend for Envelope<H> where H: Pod + Zeroable + ZeroCopySend + Copy + 'static {}
 
-// `loan_slice_uninit` zero-initialises the iceoryx2 user_header via
-// `UserHeader::default()`. We can't derive `Default` (H may not be
-// Default), but H is `Zeroable`, so an all-zeros envelope is valid.
+// The local SHM loan path zero-initialises the fixed header. We can't
+// derive `Default` (H may not be Default), but H is `Zeroable`, so an
+// all-zeros envelope is valid.
 impl<H> Default for Envelope<H>
 where
     H: Pod + Zeroable + ZeroCopySend + Copy + 'static,

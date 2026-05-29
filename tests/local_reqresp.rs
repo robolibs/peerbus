@@ -29,8 +29,7 @@ fn name(stem: &str) -> String {
 
 #[test]
 fn single_client_single_server_roundtrip() {
-    let svc =
-        LocalReqRespService::<Add, Sum>::create(&name("rt"), LocalConfig::default()).unwrap();
+    let svc = LocalReqRespService::<Add, Sum>::create(&name("rt"), LocalConfig::default()).unwrap();
 
     let mut server = svc.server().unwrap();
     let mut client = svc.client().unwrap();
@@ -61,8 +60,7 @@ fn single_client_single_server_roundtrip() {
 #[test]
 fn timeout_when_no_server() {
     let svc =
-        LocalReqRespService::<Add, Sum>::create(&name("timeout"), LocalConfig::default())
-            .unwrap();
+        LocalReqRespService::<Add, Sum>::create(&name("timeout"), LocalConfig::default()).unwrap();
     let mut client = svc.client().unwrap();
     let r = client.call_with_timeout(&Add { a: 1, b: 2 }, Duration::from_millis(100));
     assert!(r.is_err(), "expected timeout error");

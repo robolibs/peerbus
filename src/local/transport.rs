@@ -1,7 +1,7 @@
-//! [`Transport`] impl backed by iceoryx2.
+//! [`Transport`] impl backed by the local SHM ring.
 //!
 //! Each `LocalTransport` is bound to one service name. Publisher
-//! and subscriber construction lazily open the iceoryx2 service.
+//! and subscriber construction lazily open the SHM service.
 
 use std::marker::PhantomData;
 
@@ -10,7 +10,7 @@ use crate::local::handle::{Loan, Sample};
 use crate::local::service::{LocalConfig, LocalPublisher, LocalService, LocalSubscriber};
 use crate::transport::{LocalPayload, PublisherOps, SubscriberOps, Transport};
 
-/// Same-host iceoryx2 transport. Cheap to clone (`Arc`-backed).
+/// Same-host SHM transport. Cheap to clone (`Arc`-backed).
 #[derive(Clone)]
 pub struct LocalTransport {
     name: String,
@@ -53,7 +53,7 @@ impl Transport for LocalTransport {
     }
 }
 
-/// Holds a `LocalService` to keep the iceoryx2 service alive for
+/// Holds a `LocalService` to keep the SHM service alive for
 /// the publisher's lifetime.
 pub struct LocalPublisherTyped<T: datapod::DataPod + 'static> {
     inner: LocalPublisher<T>,

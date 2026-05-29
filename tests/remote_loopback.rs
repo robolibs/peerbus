@@ -98,7 +98,10 @@ fn remote_loopback_multi_subscriber_fanout() {
     let mut got_b = false;
     while Instant::now() < deadline && !(got_a && got_b) {
         let mut loan = pubr.loan(0).unwrap();
-        loan.header = Tick { seq: 1, payload: 7777 };
+        loan.header = Tick {
+            seq: 1,
+            payload: 7777,
+        };
         pubr.publish(loan).unwrap();
         std::thread::sleep(Duration::from_millis(50));
 
@@ -119,23 +122,20 @@ fn remote_loopback_multi_subscriber_fanout() {
     assert!(got_b, "subscriber B should have received the payload");
 }
 
-/// Validates the C.2 + C.3 path: when a publisher Node is dropped,
-/// the subscriber's reconnect loop survives (no panics, no
-/// deadlock) and continues to retry the dial silently in the
-/// background. This is the "caller stays oblivious" half of the
-/// contract; surfacing `Error::Disconnected` would require an
-/// explicit give-up policy, which we have not introduced yet.
+/// Validates the C.2 + C.3 path across the Node/RemoteTransport
+/// seam: when the remote publisher endpoint is dropped, the Node
+/// subscriber's reconnect loop survives (no panics, no deadlock)
+/// and continues to retry the dial silently in the background.
 #[test]
 fn node_subscriber_survives_publisher_drop() {
-    let pub_node = Node::builder()
+    let pub_side = RemoteTransport::builder("drop/topic")
         .no_relay()
-        .identity("droppable_pub")
-        .bind()
-        .expect("publisher node");
-    pub_node
+        .build_blocking()
+        .expect("publisher transport");
+    pub_side
         .wait_for_direct_addresses(Duration::from_secs(5))
         .expect("addresses");
-    let pub_addr = pub_node.endpoint_addr();
+    let pub_addr = pub_side.endpoint_addr();
 
     let sub_node = Node::builder()
         .no_relay()
@@ -143,9 +143,7 @@ fn node_subscriber_survives_publisher_drop() {
         .bind()
         .expect("subscriber node");
 
-    let mut pubr = pub_node
-        .publisher::<Tick>("drop/topic")
-        .expect("publisher");
+    let mut pubr = pub_side.publisher::<Tick>().expect("publisher");
     let mut sub = sub_node
         .subscriber::<Tick>(pub_addr, "drop/topic")
         .expect("subscriber");
@@ -157,7 +155,12 @@ fn node_subscriber_survives_publisher_drop() {
     let mut got = false;
     let deadline = Instant::now() + Duration::from_secs(3);
     while !got && Instant::now() < deadline {
-        pubr.send(&Tick { seq: 1, payload: 100 }).unwrap();
+        let mut loan = pubr.loan(0).unwrap();
+        loan.header = Tick {
+            seq: 1,
+            payload: 100,
+        };
+        pubr.publish(loan).unwrap();
         std::thread::sleep(Duration::from_millis(50));
         while let Some(s) = sub.take().expect("take should not error during normal op") {
             if s.header().payload == 100 {
@@ -170,7 +173,7 @@ fn node_subscriber_survives_publisher_drop() {
 
     // Drop the publisher. Endpoint::close() is spawned best-effort.
     drop(pubr);
-    drop(pub_node);
+    drop(pub_side);
 
     // Subscriber should not deadlock, panic, or stop polling. We
     // accept any of Ok(None), Ok(Some(stale)), or one-off transport

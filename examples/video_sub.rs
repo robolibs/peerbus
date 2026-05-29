@@ -1,4 +1,4 @@
-//! Subscriber: opens a window and draws frames from `video_pub`.
+//! Subscriber: opens a Wayland window and draws frames from `video_pub`.
 //!
 //! Run:
 //!
@@ -7,7 +7,7 @@
 //! ```
 //!
 //! Same command works whether the publisher is on the same host
-//! (iceoryx2 SHM) or another machine (iroh). quicbit picks.
+//! (local SHM) or another machine (iroh). quicbit picks.
 
 use std::time::{Duration, Instant};
 
@@ -19,6 +19,7 @@ const TOPIC: &str = "demo/video";
 
 fn main() -> quicbit::Result<()> {
     init_tracing();
+    ensure_wayland_session();
 
     let did = std::env::args()
         .nth(1)
@@ -102,9 +103,19 @@ fn main() -> quicbit::Result<()> {
     Ok(())
 }
 
+fn ensure_wayland_session() {
+    if std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        eprintln!(
+            "error: video_sub is built Wayland-only; WAYLAND_DISPLAY is not set \
+             (start it inside a Wayland session, not Xorg/XWayland)"
+        );
+        std::process::exit(2);
+    }
+}
+
 fn init_tracing() {
     // RUST_LOG=iroh=info,quicbit=debug … cargo run --example …
-    use tracing_subscriber::{fmt, EnvFilter};
+    use tracing_subscriber::{EnvFilter, fmt};
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
     let _ = fmt().with_env_filter(filter).try_init();
 }

@@ -8,7 +8,7 @@
 //! ```
 //!
 //! Same command works whether the subscriber is on the same host
-//! (iceoryx2 SHM) or another machine (iroh). quicbit picks.
+//! (local SHM) or another machine (iroh). quicbit picks.
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -31,7 +31,7 @@ fn now_ns() -> u64 {
 
 fn init_tracing() {
     // RUST_LOG=iroh=info,quicbit=debug … cargo run --example …
-    use tracing_subscriber::{fmt, EnvFilter};
+    use tracing_subscriber::{EnvFilter, fmt};
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
     let _ = fmt().with_env_filter(filter).try_init();
 }
@@ -97,7 +97,7 @@ fn main() -> quicbit::Result<()> {
         }
         {
             let pixels: &mut [u32] = bytemuck::try_cast_slice_mut(loan.payload_mut())
-                .expect("iceoryx2 slot 4-byte aligned");
+                .expect("local SHM slot 4-byte aligned");
             render_cube(pixels, WIDTH as usize, HEIGHT as usize, t);
         }
         pubr.publish(loan)?;
@@ -129,20 +129,61 @@ struct V3 {
 }
 
 const CUBE_VERTS: [V3; 8] = [
-    V3 { x: -1.0, y: -1.0, z: -1.0 },
-    V3 { x:  1.0, y: -1.0, z: -1.0 },
-    V3 { x:  1.0, y:  1.0, z: -1.0 },
-    V3 { x: -1.0, y:  1.0, z: -1.0 },
-    V3 { x: -1.0, y: -1.0, z:  1.0 },
-    V3 { x:  1.0, y: -1.0, z:  1.0 },
-    V3 { x:  1.0, y:  1.0, z:  1.0 },
-    V3 { x: -1.0, y:  1.0, z:  1.0 },
+    V3 {
+        x: -1.0,
+        y: -1.0,
+        z: -1.0,
+    },
+    V3 {
+        x: 1.0,
+        y: -1.0,
+        z: -1.0,
+    },
+    V3 {
+        x: 1.0,
+        y: 1.0,
+        z: -1.0,
+    },
+    V3 {
+        x: -1.0,
+        y: 1.0,
+        z: -1.0,
+    },
+    V3 {
+        x: -1.0,
+        y: -1.0,
+        z: 1.0,
+    },
+    V3 {
+        x: 1.0,
+        y: -1.0,
+        z: 1.0,
+    },
+    V3 {
+        x: 1.0,
+        y: 1.0,
+        z: 1.0,
+    },
+    V3 {
+        x: -1.0,
+        y: 1.0,
+        z: 1.0,
+    },
 ];
 
 const CUBE_EDGES: [(usize, usize); 12] = [
-    (0, 1), (1, 2), (2, 3), (3, 0),
-    (4, 5), (5, 6), (6, 7), (7, 4),
-    (0, 4), (1, 5), (2, 6), (3, 7),
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 0),
+    (4, 5),
+    (5, 6),
+    (6, 7),
+    (7, 4),
+    (0, 4),
+    (1, 5),
+    (2, 6),
+    (3, 7),
 ];
 
 fn rotate(v: V3, ax: f32, ay: f32, az: f32) -> V3 {

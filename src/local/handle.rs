@@ -1,32 +1,25 @@
-//! RAII handles for borrowed iceoryx2 samples.
+//! RAII handles for borrowed local shared-memory samples.
 //!
 //! Both [`Loan<T>`] and [`Sample<T>`] expose the header+payload split:
-//! `header()` returns the small Pod metadata (a `T::Header`), and
-//! `payload()` returns the variable-length byte slice. For fixed-Pod
-//! types, the payload slice has length 0 and all data is in the
-//! header. For heap-bearing types, the payload bytes are the
-//! `bytemuck::cast_slice` view of the type's internal `Vec<...>`.
+//! `header()` returns the small Pod metadata (`T::Header`), and
+//! `payload()` returns the variable-length byte slice.
 
-use iceoryx2::prelude::*;
-use iceoryx2::sample::Sample as IoxSample;
-use iceoryx2::sample_mut::SampleMut as IoxSampleMut;
+use crate::local::shm;
 
-use crate::local::slot::Slot;
-
-/// Writable handle to an in-flight iceoryx2 sample.
+/// Writable handle to an in-flight SHM sample.
 pub struct Loan<T: datapod::DataPod + 'static> {
-    pub(crate) inner: IoxSampleMut<ipc_threadsafe::Service, [u8], Slot<T::Header>>,
+    pub(crate) inner: shm::Loan<T::Header>,
 }
 
 impl<T: datapod::DataPod + 'static> Loan<T> {
     /// Read the header.
     pub fn header(&self) -> &T::Header {
-        &self.inner.user_header().0
+        self.inner.header()
     }
 
     /// Mutate the header. For fixed-Pod `T`, set this to the full value.
     pub fn header_mut(&mut self) -> &mut T::Header {
-        &mut self.inner.user_header_mut().0
+        self.inner.header_mut()
     }
 
     /// Read the variable-length payload bytes.
@@ -41,23 +34,21 @@ impl<T: datapod::DataPod + 'static> Loan<T> {
     }
 }
 
-/// Read-only handle to a received iceoryx2 sample.
+/// Read-only handle to a received SHM sample.
 pub struct Sample<T: datapod::DataPod + 'static> {
-    pub(crate) inner: IoxSample<ipc_threadsafe::Service, [u8], Slot<T::Header>>,
+    pub(crate) inner: shm::Sample<T::Header>,
 }
 
 impl<T: datapod::DataPod + 'static> Sample<T> {
     pub fn header(&self) -> &T::Header {
-        &self.inner.user_header().0
+        self.inner.header()
     }
 
     pub fn payload(&self) -> &[u8] {
         self.inner.payload()
     }
 
-    /// Placeholder for per-publish sequence number — iceoryx2 v0.7
-    /// doesn't surface this on the sample's header.
     pub fn sequence(&self) -> u64 {
-        0
+        self.inner.sequence()
     }
 }

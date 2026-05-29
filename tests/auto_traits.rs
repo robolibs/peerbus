@@ -1,10 +1,8 @@
 //! Compile-time auto-trait assertions.
 //!
-//! After the iceoryx2 migration the iceoryx2-backed local handles
-//! (Publisher / Subscriber / SampleMut / Sample) carry raw
-//! pointers into iceoryx2-owned shared memory; they're `Send` on
-//! the `ipc_threadsafe` variant but not `Sync` from the user's
-//! perspective (you only get one mutable handle at a time).
+//! Local handles carry raw pointers into owned shared-memory mappings;
+//! they're `Send` from the user's perspective (you only get one
+//! mutable publisher/subscriber handle at a time).
 //!
 //! We keep the assertions that still hold (Node, Error,
 //! LocalConfig) and let go of the ones the new backend doesn't
