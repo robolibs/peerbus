@@ -1,8 +1,4 @@
 //! Minimal local SHM smoke test.
-//!
-//! Kept under the old example filename so existing `make run
-//! EXAMPLE=iceoryx_smoke` muscle memory still exercises the local
-//! transport after the backend swap.
 
 use core::time::Duration;
 
