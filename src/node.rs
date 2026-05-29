@@ -1181,7 +1181,33 @@ async fn serve_bi(
 
     loop {
         match rx.recv().await {
-            Ok(bytes) => {
+            Ok(mut bytes) => {
+                let mut skipped = 0u64;
+                loop {
+                    match rx.try_recv() {
+                        Ok(newer) => {
+                            bytes = newer;
+                            skipped += 1;
+                        }
+                        Err(broadcast::error::TryRecvError::Empty) => break,
+                        Err(broadcast::error::TryRecvError::Lagged(n)) => {
+                            skipped += n;
+                            continue;
+                        }
+                        Err(broadcast::error::TryRecvError::Closed) => {
+                            let _ = send.finish();
+                            return Ok(());
+                        }
+                    }
+                }
+                if skipped > 0 {
+                    qb_warn!(
+                        target: "quicbit::node",
+                        topic = %topic,
+                        dropped = skipped,
+                        "remote subscriber fell behind; sending newest frame"
+                    );
+                }
                 if write_frame(&mut send, &bytes).await.is_err() {
                     return Ok(());
                 }

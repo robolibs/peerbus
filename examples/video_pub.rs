@@ -1,10 +1,18 @@
-//! Spinning-cube wireframe at 4K, published through quicbit.
+//! Spinning-cube wireframe, published through quicbit.
 //! Pair with `examples/video_sub.rs`.
 //!
 //! Run:
 //!
 //! ```bash
 //! cargo run --release --example video_pub
+//! ```
+//!
+//! Defaults to a remote-friendly uncompressed 1280x720 @ 15 fps.
+//! Override for local SHM / very fast links:
+//!
+//! ```bash
+//! QUICBIT_VIDEO_WIDTH=3840 QUICBIT_VIDEO_HEIGHT=2160 QUICBIT_VIDEO_FPS=30 \
+//!   cargo run --release --example video_pub
 //! ```
 //!
 //! Same command works whether the subscriber is on the same host
@@ -14,13 +22,21 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use quicbit::demo::VideoFrame;
+use quicbit::remote::MAX_PAYLOAD_LEN;
 use quicbit::{LocalConfig, Node};
 
-const WIDTH: u32 = 3840;
-const HEIGHT: u32 = 2160;
-const FPS: u32 = 30;
+const DEFAULT_WIDTH: u32 = 1280;
+const DEFAULT_HEIGHT: u32 = 720;
+const DEFAULT_FPS: u32 = 15;
 const TOPIC: &str = "demo/video";
 const KEY_PATH: &str = "/tmp/quicbit_video_pub.key";
+
+#[derive(Debug, Clone, Copy)]
+struct VideoSettings {
+    width: u32,
+    height: u32,
+    fps: u32,
+}
 
 fn now_ns() -> u64 {
     std::time::SystemTime::now()
@@ -38,9 +54,23 @@ fn init_tracing() {
 
 fn main() -> quicbit::Result<()> {
     init_tracing();
+    let settings = video_settings()?;
+    let width = settings.width;
+    let height = settings.height;
+    let fps_target = settings.fps;
 
-    let pixel_count = WIDTH as usize * HEIGHT as usize;
-    let bytes_per_frame = pixel_count * 4;
+    let pixel_count = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or_else(|| quicbit::Error::invalid_argument("video dimensions overflow"))?;
+    let bytes_per_frame = pixel_count
+        .checked_mul(4)
+        .ok_or_else(|| quicbit::Error::invalid_argument("video frame size overflow"))?;
+    if bytes_per_frame > MAX_PAYLOAD_LEN as usize {
+        return Err(quicbit::Error::PayloadTooLarge {
+            actual: bytes_per_frame,
+            capacity: MAX_PAYLOAD_LEN as usize,
+        });
+    }
 
     let local_cfg = LocalConfig {
         max_payload_bytes: bytes_per_frame + 4096,
@@ -56,7 +86,13 @@ fn main() -> quicbit::Result<()> {
         .bind()?;
 
     let did = node.endpoint_did_key();
-    println!("publisher ready: {WIDTH}x{HEIGHT} @ {FPS} fps");
+    let raw_mbps = bytes_per_frame as f64 * fps_target as f64 * 8.0 / 1_000_000.0;
+    println!("publisher ready: {width}x{height} @ {fps_target} fps");
+    println!(
+        "raw uncompressed stream: {:.1} MiB/frame, {:.0} Mbit/s",
+        bytes_per_frame as f64 / 1_048_576.0,
+        raw_mbps
+    );
     println!("identity: {did}");
 
     // Wait for iroh to publish at least one transport address.
@@ -77,7 +113,7 @@ fn main() -> quicbit::Result<()> {
 
     let mut pubr = node.publisher::<VideoFrame>(TOPIC)?;
 
-    let frame_period = Duration::from_secs_f64(1.0 / FPS as f64);
+    let frame_period = Duration::from_secs_f64(1.0 / fps_target as f64);
     let t_start = Instant::now();
     let mut frame_no: u64 = 0;
     let mut bench_start = Instant::now();
@@ -90,15 +126,15 @@ fn main() -> quicbit::Result<()> {
         let mut loan = pubr.loan(bytes_per_frame)?;
         {
             let header = loan.header_mut();
-            header.width = WIDTH;
-            header.height = HEIGHT;
+            header.width = width;
+            header.height = height;
             header.frame_no = frame_no;
             header.stamp_ns = now_ns();
         }
         {
             let pixels: &mut [u32] = bytemuck::try_cast_slice_mut(loan.payload_mut())
                 .expect("local SHM slot 4-byte aligned");
-            render_cube(pixels, WIDTH as usize, HEIGHT as usize, t);
+            render_cube(pixels, width as usize, height as usize, t);
         }
         pubr.publish(loan)?;
 
@@ -116,6 +152,28 @@ fn main() -> quicbit::Result<()> {
         if let Some(rem) = frame_period.checked_sub(render_start.elapsed()) {
             thread::sleep(rem);
         }
+    }
+}
+
+fn video_settings() -> quicbit::Result<VideoSettings> {
+    let width = env_u32("QUICBIT_VIDEO_WIDTH", DEFAULT_WIDTH)?;
+    let height = env_u32("QUICBIT_VIDEO_HEIGHT", DEFAULT_HEIGHT)?;
+    let fps = env_u32("QUICBIT_VIDEO_FPS", DEFAULT_FPS)?;
+    if width == 0 || height == 0 || fps == 0 {
+        return Err(quicbit::Error::invalid_argument(
+            "QUICBIT_VIDEO_WIDTH, QUICBIT_VIDEO_HEIGHT and QUICBIT_VIDEO_FPS must be non-zero",
+        ));
+    }
+    Ok(VideoSettings { width, height, fps })
+}
+
+fn env_u32(name: &str, default: u32) -> quicbit::Result<u32> {
+    match std::env::var(name) {
+        Ok(value) => value
+            .parse::<u32>()
+            .map_err(|_| quicbit::Error::invalid_argument(format!("{name} must be a u32"))),
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(e) => Err(quicbit::Error::invalid_argument(format!("{name}: {e}"))),
     }
 }
 

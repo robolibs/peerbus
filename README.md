@@ -173,7 +173,10 @@ The local SHM backend and iroh are always on; there is no feature gate for eithe
 See `examples/` for direct usage. The GUI video subscriber
 (`video_sub`) is intentionally built with minifb's **Wayland-only**
 backend; run it from a Wayland session (`WAYLAND_DISPLAY` must be set).
-It will not fall back to Xorg/XWayland.
+It will not fall back to Xorg/XWayland. `video_pub` sends raw
+uncompressed RGBA frames; its default is a remote-friendly
+1280x720@15fps. Set `QUICBIT_VIDEO_WIDTH`, `QUICBIT_VIDEO_HEIGHT`, and
+`QUICBIT_VIDEO_FPS` to stress faster links or local SHM.
 
 ## Status
 
