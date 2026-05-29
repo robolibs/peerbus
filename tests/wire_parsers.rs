@@ -6,7 +6,8 @@
 
 use quicbit::Error;
 use quicbit::remote::{
-    HANDSHAKE_VERSION, parse_frame, parse_pubsub_handshake_tail, parse_request_handshake_tail,
+    HANDSHAKE_VERSION, MAX_PAYLOAD_LEN, parse_frame, parse_pubsub_handshake_tail,
+    parse_request_handshake_tail,
 };
 
 #[test]
@@ -103,8 +104,7 @@ fn frame_rejects_empty() {
 #[test]
 fn frame_rejects_oversize() {
     let mut buf = vec![];
-    // 16 MiB + 1 — over MAX_PAYLOAD_LEN.
-    buf.extend_from_slice(&(16u32 * 1024 * 1024 + 1).to_le_bytes());
+    buf.extend_from_slice(&(MAX_PAYLOAD_LEN + 1).to_le_bytes());
     assert!(matches!(
         parse_frame(&buf),
         Err(Error::FrameTooLarge { .. })

@@ -45,7 +45,9 @@ use crate::error::{Error, Result};
 use crate::local::service::{LocalConfig, LocalPublisher, LocalService, LocalSubscriber};
 use crate::local::{Loan, Sample};
 use crate::remote::runtime;
-use crate::remote::{HANDSHAKE_MAGIC, HANDSHAKE_VERSION, parse_pubsub_handshake_tail};
+use crate::remote::{
+    HANDSHAKE_MAGIC, HANDSHAKE_VERSION, MAX_PAYLOAD_LEN, parse_pubsub_handshake_tail,
+};
 use crate::transport::{fnv1a64, wire_type_hash};
 use crate::{qb_debug, qb_info, qb_warn};
 
@@ -1120,7 +1122,9 @@ async fn serve_incoming_connection(inner: Arc<NodeInner>, conn: Connection) -> R
             Ok((send, recv)) => {
                 let inner = inner.clone();
                 tokio::spawn(async move {
-                    let _ = serve_bi(inner, send, recv).await;
+                    if let Err(e) = serve_bi(inner, send, recv).await {
+                        qb_warn!(target: "quicbit::node", error = %e, "subscriber stream failed");
+                    }
                 });
             }
             Err(_) => return Ok(()),
@@ -1209,11 +1213,10 @@ async fn pump_recv_stream(
             return Ok(());
         }
         let len = u32::from_le_bytes(len_buf) as usize;
-        const NODE_MAX_FRAME: usize = 16 * 1024 * 1024;
-        if len > NODE_MAX_FRAME {
+        if len > MAX_PAYLOAD_LEN as usize {
             return Err(Error::FrameTooLarge {
                 actual: len as u64,
-                limit: NODE_MAX_FRAME as u64,
+                limit: MAX_PAYLOAD_LEN as u64,
             });
         }
         let mut buf = vec![0u8; len];
@@ -1291,11 +1294,10 @@ async fn read_topic_handshake(recv: &mut iroh::endpoint::RecvStream) -> Result<(
 }
 
 async fn write_frame(send: &mut iroh::endpoint::SendStream, payload: &[u8]) -> Result<()> {
-    const NODE_MAX_FRAME: usize = 16 * 1024 * 1024;
-    if payload.len() > NODE_MAX_FRAME {
+    if payload.len() > MAX_PAYLOAD_LEN as usize {
         return Err(Error::PayloadTooLarge {
             actual: payload.len(),
-            capacity: NODE_MAX_FRAME,
+            capacity: MAX_PAYLOAD_LEN as usize,
         });
     }
     let len = payload.len() as u32;

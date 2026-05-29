@@ -24,7 +24,7 @@ pub(crate) mod reqresp;
 pub(crate) mod runtime;
 pub(crate) mod transport;
 
-pub use handshake::{HANDSHAKE_MAGIC, HANDSHAKE_VERSION, REQRESP_MAGIC};
+pub use handshake::{HANDSHAKE_MAGIC, HANDSHAKE_VERSION, MAX_PAYLOAD_LEN, REQRESP_MAGIC};
 pub use reqresp::{RemoteClient, parse_request_handshake_tail};
 pub use transport::{
     RemoteLoan, RemotePublisher, RemotePublisherStats, RemoteSample, RemoteSubscriber,

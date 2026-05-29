@@ -50,6 +50,7 @@ pub const HANDSHAKE_VERSION: u32 = 2;
 /// Maximum topic name length on the wire.
 pub const MAX_TOPIC_LEN: u16 = 1024;
 
-/// Maximum single-message payload (16 MiB). Cap exists to defend
-/// against a malicious peer asking us to allocate huge buffers.
-pub const MAX_PAYLOAD_LEN: u32 = 16 * 1024 * 1024;
+/// Maximum single-message payload (64 MiB). Cap exists to defend
+/// against a malicious peer asking us to allocate huge buffers while
+/// still allowing the 4K RGBA video demo (~32 MiB/frame) over iroh.
+pub const MAX_PAYLOAD_LEN: u32 = 64 * 1024 * 1024;
