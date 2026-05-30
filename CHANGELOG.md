@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.0] - 2026-05-30
+
+### <!-- 0 -->⛰️  Features
+
+- Add req/res, que/ans, put/ack, pip item modes
+- Rename and simplify local SHM example
+- Migrate local transport to pure-Rust shared-memory ring
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Improve video publisher and subscriber resilience
+- Correctly handle large payloads and subscriber stream errors
+
 ## [0.1.0] - 2026-05-29
 
 ### <!-- 0 -->⛰️  Features
