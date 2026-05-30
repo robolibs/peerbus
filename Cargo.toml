@@ -1,6 +1,6 @@
 [package]
 name = "quicbit"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Trim Bresilla <trim.bresilla@gmail.com>"]
@@ -34,7 +34,7 @@ tracing = ["dep:tracing"]
 config = ["dep:serde_json", "dep:toml"]
 
 [dependencies]
-datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.1.2" }
+datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.2.0" }
 thiserror = "2.0"
 bytes = "1"
 bon = "3"
@@ -43,10 +43,10 @@ bon = "3"
 bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
 libc = "0.2"
 
-# iceoryx2 is the SHM IPC substrate for the local transport.
-# Replaces our home-grown segment allocator with a production-
-# tested zero-copy pub/sub primitive.
-iceoryx2 = "0.7"
+# Pure-Rust SHM substrate for the local transport. Keep the
+# cross-process control plane small and explicit; no bindgen/clang.
+shared_memory = "0.12.4"
+raw_sync = "0.1.5"
 
 # iroh — peer-to-peer QUIC. Brings hole punching, relay fallback,
 # and ed25519 EndpointId addressing. Always on (no `remote` feature
@@ -78,8 +78,9 @@ proptest = { version = "1.5", default-features = false, features = ["std"] }
 # nontrivial; see PLAN §Phase 6 for the current testing strategy.
 wirebit = { git = "https://codeberg.org/robolibs/wirebit.git", rev = "f4b72c4c2c16563a8897e3f7f0fe6efbfee97441" }
 # minifb is for the video subscriber example only — single-window
-# raw framebuffer. Pulls X11/Wayland on Linux; not a runtime dep.
-minifb = "0.27"
+# raw framebuffer. Force Wayland-only on Linux: no X11/XWayland backend
+# for the GUI example.
+minifb = { version = "0.27", default-features = false, features = ["wayland"] }
 # tracing-subscriber for the examples so iroh / quicbit emit logs
 # under RUST_LOG=iroh=info,quicbit=info etc.
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

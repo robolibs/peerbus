@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.0] - 2026-05-30
+
+### <!-- 0 -->⛰️  Features
+
+- Add req/res, que/ans, put/ack, pip item modes
+- Rename and simplify local SHM example
+- Migrate local transport to pure-Rust shared-memory ring
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Improve video publisher and subscriber resilience
+- Correctly handle large payloads and subscriber stream errors
+
 ## [0.1.0] - 2026-05-29
 
 ### <!-- 0 -->⛰️  Features
@@ -10,6 +23,5 @@
 - Add changelog generation and topic validation
 - Adopt datapod::DataPod for unified payloads
 - Introduce Node API for simplified usage
-- Move to iceoryx2
+- Move local SHM off iceoryx2 onto quicbit's pure-Rust shared-memory ring
 - Initial release of quicbit messaging library
-

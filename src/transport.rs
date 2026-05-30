@@ -1,7 +1,7 @@
 //! Transport abstractions.
 //!
 //! quicbit ships two transports today: [`crate::local::LocalTransport`]
-//! (iceoryx2 SHM) and [`crate::remote::RemoteTransport`] (iroh QUIC).
+//! (local SHM) and [`crate::remote::RemoteTransport`] (iroh QUIC).
 //! Both implement the [`Transport`] trait so higher layers can be
 //! generic over them.
 //!

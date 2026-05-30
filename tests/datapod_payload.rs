@@ -9,7 +9,7 @@ use datapod::{
     Aabb, Acceleration, BoundingSphere, Euler, GaussianPoint, Inertial, JointLimits, Odom, Point,
     Pose, Quaternion, Size, Triangle, Twist, Velocity, Wrench,
 };
-use quicbit::Node;
+use quicbit::{LocalConfig, LocalService};
 
 fn poll_for<R>(timeout: Duration, mut f: impl FnMut() -> Option<R>) -> Option<R> {
     let deadline = std::time::Instant::now() + timeout;
@@ -22,17 +22,28 @@ fn poll_for<R>(timeout: Duration, mut f: impl FnMut() -> Option<R>) -> Option<R>
     None
 }
 
+fn unique_name(stem: &str) -> String {
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    format!("{stem}_{pid}_{nanos}")
+}
+
 #[test]
 fn datapod_point_round_trip() {
-    let p_node = Node::builder().no_relay().identity("sensors").bind().unwrap();
-    let s_node = Node::builder().no_relay().identity("planner").bind().unwrap();
-
-    let mut pubr = p_node.publisher::<Point>("imu/position").unwrap();
-    let mut sub = s_node
-        .subscriber::<Point>("sensors", "imu/position")
+    let svc = LocalService::<Point>::create(&unique_name("imu_position"), LocalConfig::default())
         .unwrap();
+    let mut pubr = svc.publisher().unwrap();
+    let mut sub = svc.subscriber().unwrap();
 
-    pubr.send(&Point { x: 1.0, y: 2.0, z: 3.0 }).unwrap();
+    pubr.send(&Point {
+        x: 1.0,
+        y: 2.0,
+        z: 3.0,
+    })
+    .unwrap();
     let got = poll_for(Duration::from_secs(2), || sub.take().unwrap()).expect("sample");
     let h = got.header();
     assert_eq!(h.x, 1.0);
@@ -42,14 +53,17 @@ fn datapod_point_round_trip() {
 
 #[test]
 fn datapod_pose_round_trip() {
-    let p_node = Node::builder().no_relay().identity("loc").bind().unwrap();
-    let s_node = Node::builder().no_relay().identity("nav").bind().unwrap();
-
-    let mut pubr = p_node.publisher::<Pose>("rover/pose").unwrap();
-    let mut sub = s_node.subscriber::<Pose>("loc", "rover/pose").unwrap();
+    let svc =
+        LocalService::<Pose>::create(&unique_name("rover_pose"), LocalConfig::default()).unwrap();
+    let mut pubr = svc.publisher().unwrap();
+    let mut sub = svc.subscriber().unwrap();
 
     let p = Pose {
-        point: Point { x: 10.0, y: 20.0, z: 0.0 },
+        point: Point {
+            x: 10.0,
+            y: 20.0,
+            z: 0.0,
+        },
         rotation: Quaternion::identity(),
     };
     pubr.send(&p).unwrap();
@@ -72,20 +86,26 @@ fn datapod_compound_payload_works() {
         velocity: Velocity,
     }
 
-    let p_node = Node::builder().no_relay().identity("rover").bind().unwrap();
-    let s_node = Node::builder().no_relay().identity("logger").bind().unwrap();
-
-    let mut pubr = p_node.publisher::<Telemetry>("rover/telemetry").unwrap();
-    let mut sub = s_node
-        .subscriber::<Telemetry>("rover", "rover/telemetry")
-        .unwrap();
+    let svc =
+        LocalService::<Telemetry>::create(&unique_name("rover_telemetry"), LocalConfig::default())
+            .unwrap();
+    let mut pubr = svc.publisher().unwrap();
+    let mut sub = svc.subscriber().unwrap();
 
     let t = Telemetry {
         pose: Pose {
-            point: Point { x: 5.0, y: -2.0, z: 0.5 },
+            point: Point {
+                x: 5.0,
+                y: -2.0,
+                z: 0.5,
+            },
             rotation: Quaternion::identity(),
         },
-        velocity: Velocity { vx: 0.5, vy: 0.0, vz: 0.0 },
+        velocity: Velocity {
+            vx: 0.5,
+            vy: 0.0,
+            vz: 0.0,
+        },
     };
     pubr.send(&t).unwrap();
 
@@ -99,14 +119,21 @@ fn datapod_compound_payload_works() {
 /// quicbit.
 #[test]
 fn datapod_subfolder_types_round_trip() {
-    let p_node = Node::builder().no_relay().identity("pubr").bind().unwrap();
-    let s_node = Node::builder().no_relay().identity("subr").bind().unwrap();
-
-    let mut pubr = p_node.publisher::<Twist>("rover/twist").unwrap();
-    let mut sub = s_node.subscriber::<Twist>("pubr", "rover/twist").unwrap();
+    let svc =
+        LocalService::<Twist>::create(&unique_name("rover_twist"), LocalConfig::default()).unwrap();
+    let mut pubr = svc.publisher().unwrap();
+    let mut sub = svc.subscriber().unwrap();
     pubr.send(&Twist {
-        linear: Velocity { vx: 1.0, vy: 0.0, vz: 0.0 },
-        angular: Velocity { vx: 0.0, vy: 0.0, vz: 0.5 },
+        linear: Velocity {
+            vx: 1.0,
+            vy: 0.0,
+            vz: 0.0,
+        },
+        angular: Velocity {
+            vx: 0.0,
+            vy: 0.0,
+            vz: 0.5,
+        },
     })
     .unwrap();
     let got = poll_for(Duration::from_secs(2), || sub.take().unwrap()).expect("twist");

@@ -40,8 +40,11 @@ pub fn did_key_to_endpoint_id(did_uri: &str) -> Result<EndpointId> {
             info.public_key.len()
         ))
     })?;
-    EndpointId::from_bytes(&pub32)
-        .map_err(|e| Error::invalid_argument(format!("did:key '{did_uri}' is not a valid ed25519 point: {e}")))
+    EndpointId::from_bytes(&pub32).map_err(|e| {
+        Error::invalid_argument(format!(
+            "did:key '{did_uri}' is not a valid ed25519 point: {e}"
+        ))
+    })
 }
 
 /// Cheap heuristic check used by `IntoPeer` before falling back to

@@ -20,14 +20,24 @@
 //! representation. Non-Pod payloads come with Phase 4.
 
 mod handshake;
+pub(crate) mod items;
+pub(crate) mod pip;
+pub(crate) mod putack;
+pub(crate) mod queans;
 pub(crate) mod reqresp;
 pub(crate) mod runtime;
 pub(crate) mod transport;
 
-pub use handshake::{HANDSHAKE_MAGIC, HANDSHAKE_VERSION, REQRESP_MAGIC};
-pub use reqresp::{parse_request_handshake_tail, RemoteClient};
+pub use handshake::{
+    HANDSHAKE_MAGIC, HANDSHAKE_VERSION, ITEM_HANDSHAKE_VERSION_CHUNKED, MAX_PAYLOAD_LEN, PIP_MAGIC,
+    PUBSUB_HANDSHAKE_VERSION_QOS, PUTACK_MAGIC, QUEANS_MAGIC, REQRESP_MAGIC,
+};
+pub use pip::RemotePipClient;
+pub use putack::RemotePutClient;
+pub use queans::RemoteQueClient;
+pub use reqresp::{RemoteClient, RemoteReqClient, parse_request_handshake_tail};
 pub use transport::{
-    parse_frame, parse_pubsub_handshake_tail, RemoteLoan, RemotePublisher,
-    RemotePublisherStats, RemoteSample, RemoteSubscriber, RemoteSubscriberStats,
-    RemoteTransport, RemoteTransportBuilder,
+    PubSubHandshake, RemoteLoan, RemotePublisher, RemotePublisherStats, RemoteSample,
+    RemoteSubscriber, RemoteSubscriberStats, RemoteTransport, RemoteTransportBuilder, parse_frame,
+    parse_pubsub_handshake_tail, parse_pubsub_handshake_tail_qos,
 };

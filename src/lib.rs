@@ -1,15 +1,15 @@
 //! quicbit — typed zero-copy messaging for robotics.
 //!
 //! One entry point: [`Node`]. It owns an `iroh::Endpoint` for
-//! cross-host pub/sub plus an iceoryx2 service factory for
+//! cross-host pub/sub plus a local SHM service factory for
 //! same-host pub/sub, and exposes:
 //!
 //! * `node.publisher::<T>(topic)` — publish a topic. The publisher
-//!   writes payloads into an iceoryx2 sample slot (local
+//!   writes payloads into a shared-memory sample slot (local
 //!   subscribers read with zero copy) and broadcasts to any
 //!   currently-attached iroh subscribers (cross-host).
 //! * `node.subscriber::<T>(peer, topic)` — subscribe to a peer's
-//!   topic. quicbit tries the local iceoryx2 service first;
+//!   topic. quicbit tries the local SHM service first;
 //!   if the service doesn't exist on this host, it dials over iroh.
 //!
 //! ```no_run
@@ -36,26 +36,43 @@
 //! callers who want direct control. Most users want [`Node`].
 
 pub mod async_adapter;
+pub mod chunk;
 pub mod demo;
 pub mod did_key;
 pub mod error;
 pub mod local;
 pub mod node;
+pub mod pip;
+pub mod putack;
+pub mod qos;
+pub mod queans;
 pub mod remote;
 pub mod reqresp;
 mod trace;
 pub mod transport;
 
+pub use async_adapter::{AsyncPublisher, AsyncSubscriber};
 pub use error::{Error, Result};
 pub use local::{
-    LocalClient, LocalConfig, LocalPublisher, LocalReqRespService, LocalRequestServer,
-    LocalService, LocalSubscriber, LocalTransport, Loan, ReplyHandle, Sample,
+    AnsReply as LocalAnsReply, AnsSample as LocalAnsSample, Loan, LocalAckSample, LocalAckServer,
+    LocalAnsServer, LocalAnswers, LocalClient, LocalConfig, LocalPip, LocalPipClient,
+    LocalPipSample, LocalPipServer, LocalPipService, LocalPublisher, LocalPutAckService,
+    LocalPutClient, LocalPutSample, LocalPutSender, LocalPuts, LocalQueAnsService, LocalQueClient,
+    LocalReqClient, LocalReqResService, LocalReqRespService, LocalReqServer, LocalRequestServer,
+    LocalService, LocalSubscriber, LocalTransport, PendingQue as LocalPendingQue,
+    QueSample as LocalQueSample, ReplyHandle, Sample,
 };
 pub use node::{
-    IntoPeer, Node, NodeBuilder, NodeSample, NodeStats, Peer, Publisher, PublisherStats,
-    Subscriber, SubscriberStats,
+    AckSample, AckServer, AnsSample, AnsServer, Answers, IntoPeer, ItemStats, Node, NodeBuilder,
+    NodeSample, NodeStats, PathDiagnostic, Peer, PeerPathDiagnostics, PendingQue, PendingReq, Pip,
+    PipClient, PipSample, PipServer, PipStats, Publisher, PublisherStats, PutClient, PutSample,
+    PutSender, PutStats, Puts, QueClient, QueSample, QueStats, ReqClient, ReqReply, ReqSample,
+    ReqServer, ReqStats, ResSample, Subscriber, SubscriberStats,
 };
-pub use remote::{RemoteTransport, RemoteTransportBuilder};
+pub use qos::{DeliveryPolicy, TopicQos};
+pub use remote::{
+    RemotePipClient, RemotePutClient, RemoteQueClient, RemoteReqClient, RemoteTransport,
+    RemoteTransportBuilder,
+};
 pub use reqresp::Envelope;
-pub use async_adapter::{AsyncPublisher, AsyncSubscriber};
 pub use transport::{LocalPayload, PublisherOps, SubscriberOps, Transport};

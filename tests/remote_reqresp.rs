@@ -1,10 +1,9 @@
-//! Loopback test for the iroh-backed req/resp transport.
-
+//! Loopback test for the iroh-backed req/res transport.
 
 use std::time::Duration;
 
 use bytemuck::{Pod, Zeroable};
-use iceoryx2::prelude::ZeroCopySend;
+use datapod::ZeroCopySend;
 use quicbit::RemoteTransport;
 
 #[repr(C)]
@@ -32,7 +31,9 @@ fn remote_reqresp_call_roundtrip() {
         .expect("addresses");
 
     server_side
-        .serve_requests::<Add, Sum, _>(|req| Sum { value: req.a + req.b })
+        .serve_requests::<Add, Sum, _>(|req| Sum {
+            value: req.a + req.b,
+        })
         .expect("register handler");
 
     let server_addr = server_side.endpoint_addr();
@@ -51,9 +52,7 @@ fn remote_reqresp_call_roundtrip() {
         let resp = client.call(Add { a: i, b: i * 2 }).unwrap();
         assert_eq!(
             resp,
-            Sum {
-                value: i + i * 2
-            },
+            Sum { value: i + i * 2 },
             "wrong response for call {i}"
         );
     }

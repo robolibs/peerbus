@@ -1,11 +1,11 @@
-//! In-process request/response tests for the local transport.
+//! In-process req/res tests for the local transport.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use quicbit::{LocalConfig, LocalReqRespService};
+use quicbit::{LocalConfig, LocalReqResService, LocalReqRespService};
 
 #[datapod::datapod]
 struct Add {
@@ -29,8 +29,7 @@ fn name(stem: &str) -> String {
 
 #[test]
 fn single_client_single_server_roundtrip() {
-    let svc =
-        LocalReqRespService::<Add, Sum>::create(&name("rt"), LocalConfig::default()).unwrap();
+    let svc = LocalReqResService::<Add, Sum>::create(&name("rt"), LocalConfig::default()).unwrap();
 
     let mut server = svc.server().unwrap();
     let mut client = svc.client().unwrap();
@@ -61,9 +60,14 @@ fn single_client_single_server_roundtrip() {
 #[test]
 fn timeout_when_no_server() {
     let svc =
-        LocalReqRespService::<Add, Sum>::create(&name("timeout"), LocalConfig::default())
-            .unwrap();
+        LocalReqResService::<Add, Sum>::create(&name("timeout"), LocalConfig::default()).unwrap();
     let mut client = svc.client().unwrap();
     let r = client.call_with_timeout(&Add { a: 1, b: 2 }, Duration::from_millis(100));
     assert!(r.is_err(), "expected timeout error");
+}
+
+#[test]
+fn old_reqresp_alias_still_compiles() {
+    let _svc =
+        LocalReqRespService::<Add, Sum>::create(&name("alias"), LocalConfig::default()).unwrap();
 }

@@ -1,4 +1,4 @@
-//! Same-host loan/publish/consume demo via the iceoryx2-backed
+//! Same-host loan/publish/consume demo via the SHM-backed
 //! local transport.
 //!
 //! Run with `cargo run --example local_pose`. Spawns a thread that
