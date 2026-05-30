@@ -76,14 +76,6 @@
           libxrandr
         ];
 
-        # iceoryx2 has C bindings; its build.rs runs bindgen which
-        # needs libclang on LIBCLANG_PATH and libstdc++ resolvable
-        # via LD_LIBRARY_PATH. Without these, bindgen falls back to
-        # /usr/lib/llvm-* and fails on libstdc++.so.6.
-        nativeBuildLibs = with pkgs; [
-          libclang.lib
-          stdenv.cc.cc.lib
-        ];
       in
       {
         devShells.default = pkgs.mkShell {
@@ -107,11 +99,10 @@
           ] ++ pkgs.lib.optionals hasNvidia [
             nixglPkgs.nixGLNvidia
             nixglPkgs.nixVulkanNvidia
-          ] ++ bevyLibs ++ nativeBuildLibs;
+          ] ++ bevyLibs;
 
           RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
-          LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
-          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (bevyLibs ++ nativeBuildLibs);
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath bevyLibs;
           WGPU_VALIDATION = "0";
           WGPU_DEBUG = "0";
         };

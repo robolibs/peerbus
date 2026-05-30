@@ -30,8 +30,6 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: install libclang (iceoryx2 bindgen)
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
       - run: cargo clippy --all-features --all-targets -- -D warnings
 
   test:
@@ -49,8 +47,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: install libclang (iceoryx2 bindgen)
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
       - name: cargo test
         run: |
           if [ -z "${{ matrix.features }}" ]; then
@@ -68,8 +64,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: install libclang (iceoryx2 bindgen)
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
       - run: cargo doc --all-features --no-deps
 
   deny:

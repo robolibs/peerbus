@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use quicbit::demo::VideoFrame;
 use quicbit::remote::MAX_PAYLOAD_LEN;
-use quicbit::{LocalConfig, Node};
+use quicbit::{LocalConfig, Node, TopicQos};
 
 const DEFAULT_WIDTH: u32 = 1280;
 const DEFAULT_HEIGHT: u32 = 720;
@@ -111,7 +111,8 @@ fn main() -> quicbit::Result<()> {
     println!("    cargo run --release --example video_sub -- {did}");
     println!();
 
-    let mut pubr = node.publisher::<VideoFrame>(TOPIC)?;
+    let qos = TopicQos::latest().with_max_message_bytes(MAX_PAYLOAD_LEN as usize);
+    let mut pubr = node.publisher_with_qos::<VideoFrame>(TOPIC, qos)?;
 
     let frame_period = Duration::from_secs_f64(1.0 / fps_target as f64);
     let t_start = Instant::now();
@@ -288,6 +289,7 @@ fn render_cube(pixels: &mut [u32], w: usize, h: usize, t: f32) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_line(
     pixels: &mut [u32],
     w: usize,

@@ -6,14 +6,24 @@
 //!
 //!    ```text
 //!    [u32 magic = HANDSHAKE_MAGIC]
-//!    [u32 version]
+//!    [u32 version = 2]
 //!    [u64 type_hash]
 //!    [u32 payload_size]
 //!    [u16 topic_len][topic_bytes]
 //!    [u32 length][payload bytes]   x N
 //!    ```
 //!
-//! 2. **Request/response** (`REQRESP_MAGIC` = "QBR2"):
+//!    Version 3 adds data-agnostic QoS before `topic_len`:
+//!
+//!    ```text
+//!    [u64 max_message_bytes]
+//!    [u64 max_inflight_bytes]
+//!    [u32 chunk_bytes]
+//!    [u8  delivery_policy]
+//!    [u8  priority]
+//!    ```
+//!
+//! 2. **Req/res** (`REQRESP_MAGIC` = "QBR2"):
 //!
 //!    ```text
 //!    [u32 magic = REQRESP_MAGIC]
@@ -28,14 +38,29 @@
 //!    [u32 length][response bytes]
 //!    ```
 //!
+//! 3. **Que/ans** (`QUEANS_MAGIC` = "QBA1"), **put/ack**
+//!    (`PUTACK_MAGIC` = "QBP1"), and **pip** (`PIP_MAGIC` = "QBI1")
+//!    use the same typed topic handshake shape as req/res, then
+//!    exchange finite item streams with explicit done markers.
+//!
 //! The accept side discriminates on the leading `magic` so a single
-//! iroh endpoint can multiplex pub/sub and req/resp streams.
+//! iroh endpoint can multiplex pub/sub, req/res, que/ans, and put/ack
+//! streams.
 
 /// ASCII "QBR1" little-endian — pub/sub stream identifier.
 pub const HANDSHAKE_MAGIC: u32 = 0x3152_4251;
 
-/// ASCII "QBR2" little-endian — req/resp stream identifier.
+/// ASCII "QBR2" little-endian — req/res stream identifier.
 pub const REQRESP_MAGIC: u32 = 0x3252_4251;
+
+/// ASCII "QBA1" little-endian — que/ans stream identifier.
+pub const QUEANS_MAGIC: u32 = 0x3141_4251;
+
+/// ASCII "QBP1" little-endian — put/ack stream identifier.
+pub const PUTACK_MAGIC: u32 = 0x3150_4251;
+
+/// ASCII "QBI1" little-endian — pip stream identifier.
+pub const PIP_MAGIC: u32 = 0x3149_4251;
 
 /// Stream protocol version. Bump on any breaking wire change.
 ///
@@ -46,6 +71,20 @@ pub const REQRESP_MAGIC: u32 = 0x3252_4251;
 ///   via [`crate::transport::wire_type_hash`]. Stable across
 ///   toolchains; coarser (size+align collisions possible).
 pub const HANDSHAKE_VERSION: u32 = 2;
+
+/// Pub/sub handshake version carrying data-agnostic topic QoS.
+///
+/// This is only for `QBR1` pub/sub streams. Other stream families
+/// continue using [`HANDSHAKE_VERSION`] until their own wire shape
+/// changes.
+pub const PUBSUB_HANDSHAKE_VERSION_QOS: u32 = 3;
+
+/// Item-stream handshake version carrying data-agnostic byte limits
+/// (`max_message_bytes`, `max_inflight_bytes`, `chunk_bytes`) for the
+/// req/res, que/ans, put/ack, and pip families. Appended to the v2 tail
+/// before `topic_len`. Version 2 (legacy, single-frame, 64 MiB cap) is
+/// still accepted on the read path. Enables chunked large messages.
+pub const ITEM_HANDSHAKE_VERSION_CHUNKED: u32 = 3;
 
 /// Maximum topic name length on the wire.
 pub const MAX_TOPIC_LEN: u16 = 1024;

@@ -36,11 +36,16 @@
 //! callers who want direct control. Most users want [`Node`].
 
 pub mod async_adapter;
+pub mod chunk;
 pub mod demo;
 pub mod did_key;
 pub mod error;
 pub mod local;
 pub mod node;
+pub mod pip;
+pub mod putack;
+pub mod qos;
+pub mod queans;
 pub mod remote;
 pub mod reqresp;
 mod trace;
@@ -49,13 +54,25 @@ pub mod transport;
 pub use async_adapter::{AsyncPublisher, AsyncSubscriber};
 pub use error::{Error, Result};
 pub use local::{
-    Loan, LocalClient, LocalConfig, LocalPublisher, LocalReqRespService, LocalRequestServer,
-    LocalService, LocalSubscriber, LocalTransport, ReplyHandle, Sample,
+    AnsReply as LocalAnsReply, AnsSample as LocalAnsSample, Loan, LocalAckSample, LocalAckServer,
+    LocalAnsServer, LocalAnswers, LocalClient, LocalConfig, LocalPip, LocalPipClient,
+    LocalPipSample, LocalPipServer, LocalPipService, LocalPublisher, LocalPutAckService,
+    LocalPutClient, LocalPutSample, LocalPutSender, LocalPuts, LocalQueAnsService, LocalQueClient,
+    LocalReqClient, LocalReqResService, LocalReqRespService, LocalReqServer, LocalRequestServer,
+    LocalService, LocalSubscriber, LocalTransport, PendingQue as LocalPendingQue,
+    QueSample as LocalQueSample, ReplyHandle, Sample,
 };
 pub use node::{
-    IntoPeer, Node, NodeBuilder, NodeSample, NodeStats, Peer, Publisher, PublisherStats,
-    Subscriber, SubscriberStats,
+    AckSample, AckServer, AnsSample, AnsServer, Answers, IntoPeer, ItemStats, Node, NodeBuilder,
+    NodeSample, NodeStats, PathDiagnostic, Peer, PeerPathDiagnostics, PendingQue, PendingReq, Pip,
+    PipClient, PipSample, PipServer, PipStats, Publisher, PublisherStats, PutClient, PutSample,
+    PutSender, PutStats, Puts, QueClient, QueSample, QueStats, ReqClient, ReqReply, ReqSample,
+    ReqServer, ReqStats, ResSample, Subscriber, SubscriberStats,
 };
-pub use remote::{RemoteTransport, RemoteTransportBuilder};
+pub use qos::{DeliveryPolicy, TopicQos};
+pub use remote::{
+    RemotePipClient, RemotePutClient, RemoteQueClient, RemoteReqClient, RemoteTransport,
+    RemoteTransportBuilder,
+};
 pub use reqresp::Envelope;
 pub use transport::{LocalPayload, PublisherOps, SubscriberOps, Transport};

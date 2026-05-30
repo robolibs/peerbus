@@ -1,4 +1,4 @@
-//! Local (same-host) request/response over the SHM ring.
+//! Local (same-host) req/res over the SHM ring.
 //!
 //! Two pub/sub services back the implementation: `<name>__req` for
 //! requests and `<name>__resp` for responses. Each carries an
@@ -43,6 +43,17 @@ impl<T: datapod::DataPod + 'static> EnvelopedService<T> {
             cfg.clone(),
         )?;
         Ok(Self { segment, cfg })
+    }
+
+    fn open_existing(name: &str) -> Result<Self> {
+        let segment = Segment::<Envelope<T::Header>>::open_existing(
+            name,
+            wire_type_hash::<Envelope<T::Header>>(),
+        )?;
+        Ok(Self {
+            segment,
+            cfg: LocalConfig::default(),
+        })
     }
 
     fn publisher(&self) -> Result<Producer<Envelope<T::Header>>> {
@@ -90,6 +101,16 @@ where
         Self::create(name, cfg)
     }
 
+    pub fn open_existing(name: &str) -> Result<Self> {
+        let requests = EnvelopedService::<Req>::open_existing(&with_suffix(name, REQ_SUFFIX))?;
+        let responses = EnvelopedService::<Resp>::open_existing(&with_suffix(name, RESP_SUFFIX))?;
+        Ok(Self {
+            requests,
+            responses,
+            next_id: Arc::new(AtomicU64::new(0)),
+        })
+    }
+
     pub fn server(&self) -> Result<LocalRequestServer<Req, Resp>> {
         Ok(LocalRequestServer {
             requests: self.requests.subscriber()?,
@@ -129,6 +150,7 @@ impl<Req: datapod::DataPod + 'static> RequestSample<Req> {
 }
 
 pub type PendingRequest<'a, Req, Resp> = (RequestSample<Req>, ReplyHandle<'a, Req, Resp>);
+pub type PendingReq<'a, Req, Res> = (RequestSample<Req>, ReplyHandle<'a, Req, Res>);
 
 pub struct LocalRequestServer<Req, Resp>
 where
@@ -248,6 +270,11 @@ where
         )))
     }
 }
+
+pub type LocalReqResService<Req, Res> = LocalReqRespService<Req, Res>;
+pub type LocalReqServer<Req, Res> = LocalRequestServer<Req, Res>;
+pub type LocalReqClient<Req, Res> = LocalClient<Req, Res>;
+pub type ResSample<Res> = ResponseSample<Res>;
 
 fn publish_enveloped<T>(
     publisher: &mut Producer<Envelope<T::Header>>,

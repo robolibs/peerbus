@@ -11,12 +11,29 @@
 //! wakeup primitive.
 
 pub mod handle;
+pub mod pip;
+pub mod putack;
+pub mod queans;
 pub mod reqresp;
 pub mod service;
 pub(crate) mod shm;
 pub mod transport;
 
 pub use handle::{Loan, Sample};
-pub use reqresp::{LocalClient, LocalReqRespService, LocalRequestServer, ReplyHandle};
+pub use pip::{
+    LocalPip, LocalPipClient, LocalPipServer, LocalPipService, PipSample as LocalPipSample,
+};
+pub use putack::{
+    AckSample as LocalAckSample, LocalAckServer, LocalPutAckService, LocalPutClient,
+    LocalPutSender, LocalPuts, PutSample as LocalPutSample,
+};
+pub use queans::{
+    AnsReply, AnsSample, LocalAnsServer, LocalAnswers, LocalQueAnsService, LocalQueClient,
+    PendingQue, QueSample,
+};
+pub use reqresp::{
+    LocalClient, LocalReqClient, LocalReqResService, LocalReqRespService, LocalReqServer,
+    LocalRequestServer, ReplyHandle,
+};
 pub use service::{LocalConfig, LocalPublisher, LocalService, LocalSubscriber};
 pub use transport::LocalTransport;

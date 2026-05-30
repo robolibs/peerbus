@@ -7,17 +7,54 @@ Typed zero-copy messaging for robotics. One API, two transports:
 
 The routing decision happens once at `subscriber()` and is invisible afterwards.
 
+## Modes at a glance
+
+Five messaging modes, one `Node` API. They differ by how many messages
+each side sends and how the peers relate:
+
+```text
+                     server sends ONE        server sends MANY
+                   ┌──────────────────────┬──────────────────────┐
+ client sends ONE  │       req/res        │       que/ans        │
+                   │   1 req → 1 res       │   1 que → 0..N ans    │
+                   ├──────────────────────┼──────────────────────┤
+ client sends MANY │       put/ack        │         pip          │
+                   │  0..N put → 1 ack     │  0..N ↔ 0..N (bidi)   │
+                   └──────────────────────┴──────────────────────┘
+
+ pub/sub  —  a producer's stream fans out to every subscriber (M : N)
+```
+
+| Mode      | client → server | server → client | flow       |
+|-----------|:---------------:|:---------------:|------------|
+| `pub/sub` | — (stream)      | broadcast       | 1-to-many  |
+| `req/res` | 1               | 1               | 1-to-1     |
+| `que/ans` | 1               | 0..N            | 1-to-many  |
+| `put/ack` | 0..N            | 1               | many-to-1  |
+| `pip`     | 0..N            | 0..N            | many↔many  |
+
+**Peer model — the same for every mode.** A consumer addresses one
+producer by `(identity, topic)`; any number of producers and consumers
+can coexist on a topic across hosts, and each consumer attaches to the
+one it names. So the modes are at parity on *how peers connect* — they
+differ only in the **message flow** above and in **delivery**: pub/sub
+delivers each producer message to **all** attached subscribers
+(fan-out), while req/res, que/ans, put/ack, and pip give each client
+its **own** independent exchange.
+
+**Transport is orthogonal too.** Same host → shared memory (zero-copy);
+remote → iroh QUIC. `Node` picks per peer at construction time; every
+shape above is identical on both.
+
 ## Install
 
 ```toml
 quicbit = { git = "https://codeberg.org/robolibs/quicbit" }
 ```
 
-On Nix: `nix develop`. If `NVIDIA_VERSION` is detected, the shell's
-`nixGL` / `nixVulkan` aliases target `nixGLNvidia`; otherwise they
-fall back to `nixGLIntel` / `nixVulkanIntel`. The local backend is
-pure Rust (`shared_memory` + `raw_sync`); with `datapod` 0.2.0 there is
-no iceoryx2/libclang dependency in quicbit's Cargo graph.
+On Nix: `nix develop`. The local backend is pure Rust
+(`shared_memory` + `raw_sync`) — no iceoryx2/libclang in the
+dependency graph.
 
 ## Publish and subscribe
 
@@ -114,34 +151,125 @@ let node = Node::builder()
 
 Without `allow_peer`, any peer that knows the ALPN can subscribe. Once one is set, every other connection is closed immediately after the QUIC handshake.
 
-## Request / response
+## Req/res
 
 ```rust
-use quicbit::{LocalConfig, LocalReqRespService};
+use quicbit::Node;
 
-let svc = LocalReqRespService::<Ping, Pong>::create("calc", LocalConfig::default())?;
+let server_node = Node::builder().identity("calc").bind()?;
+let client_node = Node::builder().bind()?;
 
 // server
-let mut server = svc.server()?;
-while let Some((req, reply)) = server.take_request()? {
-    reply.respond(&handle(req.header()))?;
+let mut server = server_node.req_server::<Ping, Pong>("calc/ping")?;
+while let Some((req, res)) = server.take()? {
+    res.respond(&handle(req.header()))?;
 }
 
 // client
-let mut client = svc.client()?;
-let resp = client.call(&Ping { /* … */ })?;
-let pong: Pong = *resp.header();
+let mut client = client_node.req_client::<Ping, Pong>("calc", "calc/ping")?;
+let res = client.call(&Ping { /* … */ })?;
+let pong: Pong = *res.header();
 # Ok::<_, quicbit::Error>(())
 ```
 
-Correlated by `req_id` on the shared `Envelope<H>` wire format.
+The high-level `Node` API chooses local SHM first and falls back to
+iroh, matching pub/sub routing. Lower-level `LocalReqResService` and
+`RemoteTransport` req/res APIs remain available for advanced use.
+
+## Que/ans
+
+For one query that returns zero or more finite answers, use `que/ans`:
+
+```rust
+let mut server = server_node.ans::<RangeQue, Hit>("search/range")?;
+let mut client = client_node.que_client::<RangeQue, Hit>("search", "search/range")?;
+
+// server
+while let Some((que, mut ans)) = server.take()? {
+    for value in lookup(que.header()) {
+        ans.send(&Hit { value })?;
+    }
+    ans.finish()?;
+}
+
+// client
+let mut answers = client.send(&RangeQue { start: 10, count: 3 })?;
+while let Some(hit) = answers.next()? {
+    println!("hit: {:?}", hit.header());
+}
+# Ok::<_, quicbit::Error>(())
+```
+
+Like pub/sub and req/res, `que_client(peer, topic)` tries local SHM first
+and falls back to iroh. In system-DID mode, use `node.que::<Que, Ans>(topic)`
+to route by `(system_did, topic)`.
+
+## Put/ack
+
+For a finite client-to-server item stream with one final acknowledgement,
+use `put/ack`:
+
+```rust
+let mut server = server_node.ack::<LogChunk, UploadAck>("logs/upload")?;
+let mut client = client_node.put_client::<LogChunk, UploadAck>("logger", "logs/upload")?;
+
+// server
+while let Some(mut puts) = server.take()? {
+    let mut count = 0;
+    while let Some(chunk) = puts.next()? {
+        save(chunk.payload());
+        count += 1;
+    }
+    puts.ack(&UploadAck { count })?;
+}
+
+// client
+let mut put = client.open()?;
+put.send(&chunk_a)?;
+put.send(&chunk_b)?;
+let ack = put.finish()?;
+# Ok::<_, quicbit::Error>(())
+```
+
+`put_client(peer, topic)` chooses local SHM first and then iroh. In
+system-DID mode, use `node.put::<Put, Ack>(topic)`.
+
+## Pip
+
+For a bidirectional session where both sides can exchange many messages,
+use `pip`:
+
+```rust
+let mut server = server_node.pip_server::<ClientMsg, ServerMsg>("session")?;
+let mut client = client_node.pip_client::<ClientMsg, ServerMsg>("robot", "session")?;
+
+// server
+while let Some(mut pip) = server.take()? {
+    if let Some(msg) = pip.next()? {
+        pip.send(&handle(msg.header()))?;
+        pip.finish_send()?;
+    }
+}
+
+// client
+let mut pip = client.open()?;
+pip.send(&ClientMsg { /* … */ })?;
+while let Some(msg) = pip.next()? {
+    handle_server_msg(msg.header());
+}
+# Ok::<_, quicbit::Error>(())
+```
+
+`pip_client(peer, topic)` chooses local SHM first and then iroh. In
+system-DID mode, use `node.pip::<ClientMsg, ServerMsg>(topic)`.
 
 ## Observability
 
 ```rust
 node.stats();    // publisher_topics, cached_peers
-pubr.stats();    // published, remote_dropped
-sub.stats();     // received, disconnects
+pubr.stats();    // published, remote_dropped, stale_dropped, bytes_sent, send_errors
+sub.stats();     // received, disconnects, stale_dropped, incomplete_dropped, bytes_received
+node.peer_path_diagnostics(peer); // direct/relay, RTT, MTU, datagram capacity
 ```
 
 Enable the `tracing` feature for structured events on accept / connect / disconnect / handshake mismatch / broadcast lag / poisoned-mutex recovery. The loan-publish-take hot path stays uninstrumented.
@@ -161,22 +289,66 @@ Enable the `tracing` feature for structured events on accept / connect / disconn
 
 The local SHM backend and iroh are always on; there is no feature gate for either transport.
 
+## Topic QoS
+
+High-rate topics can choose transport behavior without putting datatype logic
+inside quicbit:
+
+```rust
+use quicbit::{TopicQos, DeliveryPolicy};
+
+let qos = TopicQos::latest()
+    .with_subscriber_queue(8)
+    .with_max_message_bytes(64 * 1024 * 1024);
+
+let mut pubr = node.publisher_with_qos::<VideoFrame>("demo/video", qos)?;
+```
+
+`DeliveryPolicy::Reliable` is the default. Its publisher-side remote fanout
+queue is bounded by `subscriber_queue`; if a reliable remote subscriber falls
+behind that queue, quicbit reports lag instead of silently dropping old data.
+`Latest` lets slow remote subscribers skip stale queued samples and receive
+the newest sample instead.
+For local SHM subscribers, `Latest`/`BestEffort` drain immediately-available
+ring samples and return only the newest one, with skipped samples counted in
+`sub.stats().stale_dropped`.
+`BestEffort` uses iroh QUIC datagrams on the v3 Node pub/sub path when the
+peer/path supports them; otherwise it falls back to latest-over-stream.
+Node subscribers advertise these QoS fields in the pub/sub v3 handshake;
+lower-level v2 peers remain accepted during the transition.
+When both sides use the v3 Node pub/sub path, frames larger than
+`chunk_bytes` are split and reassembled as opaque byte chunks.
+
+### QoS for req/res, que/ans, put/ack, pip
+
+The item modes accept the **byte-limit** subset of `TopicQos` via
+`*_with_qos` constructors (`req_server_with_qos`, `que_client_with_qos`,
+`ack_with_qos`, `pip_server_with_qos`, …). Large requests, answers,
+puts, and pip messages are chunked and reassembled exactly like pub/sub,
+lifting the 64 MiB single-frame cap (bounded by `max_inflight_bytes`).
+These modes are always **Reliable** — `Latest`/`BestEffort` and the
+datagram path are pub/sub-only, since dropping an in-flight item would
+break their contract. Each server and client exposes remote-path
+counters via `.stats()` (`ReqStats`/`QueStats`/`PutStats`/`PipStats`).
+
 ## Lower-level building blocks
 
 `Node` is the recommended entry point. The pieces it composes are also public:
 
 - `LocalTransport` / `LocalService<T>` — local SHM pub/sub directly.
-- `RemoteTransport` — iroh pub/sub directly.
+- `RemoteTransport` — iroh directly, for all five modes without `Node`:
+  pub/sub, req/res (`serve_requests`/`client`), que/ans
+  (`serve_queries`/`que_client`), put/ack (`serve_uploads`/`put_client`),
+  and pip (`serve_sessions`/`pip_client`). `Pod` payloads; interoperates
+  with the `Node` path over iroh.
 - `AsyncPublisher` / `AsyncSubscriber` — `async fn` shims over the sync core.
 - `did_key::endpoint_id_to_did_key` / `did_key_to_endpoint_id` — DID:KEY adapter (delegates to [`authbox`](https://codeberg.org/robolibs/authbox)).
 
-See `examples/` for direct usage. The GUI video subscriber
-(`video_sub`) is intentionally built with minifb's **Wayland-only**
-backend; run it from a Wayland session (`WAYLAND_DISPLAY` must be set).
-It will not fall back to Xorg/XWayland. `video_pub` sends raw
-uncompressed RGBA frames; its default is a remote-friendly
-1280x720@15fps. Set `QUICBIT_VIDEO_WIDTH`, `QUICBIT_VIDEO_HEIGHT`, and
-`QUICBIT_VIDEO_FPS` to stress faster links or local SHM.
+See `examples/` for runnable demos of every mode over **both**
+transports: `req_res`, `que_ans`, `put_ack`, and `pip` each show a
+shared-memory and an iroh section, with pub/sub in `node_demo` (SHM)
+and `remote_loopback` (iroh). The `video_sub` GUI demo is Wayland-only
+(minifb).
 
 ## Status
 

@@ -1,4 +1,4 @@
-//! Loopback test for the iroh-backed req/resp transport.
+//! Loopback test for the iroh-backed req/res transport.
 
 use std::time::Duration;
 

@@ -68,6 +68,36 @@ between minor releases.
   this back down to one endpoint for the whole process; most
   users should be on `Node`.
 
+## Item modes (req/res, que/ans, put/ack, pip)
+
+- **Large messages are chunked.** Each remote item rides the same
+  opaque-byte chunk/reassembly path as pub/sub, so a request / answer /
+  put / pip message larger than the 64 MiB single-frame cap is split and
+  reassembled. Total size is bounded by `TopicQos::max_inflight_bytes`.
+  Opt into bigger limits with the `*_with_qos` constructors
+  (`req_server_with_qos`, `que_client_with_qos`, …); the byte-limit
+  fields apply, and `delivery` is treated as **Reliable**.
+- **`DeliveryPolicy::Latest` / `BestEffort` and QUIC datagrams are
+  pub/sub-only by design.** These modes never drop in-flight items —
+  dropping a response / a queued answer / an uploaded chunk / a session
+  message would break their contract — so freshness-wins delivery and
+  the datagram path do not apply.
+- **Per-mode counters** are available via `.stats()` on every server and
+  client (`ReqStats`/`QueStats`/`PutStats`/`PipStats`). They count the
+  **remote (iroh)** path; locally-routed (SHM) endpoints report zeros,
+  mirroring `PublisherStats`.
+- **Standalone `RemoteTransport` servers/clients exist for all five
+  modes** (`serve_queries`/`que_client`, `serve_uploads`/`put_client`,
+  `serve_sessions`/`pip_client`, alongside pub/sub and req/res), and
+  interoperate with the `Node` path over iroh in both directions. They
+  take `bytemuck::Pod` payloads and are an advanced escape hatch — most
+  users want `Node`. The standalone **pip** server is
+  *collect-then-respond* (the handler receives all client messages, then
+  returns all replies); for a truly interactive session use the `Node`
+  pip API. Standalone clients send single-frame items (like standalone
+  req/res), so the >64 MiB chunked-*send* path is `Node`-only; standalone
+  servers do reassemble chunked items from a `Node` client.
+
 ## Identity
 
 - **`identity("name")` is impersonable.** The literal string hashes

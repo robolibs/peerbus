@@ -1,15 +1,15 @@
-//! Cross-cutting types for request/response.
+//! Cross-cutting types for req/res.
 //!
 //! `Envelope<H>` is the user_header used by the reqresp services:
 //! a `u64` correlation id plus a Pod metadata header `H`. For
-//! fixed-Pod request/response types `T`, `H = T` and the entire
+//! fixed-Pod req/res types `T`, `H = T` and the entire
 //! value rides in this header. For heap-bearing types, `H = T::Header`
 //! and the bytes ride in the variable-length payload alongside.
 
 use bytemuck::{Pod, Zeroable};
 use datapod::ZeroCopySend;
 
-/// Request/response envelope. The `H` parameter is `T::Header` for
+/// Req/res envelope. The `H` parameter is `T::Header` for
 /// whichever `T: datapod::DataPod` the service ships.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]

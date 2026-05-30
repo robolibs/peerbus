@@ -1,4 +1,4 @@
-//! Remote request/response over iroh.
+//! Remote req/res over iroh.
 //!
 //! Each call opens a fresh bi-directional QUIC stream. The wire
 //! protocol is described in [`super::handshake`]:
@@ -22,10 +22,12 @@ use bytemuck::Pod;
 use iroh::endpoint::{RecvStream, SendStream};
 
 use crate::error::{Error, Result};
-use crate::remote::handshake::{HANDSHAKE_VERSION, MAX_TOPIC_LEN, REQRESP_MAGIC};
+use crate::remote::handshake::{
+    HANDSHAKE_VERSION, ITEM_HANDSHAKE_VERSION_CHUNKED, MAX_TOPIC_LEN, REQRESP_MAGIC,
+};
 use crate::remote::transport::{
     ErasedReqHandler, InnerShared, RemoteTransport, RequestServerEntry, ensure_peer_connection,
-    read_frame, write_frame,
+    read_frame, read_item_reassembled, write_frame,
 };
 use crate::transport::wire_type_hash;
 
@@ -103,13 +105,15 @@ impl RemoteTransport {
     }
 }
 
-/// Client handle for remote req/resp.
+/// Client handle for remote req/res.
 pub struct RemoteClient<Req: Pod, Resp: Pod> {
     shared: Arc<InnerShared>,
     runtime: Arc<tokio::runtime::Runtime>,
     topic: String,
     _phantom: PhantomData<fn(Req) -> Resp>,
 }
+
+pub type RemoteReqClient<Req, Res> = RemoteClient<Req, Res>;
 
 impl<Req, Resp> RemoteClient<Req, Resp>
 where
@@ -158,7 +162,7 @@ where
     }
 }
 
-/// Handle one incoming req/resp bi stream on the server side.
+/// Handle one incoming req/res bi stream on the server side.
 ///
 /// Called from [`super::transport::serve_bi`] after the dispatch
 /// magic has been consumed.
@@ -201,7 +205,11 @@ pub(crate) async fn serve_request_bi(
         });
     }
 
-    let req_bytes = read_frame(&mut recv)
+    // Reassemble a possibly-chunked request (a v3 Node client chunks
+    // payloads larger than its `chunk_bytes`). A generous reassembly
+    // bound keeps the escape-hatch path from rejecting large messages.
+    const STANDALONE_MAX_INFLIGHT: usize = 1 << 30; // 1 GiB
+    let req_bytes = read_item_reassembled(&mut recv, STANDALONE_MAX_INFLIGHT)
         .await?
         .ok_or_else(|| Error::Remote("client closed without sending a request".to_string()))?;
     let resp_bytes = (entry.handler)(&req_bytes)?;
@@ -239,65 +247,98 @@ async fn write_request_handshake(
         .map_err(|e| Error::Remote(format!("write request handshake: {e}")))
 }
 
-/// Read the request handshake tail. Magic was consumed by the
-/// dispatcher in [`super::transport::serve_bi`].
-async fn read_request_handshake_tail(
+/// Read the typed-topic item handshake tail (shared by req/res,
+/// que/ans, put/ack, pip — identical layout). Magic was consumed by the
+/// dispatcher in [`super::transport::serve_bi`]. Accepts v2 and v3.
+pub(crate) async fn read_request_handshake_tail(
     recv: &mut RecvStream,
 ) -> Result<(String, u64, u64, u32, u32)> {
-    let mut header = [0u8; 4 + 8 + 8 + 4 + 4 + 2];
-    recv.read_exact(&mut header)
+    // v2 fixed prefix: version(4) + hashes(16) + sizes(8) + topic_len(2).
+    const V2_FIXED: usize = 4 + 8 + 8 + 4 + 4 + 2;
+    // v3 inserts byte limits (max_message + max_inflight + chunk_bytes)
+    // before topic_len: +20 bytes.
+    const V3_FIXED: usize = V2_FIXED - 2 + 8 + 8 + 4 + 2;
+    let mut v2 = [0u8; V2_FIXED];
+    recv.read_exact(&mut v2)
         .await
         .map_err(|e| Error::HandshakeMalformed(format!("request handshake: {e}")))?;
-    let topic_len = u16::from_le_bytes(header[28..30].try_into().unwrap()) as usize;
+    let version = u32::from_le_bytes(v2[0..4].try_into().unwrap());
+    let (mut buf, topic_len) = if version == ITEM_HANDSHAKE_VERSION_CHUNKED {
+        let mut extra = [0u8; V3_FIXED - V2_FIXED];
+        recv.read_exact(&mut extra)
+            .await
+            .map_err(|e| Error::HandshakeMalformed(format!("request qos tail: {e}")))?;
+        let mut buf = Vec::with_capacity(V3_FIXED);
+        buf.extend_from_slice(&v2);
+        buf.extend_from_slice(&extra);
+        let n = u16::from_le_bytes(buf[48..50].try_into().unwrap()) as usize;
+        (buf, n)
+    } else {
+        let n = u16::from_le_bytes(v2[28..30].try_into().unwrap()) as usize;
+        (v2.to_vec(), n)
+    };
     let mut topic_buf = vec![0u8; topic_len];
     recv.read_exact(&mut topic_buf)
         .await
         .map_err(|e| Error::HandshakeMalformed(format!("topic name: {e}")))?;
-    let mut buf = Vec::with_capacity(header.len() + topic_buf.len());
-    buf.extend_from_slice(&header);
     buf.extend_from_slice(&topic_buf);
     parse_request_handshake_tail(&buf)
 }
 
-/// Pure-byte parser for the req/resp handshake tail (everything
+/// Pure-byte parser for the req/res handshake tail (everything
 /// after the 4-byte [`REQRESP_MAGIC`]). Exposed for fuzz tests.
 ///
-/// Layout: `[u32 version][u64 req_hash][u64 resp_hash][u32 req_size]
-/// [u32 resp_size][u16 topic_len][topic_bytes]`.
+/// Accepts version 2 (`[u32 version][u64 req_hash][u64 resp_hash]
+/// [u32 req_size][u32 resp_size][u16 topic_len][topic]`) and version 3,
+/// which inserts `[u64 max_message][u64 max_inflight][u32 chunk_bytes]`
+/// before `topic_len`.
 pub fn parse_request_handshake_tail(bytes: &[u8]) -> Result<(String, u64, u64, u32, u32)> {
-    if bytes.len() < 4 + 8 + 8 + 4 + 4 + 2 {
+    const V2_FIXED: usize = 4 + 8 + 8 + 4 + 4 + 2;
+    const V3_FIXED: usize = V2_FIXED - 2 + 8 + 8 + 4 + 2;
+    if bytes.len() < V2_FIXED {
         return Err(Error::HandshakeMalformed(format!(
             "req handshake tail truncated: {} bytes",
             bytes.len()
         )));
     }
     let version = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
-    if version != HANDSHAKE_VERSION {
-        return Err(Error::HandshakeVersionMismatch {
-            local: HANDSHAKE_VERSION,
-            peer: version,
-        });
-    }
     let req_hash = u64::from_le_bytes(bytes[4..12].try_into().unwrap());
     let resp_hash = u64::from_le_bytes(bytes[12..20].try_into().unwrap());
     let req_size = u32::from_le_bytes(bytes[20..24].try_into().unwrap());
     let resp_size = u32::from_le_bytes(bytes[24..28].try_into().unwrap());
-    let topic_len = u16::from_le_bytes(bytes[28..30].try_into().unwrap());
+    let topic_len_off = if version == HANDSHAKE_VERSION {
+        28usize
+    } else if version == ITEM_HANDSHAKE_VERSION_CHUNKED {
+        if bytes.len() < V3_FIXED {
+            return Err(Error::HandshakeMalformed(format!(
+                "req handshake v3 tail truncated: {} bytes",
+                bytes.len()
+            )));
+        }
+        48usize
+    } else {
+        return Err(Error::HandshakeVersionMismatch {
+            local: ITEM_HANDSHAKE_VERSION_CHUNKED,
+            peer: version,
+        });
+    };
+    let topic_len = u16::from_le_bytes(bytes[topic_len_off..topic_len_off + 2].try_into().unwrap());
     if topic_len > MAX_TOPIC_LEN {
         return Err(Error::TopicNameTooLong {
             len: topic_len as usize,
             limit: MAX_TOPIC_LEN as usize,
         });
     }
-    let topic_end = 30usize.saturating_add(topic_len as usize);
+    let topic_start = topic_len_off + 2;
+    let topic_end = topic_start.saturating_add(topic_len as usize);
     if bytes.len() < topic_end {
         return Err(Error::HandshakeMalformed(format!(
             "topic name truncated: declared {} bytes, have {}",
             topic_len,
-            bytes.len().saturating_sub(30)
+            bytes.len().saturating_sub(topic_start)
         )));
     }
-    let topic = std::str::from_utf8(&bytes[30..topic_end])
+    let topic = std::str::from_utf8(&bytes[topic_start..topic_end])
         .map_err(|_| Error::HandshakeMalformed("topic name is not UTF-8".to_string()))?
         .to_string();
     Ok((topic, req_hash, resp_hash, req_size, resp_size))
