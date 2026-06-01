@@ -40,12 +40,16 @@ pub mod chunk;
 pub mod demo;
 pub mod did_key;
 pub mod error;
+pub mod ffi;
 pub mod local;
 pub mod node;
 pub mod pip;
 pub mod putack;
+#[cfg(feature = "python")]
+pub mod python;
 pub mod qos;
 pub mod queans;
+pub mod raw;
 pub mod remote;
 pub mod reqresp;
 mod trace;
@@ -63,13 +67,16 @@ pub use local::{
     QueSample as LocalQueSample, ReplyHandle, Sample,
 };
 pub use node::{
-    AckSample, AckServer, AnsSample, AnsServer, Answers, IntoPeer, ItemStats, Node, NodeBuilder,
-    NodeSample, NodeStats, PathDiagnostic, Peer, PeerPathDiagnostics, PendingQue, PendingReq, Pip,
-    PipClient, PipSample, PipServer, PipStats, Publisher, PublisherStats, PutClient, PutSample,
-    PutSender, PutStats, Puts, QueClient, QueSample, QueStats, ReqClient, ReqReply, ReqSample,
-    ReqServer, ReqStats, ResSample, Subscriber, SubscriberStats,
+    AckSample, AckServer, AnsReplyToken, AnsSample, AnsServer, Answers, IntoPeer, ItemStats, Node,
+    NodeBuilder, NodeSample, NodeStats, PathDiagnostic, Peer, PeerPathDiagnostics,
+    PendingPipMessage, PendingPutMessage, PendingQue, PendingQueMessage, PendingReq,
+    PendingReqMessage, Pip, PipClient, PipSample, PipServer, PipServerToken, PipSessionToken,
+    PipStats, Publisher, PublisherStats, PutAckToken, PutClient, PutSample, PutSender, PutStats,
+    PutUploadToken, Puts, QueClient, QueSample, QueStats, ReqClient, ReqReply, ReqReplyToken,
+    ReqSample, ReqServer, ReqStats, ResSample, Subscriber, SubscriberStats,
 };
 pub use qos::{DeliveryPolicy, TopicQos};
+pub use raw::RawMsg;
 pub use remote::{
     RemotePipClient, RemotePutClient, RemoteQueClient, RemoteReqClient, RemoteTransport,
     RemoteTransportBuilder,

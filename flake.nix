@@ -1,5 +1,5 @@
 {
-  description = "bevy_mara — reusable glass-themed Bevy + egui editor UI kit, development shell";
+  description = "robolibs crate development shell";
 
   inputs = {
     # Pinned to a rev that still accepts the `kernel` arg in
@@ -13,7 +13,7 @@
   };
 
   outputs =
-    { self, nixpkgs, rust-overlay, flake-utils, nixgl, ... }:
+    { nixpkgs, rust-overlay, flake-utils, nixgl, ... }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
@@ -64,7 +64,7 @@
           ln -s ${nixVulkanTarget} $out/bin/nixVulkan
         '';
 
-        bevyLibs = with pkgs; [
+        guiLibs = with pkgs; [
           alsa-lib
           udev
           vulkan-loader
@@ -75,7 +75,6 @@
           libxi
           libxrandr
         ];
-
       in
       {
         devShells.default = pkgs.mkShell {
@@ -87,10 +86,10 @@
             pkgs.clang
             pkgs.mold
             pkgs.pkg-config
-
+            pkgs.rust-cbindgen
             pkgs.trunk
-
-            (pkgs.python3.withPackages (ps: with ps; [ fonttools brotli ]))
+            pkgs.maturin
+            (pkgs.python3.withPackages (ps: with ps; [ fonttools brotli pip ]))
 
             nixGLAlias
             nixVulkanAlias
@@ -99,10 +98,10 @@
           ] ++ pkgs.lib.optionals hasNvidia [
             nixglPkgs.nixGLNvidia
             nixglPkgs.nixVulkanNvidia
-          ] ++ bevyLibs;
+          ] ++ guiLibs;
 
           RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
-          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath bevyLibs;
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath guiLibs;
           WGPU_VALIDATION = "0";
           WGPU_DEBUG = "0";
         };

@@ -37,8 +37,8 @@ pub(crate) struct PutServerEntry {
 
 impl RemoteTransport {
     /// Register a put/ack server for this transport's topic. The
-    /// handler receives all uploaded items and returns one ack.
-    pub fn serve_uploads<Put, Ack, F>(&self, handler: F) -> Result<()>
+    /// handler receives all put items and returns one ack.
+    pub fn serve_puts<Put, Ack, F>(&self, handler: F) -> Result<()>
     where
         Put: Pod + Send + 'static,
         Ack: Pod + Send + 'static,

@@ -197,6 +197,14 @@ where
             },
         )))
     }
+
+    pub fn send_to(&mut self, req_id: u64, ans: &Ans) -> Result<()> {
+        publish_answer(&mut self.answers, req_id, ANS_KIND_ITEM, ans)
+    }
+
+    pub fn finish_to(&mut self, req_id: u64) -> Result<()> {
+        publish_done::<Ans>(&mut self.answers, req_id)
+    }
 }
 
 pub struct AnsReply<'a, Que, Ans>

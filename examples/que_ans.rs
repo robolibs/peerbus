@@ -73,7 +73,7 @@ fn over_iroh() -> quicbit::Result<()> {
         .no_relay()
         .build_blocking()?;
     server.wait_for_direct_addresses(Duration::from_secs(5))?;
-    server.serve_queries::<RangeQue, Hit, _>(|q| {
+    server.serve_ques::<RangeQue, Hit, _>(|q| {
         (0..q.count).map(|o| Hit { value: q.start + o }).collect()
     })?;
 

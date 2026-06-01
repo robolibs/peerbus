@@ -16,10 +16,10 @@ each side sends and how the peers relate:
                      server sends ONE        server sends MANY
                    ┌──────────────────────┬──────────────────────┐
  client sends ONE  │       req/res        │       que/ans        │
-                   │   1 req → 1 res       │   1 que → 0..N ans    │
+                   │   1 req → 1 res      │   1 que → 0..N ans   │
                    ├──────────────────────┼──────────────────────┤
  client sends MANY │       put/ack        │         pip          │
-                   │  0..N put → 1 ack     │  0..N ↔ 0..N (bidi)   │
+                   │  0..N put → 1 ack    │  0..N ↔ 0..N (bidi)  │
                    └──────────────────────┴──────────────────────┘
 
  pub/sub  —  a producer's stream fans out to every subscriber (M : N)
@@ -289,6 +289,40 @@ Enable the `tracing` feature for structured events on accept / connect / disconn
 
 The local SHM backend and iroh are always on; there is no feature gate for either transport.
 
+## Foreign-language bindings
+
+quicbit follows the same robolibs binding layout as the sibling crates:
+
+```text
+src/ffi.rs                  # C ABI implementation
+include/quicbit.h           # generated C header
+src/python/mod.rs           # Python pyo3 module
+examples/c_abi/             # C ABI demos + Makefile
+examples/python_binding/    # Python demo + Makefile
+```
+
+Generate/build bindings with the root Makefile:
+
+```sh
+make bind
+```
+
+Run the C ABI demos:
+
+```sh
+make -C examples/c_abi run
+```
+
+Run the Python binding demo:
+
+```sh
+make -C examples/python_binding demo
+```
+
+Both bindings transport opaque `RawMsg` payloads: a `kind: u64` tag plus
+bytes. Concrete datapod wrappers live in datapod; quicbit only carries
+`(kind, bytes)` across pub/sub, req/res, que/ans, put/ack, and pip.
+
 ## Topic QoS
 
 High-rate topics can choose transport behavior without putting datatype logic
@@ -338,8 +372,8 @@ counters via `.stats()` (`ReqStats`/`QueStats`/`PutStats`/`PipStats`).
 - `LocalTransport` / `LocalService<T>` — local SHM pub/sub directly.
 - `RemoteTransport` — iroh directly, for all five modes without `Node`:
   pub/sub, req/res (`serve_requests`/`client`), que/ans
-  (`serve_queries`/`que_client`), put/ack (`serve_uploads`/`put_client`),
-  and pip (`serve_sessions`/`pip_client`). `Pod` payloads; interoperates
+  (`serve_ques`/`que_client`), put/ack (`serve_puts`/`put_client`),
+  and pip (`serve_pips`/`pip_client`). `Pod` payloads; interoperates
   with the `Node` path over iroh.
 - `AsyncPublisher` / `AsyncSubscriber` — `async fn` shims over the sync core.
 - `did_key::endpoint_id_to_did_key` / `did_key_to_endpoint_id` — DID:KEY adapter (delegates to [`authbox`](https://codeberg.org/robolibs/authbox)).
@@ -349,6 +383,16 @@ transports: `req_res`, `que_ans`, `put_ack`, and `pip` each show a
 shared-memory and an iroh section, with pub/sub in `node_demo` (SHM)
 and `remote_loopback` (iroh). The `video_sub` GUI demo is Wayland-only
 (minifb).
+
+Datapod-focused examples:
+
+- `datapod_pose` — minimal custom fixed-size datapod.
+- `datapod_fixed_gallery` — built-in robotics/geometry datapods nested in one
+  fixed-size user type over pub/sub.
+- `datapod_heap_payloads` — heap-bearing `Bytes` and `Linestring` payloads
+  with QoS/chunk settings.
+- `datapod_primitives_gallery` — one system-DID namespace using different
+  datapods across pub/sub, req/res, que/ans, put/ack, and pip.
 
 ## Status
 

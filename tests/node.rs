@@ -710,7 +710,7 @@ fn standalone_queans_server_serves_node_client() {
         .wait_for_direct_addresses(Duration::from_secs(5))
         .unwrap();
     server
-        .serve_queries::<RangeQue, Hit, _>(|q| {
+        .serve_ques::<RangeQue, Hit, _>(|q| {
             (0..q.count).map(|o| Hit { value: q.start + o }).collect()
         })
         .unwrap();
@@ -784,7 +784,7 @@ fn standalone_putack_server_serves_node_client() {
         .wait_for_direct_addresses(Duration::from_secs(5))
         .unwrap();
     server
-        .serve_uploads::<LogChunk, UploadAck, _>(|puts| UploadAck {
+        .serve_puts::<LogChunk, UploadAck, _>(|puts| UploadAck {
             count: puts.len() as u32,
             sum: puts.iter().map(|p| p.value).sum(),
         })
@@ -857,7 +857,7 @@ fn standalone_pip_server_serves_node_client() {
         .wait_for_direct_addresses(Duration::from_secs(5))
         .unwrap();
     server
-        .serve_sessions::<ClientMsg, ServerMsg, _>(|msgs| {
+        .serve_pips::<ClientMsg, ServerMsg, _>(|msgs| {
             msgs.iter()
                 .map(|m| ServerMsg { value: m.value * 2 })
                 .collect()
@@ -2067,7 +2067,7 @@ fn system_did_que_ans_uses_topic_route_when_not_local() {
         .wait_for_direct_addresses(Duration::from_secs(5))
         .unwrap();
     server
-        .serve_queries::<RangeQue, Hit, _>(|q| {
+        .serve_ques::<RangeQue, Hit, _>(|q| {
             (0..q.count).map(|o| Hit { value: q.start + o }).collect()
         })
         .unwrap();
@@ -2105,7 +2105,7 @@ fn system_did_que_ans_can_use_topic_agnostic_system_peer() {
         .wait_for_direct_addresses(Duration::from_secs(5))
         .unwrap();
     server
-        .serve_queries::<RangeQue, Hit, _>(|q| {
+        .serve_ques::<RangeQue, Hit, _>(|q| {
             (0..q.count).map(|o| Hit { value: q.start + o }).collect()
         })
         .unwrap();
@@ -2141,7 +2141,7 @@ fn system_did_put_ack_uses_topic_route_when_not_local() {
         .wait_for_direct_addresses(Duration::from_secs(5))
         .unwrap();
     server
-        .serve_uploads::<LogChunk, UploadAck, _>(|puts| UploadAck {
+        .serve_puts::<LogChunk, UploadAck, _>(|puts| UploadAck {
             count: puts.len() as u32,
             sum: puts.iter().map(|p| p.value).sum(),
         })
@@ -2181,7 +2181,7 @@ fn system_did_put_ack_can_use_topic_agnostic_system_peer() {
         .wait_for_direct_addresses(Duration::from_secs(5))
         .unwrap();
     server
-        .serve_uploads::<LogChunk, UploadAck, _>(|puts| UploadAck {
+        .serve_puts::<LogChunk, UploadAck, _>(|puts| UploadAck {
             count: puts.len() as u32,
             sum: puts.iter().map(|p| p.value).sum(),
         })
@@ -2217,7 +2217,7 @@ fn system_did_pip_uses_topic_route_when_not_local() {
         .wait_for_direct_addresses(Duration::from_secs(5))
         .unwrap();
     server
-        .serve_sessions::<ClientMsg, ServerMsg, _>(|msgs| {
+        .serve_pips::<ClientMsg, ServerMsg, _>(|msgs| {
             msgs.iter()
                 .map(|m| ServerMsg {
                     value: m.value * 10,
@@ -2372,7 +2372,7 @@ fn que_ans_client_stats_over_iroh() {
         .wait_for_direct_addresses(Duration::from_secs(5))
         .unwrap();
     server
-        .serve_queries::<RangeQue, Hit, _>(|q| {
+        .serve_ques::<RangeQue, Hit, _>(|q| {
             (0..q.count).map(|o| Hit { value: q.start + o }).collect()
         })
         .unwrap();
@@ -2403,7 +2403,7 @@ fn put_ack_client_stats_over_iroh() {
         .wait_for_direct_addresses(Duration::from_secs(5))
         .unwrap();
     server
-        .serve_uploads::<LogChunk, UploadAck, _>(|puts| UploadAck {
+        .serve_puts::<LogChunk, UploadAck, _>(|puts| UploadAck {
             count: puts.len() as u32,
             sum: puts.iter().map(|p| p.value).sum(),
         })
@@ -2436,7 +2436,7 @@ fn pip_client_stats_over_iroh() {
         .wait_for_direct_addresses(Duration::from_secs(5))
         .unwrap();
     server
-        .serve_sessions::<ClientMsg, ServerMsg, _>(|msgs| {
+        .serve_pips::<ClientMsg, ServerMsg, _>(|msgs| {
             msgs.iter().map(|m| ServerMsg { value: m.value }).collect()
         })
         .unwrap();

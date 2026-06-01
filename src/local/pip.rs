@@ -127,6 +127,8 @@ impl<T: datapod::DataPod + 'static> PipSample<T> {
     }
 }
 
+pub type LocalPendingPip<T> = (u64, Option<PipSample<T>>, bool);
+
 pub struct LocalPipServer<ClientMsg, ServerMsg>
 where
     ClientMsg: datapod::DataPod + 'static,
@@ -172,6 +174,65 @@ where
             outgoing_done: false,
         }))
     }
+
+    pub fn take_message(&mut self) -> Result<Option<LocalPendingPip<ClientMsg>>> {
+        let Some(sample) = self.incoming.take()? else {
+            return Ok(None);
+        };
+        let header = sample.header();
+        let session_id = header.session_id;
+        match header.kind {
+            PIP_KIND_ITEM => Ok(Some((
+                session_id,
+                Some(PipSample {
+                    session_id,
+                    header: header.header,
+                    payload: sample.payload().to_vec(),
+                }),
+                false,
+            ))),
+            PIP_KIND_DONE => Ok(Some((session_id, None, true))),
+            kind => Err(Error::Remote(format!(
+                "unknown local pip kind {kind} for session_id={session_id}"
+            ))),
+        }
+    }
+
+    pub fn send_to(&mut self, session_id: u64, msg: &ServerMsg) -> Result<()> {
+        publish_pip(&mut self.outgoing, session_id, PIP_KIND_ITEM, msg)
+    }
+
+    pub fn finish_send_to(&mut self, session_id: u64) -> Result<()> {
+        publish_done::<ServerMsg>(&mut self.outgoing, session_id)
+    }
+
+    pub fn next_from(&mut self, session_id: u64) -> Result<Option<PipSample<ClientMsg>>> {
+        let deadline = Instant::now() + DEFAULT_PIP_TIMEOUT;
+        loop {
+            if Instant::now() >= deadline {
+                return Err(Error::Timeout(DEFAULT_PIP_TIMEOUT));
+            }
+            let Some(sample) = self.incoming.take()? else {
+                std::thread::sleep(Duration::from_micros(50));
+                continue;
+            };
+            let header = sample.header();
+            if header.session_id != session_id {
+                continue;
+            }
+            return match header.kind {
+                PIP_KIND_ITEM => Ok(Some(PipSample {
+                    session_id,
+                    header: header.header,
+                    payload: sample.payload().to_vec(),
+                })),
+                PIP_KIND_DONE => Ok(None),
+                kind => Err(Error::Remote(format!(
+                    "unknown local pip kind {kind} for session_id={session_id}"
+                ))),
+            };
+        }
+    }
 }
 
 pub struct LocalPipClient<ClientMsg, ServerMsg>
@@ -199,6 +260,46 @@ where
             incoming_done: false,
             outgoing_done: false,
         })
+    }
+
+    pub fn start_session(&mut self) -> u64 {
+        self.next_id.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    pub fn send_to(&mut self, session_id: u64, msg: &ClientMsg) -> Result<()> {
+        publish_pip(&mut self.outgoing, session_id, PIP_KIND_ITEM, msg)
+    }
+
+    pub fn finish_send_to(&mut self, session_id: u64) -> Result<()> {
+        publish_done::<ClientMsg>(&mut self.outgoing, session_id)
+    }
+
+    pub fn next_from(&mut self, session_id: u64) -> Result<Option<PipSample<ServerMsg>>> {
+        let deadline = Instant::now() + DEFAULT_PIP_TIMEOUT;
+        loop {
+            if Instant::now() >= deadline {
+                return Err(Error::Timeout(DEFAULT_PIP_TIMEOUT));
+            }
+            let Some(sample) = self.incoming.take()? else {
+                std::thread::sleep(Duration::from_micros(50));
+                continue;
+            };
+            let header = sample.header();
+            if header.session_id != session_id {
+                continue;
+            }
+            return match header.kind {
+                PIP_KIND_ITEM => Ok(Some(PipSample {
+                    session_id,
+                    header: header.header,
+                    payload: sample.payload().to_vec(),
+                })),
+                PIP_KIND_DONE => Ok(None),
+                kind => Err(Error::Remote(format!(
+                    "unknown local pip kind {kind} for session_id={session_id}"
+                ))),
+            };
+        }
     }
 }
 

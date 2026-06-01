@@ -80,7 +80,7 @@ fn over_iroh() -> quicbit::Result<()> {
         .no_relay()
         .build_blocking()?;
     server.wait_for_direct_addresses(Duration::from_secs(5))?;
-    server.serve_sessions::<ClientMsg, ServerMsg, _>(|msgs| {
+    server.serve_pips::<ClientMsg, ServerMsg, _>(|msgs| {
         msgs.iter()
             .map(|m| ServerMsg { value: m.value * 2 })
             .collect()

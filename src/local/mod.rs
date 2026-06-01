@@ -6,7 +6,7 @@
 //! in [`reqresp`].
 //!
 //! The current backend uses `shared_memory` plus a small POD ring in
-//! [`shm`]. It intentionally keeps delivery poll-based so the async
+//! the private `shm` module. It intentionally keeps delivery poll-based so the async
 //! layer can continue wrapping the sync API without a cross-process
 //! wakeup primitive.
 
