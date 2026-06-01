@@ -18,8 +18,10 @@ include = [
     "README.md",
     "LIMITATIONS.md",
     "include/**/*.h",
-    "bindings/**/*.c",
-    "bindings/**/*.py",
+    "examples/c_abi/*.c",
+    "examples/c_abi/Makefile",
+    "examples/python_binding/*.py",
+    "examples/python_binding/Makefile",
     "src/**/*.rs",
     "examples/**/*.rs",
     "tests/**/*.rs",
@@ -45,7 +47,7 @@ python = ["dep:pyo3"]
 python-extension = ["python"]
 
 [dependencies]
-datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.2.0" }
+datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.3.0" }
 thiserror = "2.0"
 bytes = "1"
 bon = "3"

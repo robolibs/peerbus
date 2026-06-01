@@ -39,7 +39,7 @@ pub(crate) struct PipServerEntry {
 impl RemoteTransport {
     /// Register a pip server for this transport's topic
     /// (collect-then-respond; see the module docs).
-    pub fn serve_sessions<ClientMsg, ServerMsg, F>(&self, handler: F) -> Result<()>
+    pub fn serve_pips<ClientMsg, ServerMsg, F>(&self, handler: F) -> Result<()>
     where
         ClientMsg: Pod + Send + 'static,
         ServerMsg: Pod + Send + 'static,

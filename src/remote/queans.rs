@@ -39,8 +39,8 @@ pub(crate) struct QueServerEntry {
 
 impl RemoteTransport {
     /// Register a que/ans server for this transport's topic. The
-    /// handler receives one query and returns all answers at once.
-    pub fn serve_queries<Que, Ans, F>(&self, handler: F) -> Result<()>
+    /// handler receives one que and returns all ans items at once.
+    pub fn serve_ques<Que, Ans, F>(&self, handler: F) -> Result<()>
     where
         Que: Pod + Send + 'static,
         Ans: Pod + Send + 'static,

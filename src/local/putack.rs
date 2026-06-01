@@ -221,10 +221,69 @@ where
             done,
             puts: &mut self.puts,
             acks: &mut self.acks,
+            timeout: DEFAULT_ACK_TIMEOUT,
             _phantom: PhantomData,
         }))
     }
+
+    pub fn take_message(&mut self) -> Result<Option<LocalPendingPuts<Put>>> {
+        let Some(sample) = self.puts.take()? else {
+            return Ok(None);
+        };
+        let header = sample.header();
+        let req_id = header.req_id;
+        match header.kind {
+            PUT_KIND_ITEM => Ok(Some((
+                req_id,
+                Some(PutSample {
+                    req_id,
+                    header: header.header,
+                    payload: sample.payload().to_vec(),
+                }),
+                false,
+            ))),
+            PUT_KIND_DONE => Ok(Some((req_id, None, true))),
+            kind => Err(Error::Remote(format!(
+                "unknown local put kind {kind} for req_id={req_id}"
+            ))),
+        }
+    }
+
+    pub fn next_from(&mut self, req_id: u64) -> Result<Option<PutSample<Put>>> {
+        let deadline = Instant::now() + DEFAULT_ACK_TIMEOUT;
+        loop {
+            let Some(sample) = self.puts.take()? else {
+                if Instant::now() >= deadline {
+                    return Err(Error::Timeout(DEFAULT_ACK_TIMEOUT));
+                }
+                std::thread::sleep(Duration::from_micros(50));
+                continue;
+            };
+            let header = sample.header();
+            if header.req_id != req_id {
+                continue;
+            }
+            return match header.kind {
+                PUT_KIND_ITEM => Ok(Some(PutSample {
+                    req_id: header.req_id,
+                    header: header.header,
+                    payload: sample.payload().to_vec(),
+                })),
+                PUT_KIND_DONE => Ok(None),
+                kind => Err(Error::Remote(format!(
+                    "unknown local put kind {kind} for req_id={}",
+                    header.req_id
+                ))),
+            };
+        }
+    }
+
+    pub fn ack_to(&mut self, req_id: u64, ack: &Ack) -> Result<()> {
+        publish_ack(&mut self.acks, req_id, ack)
+    }
 }
+
+pub type LocalPendingPuts<T> = (u64, Option<PutSample<T>>, bool);
 
 pub struct LocalPuts<'a, Put, Ack>
 where
@@ -236,6 +295,7 @@ where
     done: bool,
     puts: &'a mut Consumer<PutEnvelope<Put::Header>>,
     acks: &'a mut Producer<Envelope<Ack::Header>>,
+    timeout: Duration,
     _phantom: PhantomData<fn() -> Ack>,
 }
 
@@ -256,9 +316,14 @@ where
         if self.done {
             return Ok(None);
         }
+        let deadline = Instant::now() + self.timeout;
         loop {
             let Some(sample) = self.puts.take()? else {
-                return Ok(None);
+                if Instant::now() >= deadline {
+                    return Err(Error::Timeout(self.timeout));
+                }
+                std::thread::sleep(Duration::from_micros(50));
+                continue;
             };
             let header = sample.header();
             if header.req_id != self.req_id {
@@ -318,6 +383,36 @@ where
             timeout: DEFAULT_ACK_TIMEOUT,
             _phantom: PhantomData,
         })
+    }
+
+    pub fn open_req(&mut self) -> u64 {
+        self.next_id.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    pub fn send_to(&mut self, req_id: u64, put: &Put) -> Result<()> {
+        publish_put(&mut self.puts, req_id, PUT_KIND_ITEM, put)
+    }
+
+    pub fn finish_req(&mut self, req_id: u64) -> Result<AckSample<Ack>> {
+        publish_done::<Put>(&mut self.puts, req_id)?;
+
+        let deadline = Instant::now() + DEFAULT_ACK_TIMEOUT;
+        while Instant::now() < deadline {
+            match self.acks.take()? {
+                Some(sample) if sample.header().req_id == req_id => {
+                    return Ok(AckSample {
+                        req_id,
+                        header: sample.header().header,
+                        payload: sample.payload().to_vec(),
+                    });
+                }
+                Some(_) => {
+                    // Another client's ack on this shared ring.
+                }
+                None => std::thread::sleep(Duration::from_micros(50)),
+            }
+        }
+        Err(Error::Timeout(DEFAULT_ACK_TIMEOUT))
     }
 }
 

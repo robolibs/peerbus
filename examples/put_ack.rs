@@ -75,7 +75,7 @@ fn over_iroh() -> quicbit::Result<()> {
         .no_relay()
         .build_blocking()?;
     server.wait_for_direct_addresses(Duration::from_secs(5))?;
-    server.serve_uploads::<LogChunk, UploadAck, _>(|puts| UploadAck {
+    server.serve_puts::<LogChunk, UploadAck, _>(|puts| UploadAck {
         count: puts.len() as u32,
         sum: puts.iter().map(|p| p.value).sum(),
     })?;

@@ -3,8 +3,11 @@
  *
  * Build (from the repo root):
  *   cargo build --lib
- *   cc bindings/c/pubsub.c -Iinclude -Ltarget/debug -lquicbit -o /tmp/qb_pubsub
+ *   cc examples/c_abi/pubsub.c -Iinclude -Ltarget/debug -lquicbit -o /tmp/qb_pubsub
  *   LD_LIBRARY_PATH=target/debug /tmp/qb_pubsub
+ *
+ * Or:
+ *   make -C examples/c_abi pubsub
  *
  * Same-host: publisher and subscriber share one node, so routing goes
  * through shared memory. Point the subscriber at a remote peer's

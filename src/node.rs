@@ -1020,6 +1020,8 @@ impl Node {
             route_topic,
             local_servers,
             remote_rx,
+            pending_remote_replies: HashMap::new(),
+            next_pending_token: 0,
             stats,
         })
     }
@@ -1236,6 +1238,8 @@ impl Node {
             route_topic,
             local_servers,
             remote_rx,
+            pending_remote_replies: HashMap::new(),
+            next_pending_token: 0,
             stats,
         })
     }
@@ -1446,6 +1450,8 @@ impl Node {
             route_topic,
             local_servers,
             remote_rx,
+            pending_remote_puts: HashMap::new(),
+            next_pending_token: 0,
             stats,
         })
     }
@@ -1492,6 +1498,8 @@ impl Node {
                     source: PutClientSource::Local {
                         client: svc.client()?,
                     },
+                    pending_remote_uploads: HashMap::new(),
+                    next_pending_upload: 0,
                 });
             }
         }
@@ -1506,6 +1514,8 @@ impl Node {
                 qos,
                 stats: Arc::new(ItemStatsInner::default()),
             },
+            pending_remote_uploads: HashMap::new(),
+            next_pending_upload: 0,
         })
     }
 
@@ -1542,6 +1552,8 @@ impl Node {
                 source: PutClientSource::Local {
                     client: svc.client()?,
                 },
+                pending_remote_uploads: HashMap::new(),
+                next_pending_upload: 0,
             });
         }
 
@@ -1569,6 +1581,8 @@ impl Node {
                 qos,
                 stats: Arc::new(ItemStatsInner::default()),
             },
+            pending_remote_uploads: HashMap::new(),
+            next_pending_upload: 0,
         })
     }
 
@@ -1664,6 +1678,8 @@ impl Node {
             route_topic,
             local_servers,
             remote_rx,
+            pending_remote_sessions: HashMap::new(),
+            next_pending_session: 0,
             stats,
         })
     }
@@ -1710,6 +1726,8 @@ impl Node {
                     source: PipClientSource::Local {
                         client: svc.client()?,
                     },
+                    pending_remote_sessions: HashMap::new(),
+                    next_pending_session: 0,
                 });
             }
         }
@@ -1724,6 +1742,8 @@ impl Node {
                 qos,
                 stats: Arc::new(ItemStatsInner::default()),
             },
+            pending_remote_sessions: HashMap::new(),
+            next_pending_session: 0,
         })
     }
 
@@ -1764,6 +1784,8 @@ impl Node {
                 source: PipClientSource::Local {
                     client: svc.client()?,
                 },
+                pending_remote_sessions: HashMap::new(),
+                next_pending_session: 0,
             });
         }
 
@@ -1791,6 +1813,8 @@ impl Node {
                 qos,
                 stats: Arc::new(ItemStatsInner::default()),
             },
+            pending_remote_sessions: HashMap::new(),
+            next_pending_session: 0,
         })
     }
 
@@ -2383,6 +2407,45 @@ where
 
 pub type PendingReq<'a, Req, Res> = (ReqSample<Req>, ReqReply<'a, Req, Res>);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReqReplyToken {
+    req_id: u64,
+    source: ReplyTokenSource,
+}
+
+impl ReqReplyToken {
+    pub fn req_id(&self) -> u64 {
+        self.req_id
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplyTokenSource {
+    Local { server_index: usize },
+    Remote { token: u64 },
+}
+
+pub struct PendingReqMessage<Req>
+where
+    Req: datapod::DataPod + 'static,
+{
+    sample: ReqSample<Req>,
+    reply: ReqReplyToken,
+}
+
+impl<Req> PendingReqMessage<Req>
+where
+    Req: datapod::DataPod + 'static,
+{
+    pub fn sample(&self) -> &ReqSample<Req> {
+        &self.sample
+    }
+
+    pub fn into_parts(self) -> (ReqSample<Req>, ReqReplyToken) {
+        (self.sample, self.reply)
+    }
+}
+
 pub struct ReqServer<Req, Res>
 where
     Req: datapod::DataPod + 'static,
@@ -2392,6 +2455,8 @@ where
     route_topic: String,
     local_servers: Vec<LocalReqServerState<Req, Res>>,
     remote_rx: tokio::sync::mpsc::Receiver<RemotePendingReq>,
+    pending_remote_replies: HashMap<u64, RemoteReqReply>,
+    next_pending_token: u64,
     stats: Arc<ItemStatsInner>,
 }
 
@@ -2446,6 +2511,70 @@ where
             }
             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Ok(None),
             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => Ok(None),
+        }
+    }
+
+    pub fn take_message(&mut self) -> Result<Option<PendingReqMessage<Req>>> {
+        for (server_index, local) in self.local_servers.iter_mut().enumerate() {
+            if let Some((req, _reply)) = local.server.take_request()? {
+                let req_id = req.req_id();
+                let sample = ReqSample {
+                    req_id,
+                    header: *req.header(),
+                    payload: req.payload().to_vec(),
+                };
+                return Ok(Some(PendingReqMessage {
+                    sample,
+                    reply: ReqReplyToken {
+                        req_id,
+                        source: ReplyTokenSource::Local { server_index },
+                    },
+                }));
+            }
+        }
+
+        match self.remote_rx.try_recv() {
+            Ok(pending) => {
+                self.next_pending_token = self.next_pending_token.wrapping_add(1).max(1);
+                let token = self.next_pending_token;
+                let sample = req_sample_from_frame::<Req>(pending.req_id, &pending.frame)?;
+                self.pending_remote_replies.insert(
+                    token,
+                    RemoteReqReply {
+                        send: Some(pending.send),
+                        qos: pending.qos,
+                        peer_chunks: pending.peer_chunks,
+                        stats: pending.stats,
+                    },
+                );
+                Ok(Some(PendingReqMessage {
+                    sample,
+                    reply: ReqReplyToken {
+                        req_id: pending.req_id,
+                        source: ReplyTokenSource::Remote { token },
+                    },
+                }))
+            }
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Ok(None),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => Ok(None),
+        }
+    }
+
+    pub fn respond_pending(&mut self, reply: ReqReplyToken, res: &Res) -> Result<()> {
+        match reply.source {
+            ReplyTokenSource::Local { server_index } => {
+                let local = self
+                    .local_servers
+                    .get_mut(server_index)
+                    .ok_or_else(|| Error::invalid_argument("invalid local req/res reply token"))?;
+                local.server.respond_to(reply.req_id, res)
+            }
+            ReplyTokenSource::Remote { token } => {
+                let mut reply = self.pending_remote_replies.remove(&token).ok_or_else(|| {
+                    Error::invalid_argument("invalid or already used remote req/res reply token")
+                })?;
+                reply.respond(&self.inner.rt, res)
+            }
         }
     }
 }
@@ -2681,6 +2810,45 @@ struct RemotePendingReq {
     stats: Arc<ItemStatsInner>,
 }
 
+struct RemoteReqReply {
+    send: Option<iroh::endpoint::SendStream>,
+    qos: TopicQos,
+    peer_chunks: bool,
+    stats: Arc<ItemStatsInner>,
+}
+
+impl RemoteReqReply {
+    fn respond<Res>(&mut self, rt: &Runtime, res: &Res) -> Result<()>
+    where
+        Res: datapod::DataPod + 'static,
+    {
+        let mut send = self
+            .send
+            .take()
+            .ok_or_else(|| Error::Remote("response already sent".to_string()))?;
+        let frame = frame_from_datapod(res);
+        let res_len = frame.len();
+        let qos = self.qos;
+        let peer_chunks = self.peer_chunks;
+        let result = rt.block_on(async move {
+            write_item_chunked(&mut send, &frame, qos.chunk_bytes, peer_chunks).await?;
+            send.finish()
+                .map_err(|e| Error::Remote(format!("finish: {e}")))?;
+            Ok(())
+        });
+        match result {
+            Ok(()) => {
+                self.stats.record_out(res_len);
+                Ok(())
+            }
+            Err(e) => {
+                self.stats.record_error();
+                Err(e)
+            }
+        }
+    }
+}
+
 fn frame_from_datapod<T>(value: &T) -> Vec<u8>
 where
     T: datapod::DataPod + 'static,
@@ -2746,6 +2914,39 @@ where
 
 pub type PendingQue<'a, Que, Ans> = (QueSample<Que>, AnsReply<'a, Que, Ans>);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnsReplyToken {
+    req_id: u64,
+    source: ReplyTokenSource,
+}
+
+impl AnsReplyToken {
+    pub fn req_id(&self) -> u64 {
+        self.req_id
+    }
+}
+
+pub struct PendingQueMessage<Que>
+where
+    Que: datapod::DataPod + 'static,
+{
+    sample: QueSample<Que>,
+    answers: AnsReplyToken,
+}
+
+impl<Que> PendingQueMessage<Que>
+where
+    Que: datapod::DataPod + 'static,
+{
+    pub fn sample(&self) -> &QueSample<Que> {
+        &self.sample
+    }
+
+    pub fn into_parts(self) -> (QueSample<Que>, AnsReplyToken) {
+        (self.sample, self.answers)
+    }
+}
+
 pub struct AnsServer<Que, Ans>
 where
     Que: datapod::DataPod + 'static,
@@ -2755,6 +2956,8 @@ where
     route_topic: String,
     local_servers: Vec<LocalAnsServerState<Que, Ans>>,
     remote_rx: tokio::sync::mpsc::Receiver<RemotePendingQue>,
+    pending_remote_replies: HashMap<u64, RemoteAnsReply>,
+    next_pending_token: u64,
     stats: Arc<ItemStatsInner>,
 }
 
@@ -2809,6 +3012,87 @@ where
             }
             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Ok(None),
             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => Ok(None),
+        }
+    }
+
+    pub fn take_message(&mut self) -> Result<Option<PendingQueMessage<Que>>> {
+        for (server_index, local) in self.local_servers.iter_mut().enumerate() {
+            if let Some((que, _reply)) = local.server.take()? {
+                let sample = QueSample {
+                    req_id: que.req_id(),
+                    header: *que.header(),
+                    payload: que.payload().to_vec(),
+                };
+                return Ok(Some(PendingQueMessage {
+                    answers: AnsReplyToken {
+                        req_id: sample.req_id,
+                        source: ReplyTokenSource::Local { server_index },
+                    },
+                    sample,
+                }));
+            }
+        }
+
+        match self.remote_rx.try_recv() {
+            Ok(pending) => {
+                self.next_pending_token = self.next_pending_token.wrapping_add(1).max(1);
+                let token = self.next_pending_token;
+                let sample = que_sample_from_frame::<Que>(pending.req_id, &pending.frame)?;
+                self.pending_remote_replies.insert(
+                    token,
+                    RemoteAnsReply {
+                        send: Some(pending.send),
+                        qos: pending.qos,
+                        peer_chunks: pending.peer_chunks,
+                        stats: pending.stats,
+                    },
+                );
+                Ok(Some(PendingQueMessage {
+                    sample,
+                    answers: AnsReplyToken {
+                        req_id: pending.req_id,
+                        source: ReplyTokenSource::Remote { token },
+                    },
+                }))
+            }
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Ok(None),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => Ok(None),
+        }
+    }
+
+    pub fn send_pending(&mut self, answers: AnsReplyToken, ans: &Ans) -> Result<()> {
+        match answers.source {
+            ReplyTokenSource::Local { server_index } => {
+                let local = self
+                    .local_servers
+                    .get_mut(server_index)
+                    .ok_or_else(|| Error::invalid_argument("invalid local que/ans token"))?;
+                local.server.send_to(answers.req_id, ans)
+            }
+            ReplyTokenSource::Remote { token } => {
+                let reply = self.pending_remote_replies.get_mut(&token).ok_or_else(|| {
+                    Error::invalid_argument("invalid or finished remote que/ans token")
+                })?;
+                reply.send(&self.inner.rt, ans)
+            }
+        }
+    }
+
+    pub fn finish_pending(&mut self, answers: AnsReplyToken) -> Result<()> {
+        match answers.source {
+            ReplyTokenSource::Local { server_index } => {
+                let local = self
+                    .local_servers
+                    .get_mut(server_index)
+                    .ok_or_else(|| Error::invalid_argument("invalid local que/ans token"))?;
+                local.server.finish_to(answers.req_id)
+            }
+            ReplyTokenSource::Remote { token } => {
+                let mut reply = self.pending_remote_replies.remove(&token).ok_or_else(|| {
+                    Error::invalid_argument("invalid or finished remote que/ans token")
+                })?;
+                reply.finish(&self.inner.rt)
+            }
         }
     }
 }
@@ -3116,6 +3400,56 @@ struct RemotePendingQue {
     stats: Arc<ItemStatsInner>,
 }
 
+struct RemoteAnsReply {
+    send: Option<iroh::endpoint::SendStream>,
+    qos: TopicQos,
+    peer_chunks: bool,
+    stats: Arc<ItemStatsInner>,
+}
+
+impl RemoteAnsReply {
+    fn send<Ans>(&mut self, rt: &Runtime, ans: &Ans) -> Result<()>
+    where
+        Ans: datapod::DataPod + 'static,
+    {
+        let send = self
+            .send
+            .as_mut()
+            .ok_or_else(|| Error::Remote("answer stream already finished".to_string()))?;
+        let frame = frame_from_datapod(ans);
+        let frame_len = frame.len();
+        let chunk_bytes = self.qos.chunk_bytes;
+        let peer_chunks = self.peer_chunks;
+        let result =
+            rt.block_on(
+                async move { write_answer_item(send, &frame, chunk_bytes, peer_chunks).await },
+            );
+        match result {
+            Ok(()) => {
+                self.stats.record_out(frame_len);
+                Ok(())
+            }
+            Err(e) => {
+                self.stats.record_error();
+                Err(e)
+            }
+        }
+    }
+
+    fn finish(&mut self, rt: &Runtime) -> Result<()> {
+        let mut send = self
+            .send
+            .take()
+            .ok_or_else(|| Error::Remote("answer stream already finished".to_string()))?;
+        rt.block_on(async move {
+            write_answer_done(&mut send).await?;
+            send.finish()
+                .map_err(|e| Error::Remote(format!("finish: {e}")))?;
+            Ok(())
+        })
+    }
+}
+
 fn que_sample_from_frame<Que>(req_id: u64, frame: &[u8]) -> Result<QueSample<Que>>
 where
     Que: datapod::DataPod + 'static,
@@ -3176,7 +3510,58 @@ where
     route_topic: String,
     local_servers: Vec<LocalAckServerState<Put, Ack>>,
     remote_rx: tokio::sync::mpsc::Receiver<RemotePendingPuts>,
+    pending_remote_puts: HashMap<u64, RemotePuts<Put, Ack>>,
+    next_pending_token: u64,
     stats: Arc<ItemStatsInner>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PutAckToken {
+    req_id: u64,
+    source: PutAckTokenSource,
+}
+
+impl PutAckToken {
+    pub fn req_id(&self) -> u64 {
+        self.req_id
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PutAckTokenSource {
+    Local { server_index: usize },
+    Remote { token: u64 },
+}
+
+pub struct PendingPutMessage<Put>
+where
+    Put: datapod::DataPod + 'static,
+{
+    req_id: u64,
+    first: Option<PutSample<Put>>,
+    done: bool,
+    token: PutAckToken,
+}
+
+impl<Put> PendingPutMessage<Put>
+where
+    Put: datapod::DataPod + 'static,
+{
+    pub fn req_id(&self) -> u64 {
+        self.req_id
+    }
+
+    pub fn first(&self) -> Option<&PutSample<Put>> {
+        self.first.as_ref()
+    }
+
+    pub fn done(&self) -> bool {
+        self.done
+    }
+
+    pub fn into_parts(self) -> (u64, Option<PutSample<Put>>, bool, PutAckToken) {
+        (self.req_id, self.first, self.done, self.token)
+    }
 }
 
 impl<Put, Ack> Drop for AckServer<Put, Ack>
@@ -3223,6 +3608,110 @@ where
             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => Ok(None),
         }
     }
+
+    pub fn take_message(&mut self) -> Result<Option<PendingPutMessage<Put>>> {
+        for (server_index, local) in self.local_servers.iter_mut().enumerate() {
+            if let Some((req_id, first, done)) = local.server.take_message()? {
+                return Ok(Some(PendingPutMessage {
+                    req_id,
+                    first: first.map(|sample| PutSample {
+                        req_id: sample.req_id(),
+                        header: *sample.header(),
+                        payload: sample.payload().to_vec(),
+                    }),
+                    done,
+                    token: PutAckToken {
+                        req_id,
+                        source: PutAckTokenSource::Local { server_index },
+                    },
+                }));
+            }
+        }
+
+        match self.remote_rx.try_recv() {
+            Ok(pending) => {
+                self.next_pending_token = self.next_pending_token.wrapping_add(1).max(1);
+                let token = self.next_pending_token;
+                let req_id = pending.req_id;
+                self.pending_remote_puts.insert(
+                    token,
+                    RemotePuts {
+                        req_id,
+                        recv: pending.recv,
+                        send: Some(pending.send),
+                        rt: self.inner.rt.clone(),
+                        done: false,
+                        qos: pending.qos,
+                        peer_chunks: pending.peer_chunks,
+                        stats: pending.stats,
+                        _phantom: PhantomData,
+                    },
+                );
+                Ok(Some(PendingPutMessage {
+                    req_id,
+                    first: None,
+                    done: false,
+                    token: PutAckToken {
+                        req_id,
+                        source: PutAckTokenSource::Remote { token },
+                    },
+                }))
+            }
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Ok(None),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => Ok(None),
+        }
+    }
+
+    pub fn next_pending(&mut self, token: PutAckToken) -> Result<Option<PutSample<Put>>> {
+        match token.source {
+            PutAckTokenSource::Local { server_index } => {
+                let local = self
+                    .local_servers
+                    .get_mut(server_index)
+                    .ok_or_else(|| Error::invalid_argument("invalid local put/ack token"))?;
+                Ok(local
+                    .server
+                    .next_from(token.req_id)?
+                    .map(|sample| PutSample {
+                        req_id: sample.req_id(),
+                        header: *sample.header(),
+                        payload: sample.payload().to_vec(),
+                    }))
+            }
+            PutAckTokenSource::Remote { token } => {
+                let puts = self
+                    .pending_remote_puts
+                    .get_mut(&token)
+                    .ok_or_else(|| Error::invalid_argument("invalid remote put/ack token"))?;
+                puts.next()
+            }
+        }
+    }
+
+    pub fn ack_pending(&mut self, token: PutAckToken, ack: &Ack) -> Result<()> {
+        match token.source {
+            PutAckTokenSource::Local { server_index } => {
+                let local = self
+                    .local_servers
+                    .get_mut(server_index)
+                    .ok_or_else(|| Error::invalid_argument("invalid local put/ack token"))?;
+                local.server.ack_to(token.req_id, ack)
+            }
+            PutAckTokenSource::Remote { token } => {
+                let mut puts = self
+                    .pending_remote_puts
+                    .remove(&token)
+                    .ok_or_else(|| Error::invalid_argument("invalid remote put/ack token"))?;
+                puts.ack(ack)
+            }
+        }
+    }
+
+    pub fn close_pending(&mut self, token: PutAckToken) {
+        if let PutAckTokenSource::Remote { token } = token.source {
+            self.pending_remote_puts.remove(&token);
+        }
+    }
 }
 
 pub struct PutClient<Put, Ack>
@@ -3231,6 +3720,26 @@ where
     Ack: datapod::DataPod + 'static,
 {
     source: PutClientSource<Put, Ack>,
+    pending_remote_uploads: HashMap<u64, RemotePutSender<Put, Ack>>,
+    next_pending_upload: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PutUploadToken {
+    req_id: u64,
+    source: PutUploadTokenSource,
+}
+
+impl PutUploadToken {
+    pub fn req_id(&self) -> u64 {
+        self.req_id
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PutUploadTokenSource {
+    Local,
+    Remote { token: u64 },
 }
 
 enum PutClientSource<Put, Ack>
@@ -3320,6 +3829,114 @@ where
                     _phantom: PhantomData,
                 }))
             }
+        }
+    }
+
+    pub fn open_upload(&mut self) -> Result<PutUploadToken> {
+        match &mut self.source {
+            PutClientSource::Local { client } => {
+                let req_id = client.open_req();
+                Ok(PutUploadToken {
+                    req_id,
+                    source: PutUploadTokenSource::Local,
+                })
+            }
+            PutClientSource::Remote {
+                inner,
+                peer_id,
+                addr_hint,
+                topic,
+                next_id,
+                qos,
+                stats,
+            } => {
+                let req_id = next_id.fetch_add(1, Ordering::AcqRel) + 1;
+                let inner = inner.clone();
+                let peer_id = *peer_id;
+                let addr_hint = addr_hint.clone();
+                let topic = topic.clone();
+                let qos = *qos;
+                let stats = stats.clone();
+                let rt = inner.rt.clone();
+                let send_rt = rt.clone();
+                let (send, recv) = send_rt.block_on(async move {
+                    let conn = ensure_peer_connection(&inner, peer_id, addr_hint).await?;
+                    let (mut send, recv) = conn
+                        .open_bi()
+                        .await
+                        .map_err(|e| Error::Remote(format!("open_bi: {e}")))?;
+                    write_item_handshake(
+                        &mut send,
+                        PUTACK_MAGIC,
+                        &topic,
+                        wire_type_hash::<Put>(),
+                        wire_type_hash::<Ack>(),
+                        std::mem::size_of::<Put::Header>() as u32,
+                        std::mem::size_of::<Ack::Header>() as u32,
+                        qos,
+                    )
+                    .await?;
+                    Ok::<_, Error>((send, recv))
+                })?;
+
+                self.next_pending_upload = self.next_pending_upload.wrapping_add(1).max(1);
+                let token = self.next_pending_upload;
+                self.pending_remote_uploads.insert(
+                    token,
+                    RemotePutSender {
+                        req_id,
+                        send: Some(send),
+                        recv,
+                        rt,
+                        qos,
+                        stats,
+                        _phantom: PhantomData,
+                    },
+                );
+                Ok(PutUploadToken {
+                    req_id,
+                    source: PutUploadTokenSource::Remote { token },
+                })
+            }
+        }
+    }
+
+    pub fn send_pending(&mut self, token: PutUploadToken, put: &Put) -> Result<()> {
+        match token.source {
+            PutUploadTokenSource::Local => match &mut self.source {
+                PutClientSource::Local { client } => client.send_to(token.req_id, put),
+                PutClientSource::Remote { .. } => Err(Error::invalid_argument(
+                    "local put token used with remote put client",
+                )),
+            },
+            PutUploadTokenSource::Remote { token } => self
+                .pending_remote_uploads
+                .get_mut(&token)
+                .ok_or_else(|| Error::invalid_argument("invalid remote put token"))?
+                .send(put),
+        }
+    }
+
+    pub fn finish_pending(&mut self, token: PutUploadToken) -> Result<AckSample<Ack>> {
+        match token.source {
+            PutUploadTokenSource::Local => match &mut self.source {
+                PutClientSource::Local { client } => {
+                    let sample = client.finish_req(token.req_id)?;
+                    Ok(AckSample {
+                        req_id: sample.req_id(),
+                        header: *sample.header(),
+                        payload: sample.payload().to_vec(),
+                    })
+                }
+                PutClientSource::Remote { .. } => Err(Error::invalid_argument(
+                    "local put token used with remote put client",
+                )),
+            },
+            PutUploadTokenSource::Remote { token } => self
+                .pending_remote_uploads
+                .remove(&token)
+                .ok_or_else(|| Error::invalid_argument("invalid remote put token"))?
+                .finish(),
         }
     }
 }
@@ -3657,7 +4274,58 @@ where
     route_topic: String,
     local_servers: Vec<LocalPipServerState<ClientMsg, ServerMsg>>,
     remote_rx: tokio::sync::mpsc::Receiver<RemotePendingPip>,
+    pending_remote_sessions: HashMap<u64, RemotePip<ServerMsg, ClientMsg>>,
+    next_pending_session: u64,
     stats: Arc<ItemStatsInner>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PipServerToken {
+    session_id: u64,
+    source: PipServerTokenSource,
+}
+
+impl PipServerToken {
+    pub fn session_id(&self) -> u64 {
+        self.session_id
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PipServerTokenSource {
+    Local { server_index: usize },
+    Remote { token: u64 },
+}
+
+pub struct PendingPipMessage<ClientMsg>
+where
+    ClientMsg: datapod::DataPod + 'static,
+{
+    session_id: u64,
+    first: Option<PipSample<ClientMsg>>,
+    incoming_done: bool,
+    token: PipServerToken,
+}
+
+impl<ClientMsg> PendingPipMessage<ClientMsg>
+where
+    ClientMsg: datapod::DataPod + 'static,
+{
+    pub fn session_id(&self) -> u64 {
+        self.session_id
+    }
+
+    pub fn first(&self) -> Option<&PipSample<ClientMsg>> {
+        self.first.as_ref()
+    }
+
+    pub fn incoming_done(&self) -> bool {
+        self.incoming_done
+    }
+
+    pub fn into_parts(self) -> (u64, Option<PipSample<ClientMsg>>, bool, PipServerToken) {
+        (self.session_id, self.first, self.incoming_done, self.token)
+    }
 }
 
 impl<ClientMsg, ServerMsg> Drop for PipServer<ClientMsg, ServerMsg>
@@ -3705,6 +4373,130 @@ where
             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => Ok(None),
         }
     }
+
+    pub fn take_message(&mut self) -> Result<Option<PendingPipMessage<ClientMsg>>> {
+        for (server_index, local) in self.local_servers.iter_mut().enumerate() {
+            if let Some((session_id, first, incoming_done)) = local.server.take_message()? {
+                return Ok(Some(PendingPipMessage {
+                    session_id,
+                    first: first.map(|sample| PipSample {
+                        session_id: sample.session_id(),
+                        header: *sample.header(),
+                        payload: sample.payload().to_vec(),
+                    }),
+                    incoming_done,
+                    token: PipServerToken {
+                        session_id,
+                        source: PipServerTokenSource::Local { server_index },
+                    },
+                }));
+            }
+        }
+
+        match self.remote_rx.try_recv() {
+            Ok(pending) => {
+                self.next_pending_session = self.next_pending_session.wrapping_add(1).max(1);
+                let token = self.next_pending_session;
+                let session_id = pending.session_id;
+                self.pending_remote_sessions.insert(
+                    token,
+                    RemotePip {
+                        session_id,
+                        send: Some(pending.send),
+                        recv: pending.recv,
+                        rt: self.inner.rt.clone(),
+                        incoming_done: false,
+                        outgoing_done: false,
+                        qos: pending.qos,
+                        peer_chunks: pending.peer_chunks,
+                        stats: pending.stats,
+                        _phantom: PhantomData,
+                    },
+                );
+                Ok(Some(PendingPipMessage {
+                    session_id,
+                    first: None,
+                    incoming_done: false,
+                    token: PipServerToken {
+                        session_id,
+                        source: PipServerTokenSource::Remote { token },
+                    },
+                }))
+            }
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Ok(None),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => Ok(None),
+        }
+    }
+
+    pub fn send_pending(&mut self, token: PipServerToken, msg: &ServerMsg) -> Result<()> {
+        match token.source {
+            PipServerTokenSource::Local { server_index } => {
+                let local = self
+                    .local_servers
+                    .get_mut(server_index)
+                    .ok_or_else(|| Error::invalid_argument("invalid local pip server token"))?;
+                local.server.send_to(token.session_id, msg)
+            }
+            PipServerTokenSource::Remote { token } => {
+                let pip = self
+                    .pending_remote_sessions
+                    .get_mut(&token)
+                    .ok_or_else(|| Error::invalid_argument("invalid remote pip server token"))?;
+                pip.send(msg)
+            }
+        }
+    }
+
+    pub fn finish_send_pending(&mut self, token: PipServerToken) -> Result<()> {
+        match token.source {
+            PipServerTokenSource::Local { server_index } => {
+                let local = self
+                    .local_servers
+                    .get_mut(server_index)
+                    .ok_or_else(|| Error::invalid_argument("invalid local pip server token"))?;
+                local.server.finish_send_to(token.session_id)
+            }
+            PipServerTokenSource::Remote { token } => {
+                let pip = self
+                    .pending_remote_sessions
+                    .get_mut(&token)
+                    .ok_or_else(|| Error::invalid_argument("invalid remote pip server token"))?;
+                pip.finish_send()
+            }
+        }
+    }
+
+    pub fn next_pending(&mut self, token: PipServerToken) -> Result<Option<PipSample<ClientMsg>>> {
+        match token.source {
+            PipServerTokenSource::Local { server_index } => {
+                let local = self
+                    .local_servers
+                    .get_mut(server_index)
+                    .ok_or_else(|| Error::invalid_argument("invalid local pip server token"))?;
+                Ok(local
+                    .server
+                    .next_from(token.session_id)?
+                    .map(|sample| PipSample {
+                        session_id: sample.session_id(),
+                        header: *sample.header(),
+                        payload: sample.payload().to_vec(),
+                    }))
+            }
+            PipServerTokenSource::Remote { token } => {
+                let pip = self
+                    .pending_remote_sessions
+                    .get_mut(&token)
+                    .ok_or_else(|| Error::invalid_argument("invalid remote pip server token"))?;
+                pip.next()
+            }
+        }
+    }
+
+    pub fn close_pending(&mut self, token: PipServerToken) {
+        if let PipServerTokenSource::Remote { token } = token.source {
+            self.pending_remote_sessions.remove(&token);
+        }
+    }
 }
 
 pub struct PipClient<ClientMsg, ServerMsg>
@@ -3713,6 +4505,26 @@ where
     ServerMsg: datapod::DataPod + 'static,
 {
     source: PipClientSource<ClientMsg, ServerMsg>,
+    pending_remote_sessions: HashMap<u64, RemotePip<ClientMsg, ServerMsg>>,
+    next_pending_session: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PipSessionToken {
+    session_id: u64,
+    source: PipSessionTokenSource,
+}
+
+impl PipSessionToken {
+    pub fn session_id(&self) -> u64 {
+        self.session_id
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PipSessionTokenSource {
+    Local,
+    Remote { token: u64 },
 }
 
 enum PipClientSource<ClientMsg, ServerMsg>
@@ -3805,6 +4617,148 @@ where
                     _phantom: PhantomData,
                 }))
             }
+        }
+    }
+
+    pub fn open_session(&mut self) -> Result<PipSessionToken> {
+        match &mut self.source {
+            PipClientSource::Local { client } => {
+                let session_id = client.start_session();
+                Ok(PipSessionToken {
+                    session_id,
+                    source: PipSessionTokenSource::Local,
+                })
+            }
+            PipClientSource::Remote {
+                inner,
+                peer_id,
+                addr_hint,
+                topic,
+                next_id,
+                qos,
+                stats,
+            } => {
+                let session_id = next_id.fetch_add(1, Ordering::AcqRel) + 1;
+                let inner = inner.clone();
+                let peer_id = *peer_id;
+                let addr_hint = addr_hint.clone();
+                let topic = topic.clone();
+                let qos = *qos;
+                let stats = stats.clone();
+                let client_type_hash = wire_type_hash::<ClientMsg>();
+                let server_type_hash = wire_type_hash::<ServerMsg>();
+                let client_header_size = std::mem::size_of::<ClientMsg::Header>() as u32;
+                let server_header_size = std::mem::size_of::<ServerMsg::Header>() as u32;
+
+                let rt = inner.rt.clone();
+                let (send, recv) = rt.block_on(async move {
+                    let conn = ensure_peer_connection(&inner, peer_id, addr_hint).await?;
+                    let (mut send, recv) = conn
+                        .open_bi()
+                        .await
+                        .map_err(|e| Error::Remote(format!("open_bi: {e}")))?;
+                    write_item_handshake(
+                        &mut send,
+                        PIP_MAGIC,
+                        &topic,
+                        client_type_hash,
+                        server_type_hash,
+                        client_header_size,
+                        server_header_size,
+                        qos,
+                    )
+                    .await?;
+                    Ok::<_, Error>((send, recv))
+                })?;
+
+                self.next_pending_session = self.next_pending_session.wrapping_add(1).max(1);
+                let token = self.next_pending_session;
+                self.pending_remote_sessions.insert(
+                    token,
+                    RemotePip {
+                        session_id,
+                        send: Some(send),
+                        recv,
+                        rt,
+                        incoming_done: false,
+                        outgoing_done: false,
+                        qos,
+                        peer_chunks: true,
+                        stats,
+                        _phantom: PhantomData,
+                    },
+                );
+                Ok(PipSessionToken {
+                    session_id,
+                    source: PipSessionTokenSource::Remote { token },
+                })
+            }
+        }
+    }
+
+    pub fn send_pending(&mut self, token: PipSessionToken, msg: &ClientMsg) -> Result<()> {
+        match token.source {
+            PipSessionTokenSource::Local => match &mut self.source {
+                PipClientSource::Local { client } => client.send_to(token.session_id, msg),
+                PipClientSource::Remote { .. } => Err(Error::invalid_argument(
+                    "local pip token used with remote client",
+                )),
+            },
+            PipSessionTokenSource::Remote { token } => {
+                let pip = self
+                    .pending_remote_sessions
+                    .get_mut(&token)
+                    .ok_or_else(|| Error::invalid_argument("invalid remote pip token"))?;
+                pip.send(msg)
+            }
+        }
+    }
+
+    pub fn finish_send_pending(&mut self, token: PipSessionToken) -> Result<()> {
+        match token.source {
+            PipSessionTokenSource::Local => match &mut self.source {
+                PipClientSource::Local { client } => client.finish_send_to(token.session_id),
+                PipClientSource::Remote { .. } => Err(Error::invalid_argument(
+                    "local pip token used with remote client",
+                )),
+            },
+            PipSessionTokenSource::Remote { token } => {
+                let pip = self
+                    .pending_remote_sessions
+                    .get_mut(&token)
+                    .ok_or_else(|| Error::invalid_argument("invalid remote pip token"))?;
+                pip.finish_send()
+            }
+        }
+    }
+
+    pub fn next_pending(&mut self, token: PipSessionToken) -> Result<Option<PipSample<ServerMsg>>> {
+        match token.source {
+            PipSessionTokenSource::Local => match &mut self.source {
+                PipClientSource::Local { client } => {
+                    Ok(client.next_from(token.session_id)?.map(|sample| PipSample {
+                        session_id: sample.session_id(),
+                        header: *sample.header(),
+                        payload: sample.payload().to_vec(),
+                    }))
+                }
+                PipClientSource::Remote { .. } => Err(Error::invalid_argument(
+                    "local pip token used with remote client",
+                )),
+            },
+            PipSessionTokenSource::Remote { token } => {
+                let pip = self
+                    .pending_remote_sessions
+                    .get_mut(&token)
+                    .ok_or_else(|| Error::invalid_argument("invalid remote pip token"))?;
+                pip.next()
+            }
+        }
+    }
+
+    pub fn close_session(&mut self, token: PipSessionToken) {
+        if let PipSessionTokenSource::Remote { token } = token.source {
+            self.pending_remote_sessions.remove(&token);
         }
     }
 }

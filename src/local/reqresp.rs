@@ -180,6 +180,10 @@ where
             },
         )))
     }
+
+    pub fn respond_to(&mut self, req_id: u64, resp: &Resp) -> Result<()> {
+        publish_enveloped(&mut self.responses, req_id, resp)
+    }
 }
 
 pub struct ReplyHandle<'a, Req, Resp>
