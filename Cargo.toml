@@ -14,8 +14,12 @@ categories = ["network-programming", "concurrency", "embedded"]
 publish = false
 include = [
     "Cargo.toml",
+    "pyproject.toml",
     "README.md",
     "LIMITATIONS.md",
+    "include/**/*.h",
+    "bindings/**/*.c",
+    "bindings/**/*.py",
     "src/**/*.rs",
     "examples/**/*.rs",
     "tests/**/*.rs",
@@ -23,6 +27,9 @@ include = [
 
 [lib]
 path = "src/lib.rs"
+# `rlib` for normal Rust use; `cdylib` for the C ABI (`src/ffi.rs`) and
+# the Python extension module (`--features python`, built by maturin).
+crate-type = ["rlib", "cdylib"]
 
 [features]
 default = ["tracing"]
@@ -32,6 +39,10 @@ tracing = ["dep:tracing"]
 
 # TOML / JSON config parsing for service discovery files.
 config = ["dep:serde_json", "dep:toml"]
+
+# Python bindings (pyo3). Builds the cdylib as a CPython extension.
+python = ["dep:pyo3"]
+python-extension = ["python"]
 
 [dependencies]
 datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.2.0" }
@@ -66,6 +77,10 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"
 tracing = { version = "0.1", optional = true }
 serde_json = { version = "1.0", optional = true }
 toml = { version = "0.8", optional = true }
+pyo3 = { version = "0.23", optional = true, features = [
+    "abi3-py39",
+    "extension-module",
+] }
 
 [dev-dependencies]
 tempfile = "3.10"

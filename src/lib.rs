@@ -40,12 +40,16 @@ pub mod chunk;
 pub mod demo;
 pub mod did_key;
 pub mod error;
+pub mod ffi;
 pub mod local;
 pub mod node;
 pub mod pip;
 pub mod putack;
+#[cfg(feature = "python")]
+pub mod python;
 pub mod qos;
 pub mod queans;
+pub mod raw;
 pub mod remote;
 pub mod reqresp;
 mod trace;
@@ -70,6 +74,7 @@ pub use node::{
     ReqServer, ReqStats, ResSample, Subscriber, SubscriberStats,
 };
 pub use qos::{DeliveryPolicy, TopicQos};
+pub use raw::RawMsg;
 pub use remote::{
     RemotePipClient, RemotePutClient, RemoteQueClient, RemoteReqClient, RemoteTransport,
     RemoteTransportBuilder,
