@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0] - 2026-06-01
+
+### <!-- 0 -->⛰️  Features
+
+- Expand C and Python FFI for all modes and add examples
+- Add C and Python API bindings with opaque messages
+
 ## [0.2.0] - 2026-05-30
 
 ### <!-- 0 -->⛰️  Features
