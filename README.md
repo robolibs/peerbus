@@ -319,9 +319,24 @@ Run the Python binding demo:
 make -C examples/python_binding demo
 ```
 
-Both bindings transport opaque `RawMsg` payloads: a `kind: u64` tag plus
-bytes. Concrete datapod wrappers live in datapod; quicbit only carries
-`(kind, bytes)` across pub/sub, req/res, que/ans, put/ack, and pip.
+For language-independent datapod traffic, use the generic datapod API:
+Python passes any datapod object with `to_wire_message()` to
+`DatapodPublisher.send()`, and subscribers decode with the datapod type,
+for example `sub.take(datapod.Grid)`. This works for datapod containers
+such as `Grid` and `Matrix` without adding quicbit APIs per type.
+
+The video examples use `datapod.Grid` (`Encoding.Rgba8`) over that generic
+datapod path:
+
+```sh
+# Python publisher -> Rust Wayland subscriber
+make -C examples/python_binding video-pub
+cargo run --release --example video_sub -- <did printed by Python>
+
+# Rust publisher -> Python headless subscriber
+cargo run --release --example video_pub
+make -C examples/python_binding video-sub PEER=<did printed by Rust>
+```
 
 ## Topic QoS
 
@@ -335,7 +350,7 @@ let qos = TopicQos::latest()
     .with_subscriber_queue(8)
     .with_max_message_bytes(64 * 1024 * 1024);
 
-let mut pubr = node.publisher_with_qos::<VideoFrame>("demo/video", qos)?;
+let mut pubr = node.publisher_with_qos::<DatapodMsg>("demo/video", qos)?;
 ```
 
 `DeliveryPolicy::Reliable` is the default. Its publisher-side remote fanout

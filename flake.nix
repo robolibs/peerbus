@@ -75,6 +75,50 @@
           libxi
           libxrandr
         ];
+
+        pythonEnv = pkgs.python3.withPackages (ps: with ps; [
+          brotli
+          fonttools
+          pip
+        ]);
+
+        quicbitPythonDevelop = pkgs.writeShellScriptBin "quicbit-python-develop" ''
+          set -euo pipefail
+
+          root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+          if [ ! -d "$root/examples/python_binding" ]; then
+            echo "quicbit-python-develop: run from the quicbit repository" >&2
+            exit 2
+          fi
+          if [ ! -d "$root/../datapod" ]; then
+            echo "quicbit-python-develop: expected ../datapod next to quicbit" >&2
+            exit 2
+          fi
+
+          export VIRTUAL_ENV="''${VIRTUAL_ENV:-$root/.nix-python}"
+          export PATH="$VIRTUAL_ENV/bin:$PATH"
+          export PYO3_PYTHON="''${PYO3_PYTHON:-$VIRTUAL_ENV/bin/python}"
+          export PYTHON="''${PYTHON:-$VIRTUAL_ENV/bin/python}"
+
+          (cd "$root/../datapod" && maturin develop --features python)
+          (cd "$root" && maturin develop --features python)
+        '';
+
+        quicbitVideoPub = pkgs.writeShellScriptBin "quicbit-video-pub" ''
+          set -euo pipefail
+
+          root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+          cd "$root"
+          exec python examples/python_binding/video_pub.py "$@"
+        '';
+
+        quicbitVideoSub = pkgs.writeShellScriptBin "quicbit-video-sub" ''
+          set -euo pipefail
+
+          root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+          cd "$root"
+          exec python examples/python_binding/video_sub.py "$@"
+        '';
       in
       {
         devShells.default = pkgs.mkShell {
@@ -89,7 +133,11 @@
             pkgs.rust-cbindgen
             pkgs.trunk
             pkgs.maturin
-            (pkgs.python3.withPackages (ps: with ps; [ fonttools brotli pip ]))
+            pkgs.git
+            pythonEnv
+            quicbitPythonDevelop
+            quicbitVideoPub
+            quicbitVideoSub
 
             nixGLAlias
             nixVulkanAlias
@@ -104,6 +152,37 @@
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath guiLibs;
           WGPU_VALIDATION = "0";
           WGPU_DEBUG = "0";
+
+          shellHook = ''
+            export QUICBIT_PY_VENV="$PWD/.nix-python"
+            if [ ! -x "$QUICBIT_PY_VENV/bin/python" ]; then
+              ${pythonEnv}/bin/python -m venv --system-site-packages "$QUICBIT_PY_VENV"
+            fi
+            export VIRTUAL_ENV="$QUICBIT_PY_VENV"
+            export PATH="$VIRTUAL_ENV/bin:$PATH"
+            export PYO3_PYTHON="$VIRTUAL_ENV/bin/python"
+            export PYTHON="$VIRTUAL_ENV/bin/python"
+
+            quicbit-python-ready() {
+              python - <<'PY' >/dev/null 2>&1
+import inspect
+import datapod
+import quicbit
+sig = str(inspect.signature(quicbit.Node))
+assert "max_publishers" in sig and "max_subscribers" in sig, sig
+PY
+            }
+
+            if ! quicbit-python-ready; then
+              echo "Installing local datapod/quicbit Python bindings into $VIRTUAL_ENV ..."
+              quicbit-python-develop
+            fi
+
+            echo "Python: $(python --version) ($PYO3_PYTHON)"
+            echo "Refresh bindings after code changes: quicbit-python-develop"
+            echo "Python video pub: quicbit-video-pub"
+            echo "Python video sub: quicbit-video-sub <did:key:...>"
+          '';
         };
       }
     );

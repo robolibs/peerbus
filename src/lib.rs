@@ -37,6 +37,7 @@
 
 pub mod async_adapter;
 pub mod chunk;
+pub mod datapod_msg;
 pub mod demo;
 pub mod did_key;
 pub mod error;
@@ -56,6 +57,7 @@ mod trace;
 pub mod transport;
 
 pub use async_adapter::{AsyncPublisher, AsyncSubscriber};
+pub use datapod_msg::DatapodMsg;
 pub use error::{Error, Result};
 pub use local::{
     AnsReply as LocalAnsReply, AnsSample as LocalAnsSample, Loan, LocalAckSample, LocalAckServer,

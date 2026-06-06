@@ -5,17 +5,21 @@
 //! datapod Python classes from datapod 0.3 can sit above this by using
 //! `kind = TYPE_HASH` and their own wire bytes.
 
+use std::ffi::CString;
+use std::os::raw::{c_int, c_void};
+use std::ptr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyBufferError, PyRuntimeError};
+use pyo3::ffi;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyList, PyModule};
+use pyo3::types::{PyBytes, PyDict, PyList, PyMemoryView, PyModule};
 
 use crate::{
-    AckServer, AnsReplyToken, AnsServer, DeliveryPolicy, LocalConfig, Node, PipClient, PipServer,
-    PipServerToken, PipSessionToken, Publisher, PutClient, PutUploadToken, QueClient, RawMsg,
-    ReqClient, ReqReplyToken, ReqServer, Subscriber, TopicQos,
+    AckServer, AnsReplyToken, AnsServer, DatapodMsg, DeliveryPolicy, LocalConfig, Node, NodeSample,
+    PipClient, PipServer, PipServerToken, PipSessionToken, Publisher, PutClient, PutUploadToken,
+    QueClient, RawMsg, ReqClient, ReqReplyToken, ReqServer, Subscriber, TopicQos,
 };
 
 fn py_err(err: crate::Error) -> PyErr {
@@ -79,6 +83,65 @@ fn sample_tuple<'py>(py: Python<'py>, kind: u64, payload: &[u8]) -> (u64, Bound<
     (kind, PyBytes::new(py, payload))
 }
 
+/// Fill a read-only Python buffer view from bytes owned by `owner`.
+///
+/// The data must remain valid for as long as `owner` is alive. For the
+/// zero-copy sample views below, `owner` is the Python sample object holding the
+/// Rust `NodeSample`, which pins the SHM slot until the Python object and all
+/// memoryviews are released.
+unsafe fn fill_readonly_buffer(
+    view: *mut ffi::Py_buffer,
+    flags: c_int,
+    data_ptr: *const u8,
+    data_len: usize,
+    owner: Bound<'_, PyAny>,
+) -> PyResult<()> {
+    if view.is_null() {
+        return Err(PyBufferError::new_err("buffer view is null"));
+    }
+    if (flags & ffi::PyBUF_WRITABLE) == ffi::PyBUF_WRITABLE {
+        return Err(PyBufferError::new_err("quicbit sample views are read-only"));
+    }
+
+    unsafe {
+        (*view).obj = owner.into_ptr();
+        (*view).buf = data_ptr as *mut c_void;
+        (*view).len = data_len as isize;
+        (*view).readonly = 1;
+        (*view).itemsize = 1;
+        (*view).format = if (flags & ffi::PyBUF_FORMAT) == ffi::PyBUF_FORMAT {
+            CString::new("B")
+                .expect("static buffer format contains no NULs")
+                .into_raw()
+        } else {
+            ptr::null_mut()
+        };
+        (*view).ndim = 1;
+        (*view).shape = if (flags & ffi::PyBUF_ND) == ffi::PyBUF_ND {
+            &mut (*view).len
+        } else {
+            ptr::null_mut()
+        };
+        (*view).strides = if (flags & ffi::PyBUF_STRIDES) == ffi::PyBUF_STRIDES {
+            &mut (*view).itemsize
+        } else {
+            ptr::null_mut()
+        };
+        (*view).suboffsets = ptr::null_mut();
+        (*view).internal = ptr::null_mut();
+    }
+    Ok(())
+}
+
+unsafe fn release_readonly_buffer(view: *mut ffi::Py_buffer) {
+    unsafe {
+        if !view.is_null() && !(*view).format.is_null() {
+            drop(CString::from_raw((*view).format));
+            (*view).format = ptr::null_mut();
+        }
+    }
+}
+
 fn raw_from_pod(value: &Bound<'_, PyAny>) -> PyResult<RawMsg> {
     let wire = value.call_method0("to_wire_message").map_err(|_| {
         PyRuntimeError::new_err(
@@ -87,6 +150,16 @@ fn raw_from_pod(value: &Bound<'_, PyAny>) -> PyResult<RawMsg> {
     })?;
     let (kind, data) = wire.extract::<(u64, Vec<u8>)>()?;
     Ok(RawMsg::new(kind, &data))
+}
+
+fn datapod_msg_from_py(value: &Bound<'_, PyAny>) -> PyResult<DatapodMsg> {
+    let wire = value.call_method0("to_wire_message").map_err(|_| {
+        PyRuntimeError::new_err(
+            "expected datapod object with to_wire_message() -> (type_hash, bytes)",
+        )
+    })?;
+    let (type_hash, wire) = wire.extract::<(u64, Vec<u8>)>()?;
+    Ok(DatapodMsg::new(type_hash, wire))
 }
 
 fn decode_datapod(
@@ -457,7 +530,9 @@ impl PyNode {
         system_did=None,
         max_payload_bytes=None,
         history_depth=None,
-        subscriber_buffer=None
+        subscriber_buffer=None,
+        max_publishers=None,
+        max_subscribers=None
     ))]
     fn new(
         identity: Option<String>,
@@ -466,6 +541,8 @@ impl PyNode {
         max_payload_bytes: Option<usize>,
         history_depth: Option<u32>,
         subscriber_buffer: Option<u32>,
+        max_publishers: Option<u32>,
+        max_subscribers: Option<u32>,
     ) -> PyResult<Self> {
         let mut builder = Node::builder();
         if let Some(id) = identity {
@@ -477,7 +554,12 @@ impl PyNode {
         if let Some(did) = system_did {
             builder = builder.system_did(did);
         }
-        if max_payload_bytes.is_some() || history_depth.is_some() || subscriber_buffer.is_some() {
+        if max_payload_bytes.is_some()
+            || history_depth.is_some()
+            || subscriber_buffer.is_some()
+            || max_publishers.is_some()
+            || max_subscribers.is_some()
+        {
             let mut cfg = LocalConfig::default();
             if let Some(value) = max_payload_bytes {
                 cfg.max_payload_bytes = value;
@@ -487,6 +569,12 @@ impl PyNode {
             }
             if let Some(value) = subscriber_buffer {
                 cfg.subscriber_buffer = value;
+            }
+            if let Some(value) = max_publishers {
+                cfg.max_publishers = value;
+            }
+            if let Some(value) = max_subscribers {
+                cfg.max_subscribers = value;
             }
             builder = builder.local_config(cfg);
         }
@@ -579,6 +667,21 @@ impl PyNode {
         Ok(PyPublisher { publisher })
     }
 
+    /// Generic datapod publisher. Accepts any Python datapod object with
+    /// `to_wire_message() -> (TYPE_HASH, bytes)`.
+    #[pyo3(signature = (topic, qos=None))]
+    fn datapod_publisher(
+        &self,
+        topic: &str,
+        qos: Option<PyRef<'_, PyTopicQos>>,
+    ) -> PyResult<PyDatapodPublisher> {
+        let publisher = self
+            .node
+            .publisher_with_qos::<DatapodMsg>(topic, qos_value(qos))
+            .map_err(py_err)?;
+        Ok(PyDatapodPublisher { publisher })
+    }
+
     #[pyo3(signature = (peer, topic, qos=None))]
     fn subscriber(
         &self,
@@ -596,6 +699,27 @@ impl PyNode {
         Ok(PySubscriber { subscriber })
     }
 
+    /// Generic datapod subscriber. `take(datapod.Type)` decodes with the
+    /// datapod Python binding's `from_wire_message()`.
+    #[pyo3(signature = (peer, topic, qos=None))]
+    fn datapod_subscriber(
+        &self,
+        peer: &str,
+        topic: &str,
+        qos: Option<PyRef<'_, PyTopicQos>>,
+    ) -> PyResult<PyDatapodSubscriber> {
+        let qos = qos_value(qos);
+        let subscriber = if let Ok(addr) = decode_endpoint_addr(peer) {
+            self.node
+                .subscriber_with_qos::<DatapodMsg>(addr, topic, qos)
+        } else {
+            self.node
+                .subscriber_with_qos::<DatapodMsg>(peer, topic, qos)
+        }
+        .map_err(py_err)?;
+        Ok(PyDatapodSubscriber { subscriber })
+    }
+
     #[pyo3(signature = (topic, qos=None))]
     fn subscribe(&self, topic: &str, qos: Option<PyRef<'_, PyTopicQos>>) -> PyResult<PySubscriber> {
         let subscriber = self
@@ -603,6 +727,20 @@ impl PyNode {
             .subscribe_with_qos::<RawMsg>(topic, qos_value(qos))
             .map_err(py_err)?;
         Ok(PySubscriber { subscriber })
+    }
+
+    /// System-DID topic-only generic datapod subscriber.
+    #[pyo3(signature = (topic, qos=None))]
+    fn datapod_subscribe(
+        &self,
+        topic: &str,
+        qos: Option<PyRef<'_, PyTopicQos>>,
+    ) -> PyResult<PyDatapodSubscriber> {
+        let subscriber = self
+            .node
+            .subscribe_with_qos::<DatapodMsg>(topic, qos_value(qos))
+            .map_err(py_err)?;
+        Ok(PyDatapodSubscriber { subscriber })
     }
 
     #[pyo3(signature = (peer, topic, qos=None))]
@@ -839,6 +977,160 @@ impl PySubscriber {
                 sample.header().kind,
                 sample.payload(),
             )?)),
+            None => Ok(None),
+        }
+    }
+
+    fn stats(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        let stats = self.subscriber.stats();
+        let dict = PyDict::new(py);
+        dict.set_item("received", stats.received)?;
+        dict.set_item("disconnects", stats.disconnects)?;
+        dict.set_item("stale_dropped", stats.stale_dropped)?;
+        dict.set_item("incomplete_dropped", stats.incomplete_dropped)?;
+        dict.set_item("bytes_received", stats.bytes_received)?;
+        Ok(dict.into())
+    }
+}
+
+#[pyclass(name = "DatapodPublisher")]
+pub struct PyDatapodPublisher {
+    publisher: Publisher<DatapodMsg>,
+}
+
+#[pymethods]
+impl PyDatapodPublisher {
+    /// Publish any datapod Python object.
+    fn send(&mut self, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        let msg = datapod_msg_from_py(value)?;
+        self.publisher.send(&msg).map(|_| ()).map_err(py_err)
+    }
+
+    fn stats(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        let stats = self.publisher.stats();
+        let dict = PyDict::new(py);
+        dict.set_item("published", stats.published)?;
+        dict.set_item("remote_dropped", stats.remote_dropped)?;
+        dict.set_item("stale_dropped", stats.stale_dropped)?;
+        dict.set_item("bytes_sent", stats.bytes_sent)?;
+        dict.set_item("send_errors", stats.send_errors)?;
+        Ok(dict.into())
+    }
+}
+
+#[pyclass(name = "DatapodSubscriber")]
+pub struct PyDatapodSubscriber {
+    subscriber: Subscriber<DatapodMsg>,
+}
+
+/// Borrowed zero-copy datapod sample.
+///
+/// For local SHM this object pins the underlying slot until it and all
+/// memoryviews derived from it are dropped. `memoryview(sample)` or
+/// `sample.wire_view()` exposes the datapod wire bytes without copying.
+#[pyclass(name = "DatapodSampleView")]
+pub struct PyDatapodSampleView {
+    sample: NodeSample<DatapodMsg>,
+}
+
+#[pymethods]
+impl PyDatapodSampleView {
+    #[getter]
+    fn type_hash(&self) -> u64 {
+        self.sample.header().type_hash
+    }
+
+    #[getter]
+    fn wire_len(&self) -> usize {
+        self.sample.payload().len()
+    }
+
+    fn __len__(&self) -> usize {
+        self.sample.payload().len()
+    }
+
+    /// Return a Python memoryview of the datapod wire bytes.
+    ///
+    /// This is the zero-copy path. Keep this sample object alive while using
+    /// the memoryview; holding it pins the SHM slot.
+    fn wire_view<'py>(slf: Bound<'py, Self>) -> PyResult<Bound<'py, PyMemoryView>> {
+        let any = slf.into_any();
+        PyMemoryView::from(&any)
+    }
+
+    /// Alias for `wire_view()`.
+    fn payload_view<'py>(slf: Bound<'py, Self>) -> PyResult<Bound<'py, PyMemoryView>> {
+        Self::wire_view(slf)
+    }
+
+    /// Explicit copy helper for callers that really want owned bytes.
+    fn to_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, self.sample.payload())
+    }
+
+    /// Decode through the datapod Python class. This is convenient but copies.
+    fn decode(&self, py: Python<'_>, datapod_type: Py<PyAny>) -> PyResult<Py<PyAny>> {
+        decode_datapod(
+            py,
+            datapod_type.bind(py),
+            self.sample.header().type_hash,
+            self.sample.payload(),
+        )
+    }
+
+    unsafe fn __getbuffer__(
+        slf: Bound<'_, Self>,
+        view: *mut ffi::Py_buffer,
+        flags: c_int,
+    ) -> PyResult<()> {
+        let (data_ptr, data_len) = {
+            let borrowed = slf.borrow();
+            let data = borrowed.sample.payload();
+            (data.as_ptr(), data.len())
+        };
+        unsafe { fill_readonly_buffer(view, flags, data_ptr, data_len, slf.into_any()) }
+    }
+
+    unsafe fn __releasebuffer__(&self, view: *mut ffi::Py_buffer) {
+        unsafe { release_readonly_buffer(view) };
+    }
+}
+
+#[pymethods]
+impl PyDatapodSubscriber {
+    /// Poll and decode as `datapod_type`, e.g. `datapod.Grid`.
+    fn take(&mut self, py: Python<'_>, datapod_type: Py<PyAny>) -> PyResult<Option<Py<PyAny>>> {
+        match self.subscriber.take().map_err(py_err)? {
+            Some(sample) => Ok(Some(decode_datapod(
+                py,
+                datapod_type.bind(py),
+                sample.header().type_hash,
+                sample.payload(),
+            )?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Poll without decoding. Returns `(TYPE_HASH, wire_bytes)` or `None`.
+    fn take_wire<'py>(&mut self, py: Python<'py>) -> PyResult<Option<(u64, Bound<'py, PyBytes>)>> {
+        match self.subscriber.take().map_err(py_err)? {
+            Some(sample) => Ok(Some(sample_tuple(
+                py,
+                sample.header().type_hash,
+                sample.payload(),
+            ))),
+            None => Ok(None),
+        }
+    }
+
+    /// Poll and return a borrowed zero-copy sample view.
+    ///
+    /// For same-host SHM this pins the slot until the returned object and any
+    /// memoryviews made from it are released. Use this for high-throughput
+    /// video and other large payloads instead of `take()` / `take_wire()`.
+    fn take_view(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyDatapodSampleView>>> {
+        match self.subscriber.take().map_err(py_err)? {
+            Some(sample) => Py::new(py, PyDatapodSampleView { sample }).map(Some),
             None => Ok(None),
         }
     }
@@ -1911,6 +2203,9 @@ pub fn register_python_module(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyNode>()?;
     module.add_class::<PyPublisher>()?;
     module.add_class::<PySubscriber>()?;
+    module.add_class::<PyDatapodPublisher>()?;
+    module.add_class::<PyDatapodSubscriber>()?;
+    module.add_class::<PyDatapodSampleView>()?;
     module.add_class::<PyReqClient>()?;
     module.add_class::<PyReqServer>()?;
     module.add_class::<PyPendingReq>()?;

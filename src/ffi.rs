@@ -29,9 +29,9 @@ use std::time::{Duration, Instant};
 use iroh::EndpointAddr;
 
 use crate::{
-    AckServer, AnsReplyToken, AnsServer, DeliveryPolicy, LocalConfig, Node, PipClient, PipServer,
-    PipServerToken, PipSessionToken, Publisher, PutAckToken, PutClient, PutUploadToken, QueClient,
-    RawMsg, ReqClient, ReqReplyToken, ReqServer, Subscriber, TopicQos,
+    AckServer, AnsReplyToken, AnsServer, DatapodMsg, DeliveryPolicy, LocalConfig, Node, NodeSample,
+    PipClient, PipServer, PipServerToken, PipSessionToken, Publisher, PutAckToken, PutClient,
+    PutUploadToken, QueClient, RawMsg, ReqClient, ReqReplyToken, ReqServer, Subscriber, TopicQos,
 };
 
 thread_local! {
@@ -143,6 +143,22 @@ pub struct QuicbitPublisher {
 
 pub struct QuicbitSubscriber {
     subscriber: Subscriber<RawMsg>,
+}
+
+pub struct QuicbitSample {
+    sample: NodeSample<RawMsg>,
+}
+
+pub struct QuicbitDatapodPublisher {
+    publisher: Publisher<DatapodMsg>,
+}
+
+pub struct QuicbitDatapodSubscriber {
+    subscriber: Subscriber<DatapodMsg>,
+}
+
+pub struct QuicbitDatapodSample {
+    sample: NodeSample<DatapodMsg>,
 }
 
 /// An owned, received message (kind tag + payload bytes).
@@ -879,6 +895,169 @@ pub extern "C" fn quicbit_subscriber_free(subscriber: *mut QuicbitSubscriber) {
     unsafe { drop(Box::from_raw(subscriber)) };
 }
 
+// ---- generic datapod pub/sub ----
+
+#[unsafe(no_mangle)]
+pub extern "C" fn quicbit_datapod_publisher_new_with_qos(
+    node: *const QuicbitNode,
+    topic: *const c_char,
+    qos: QuicbitTopicQos,
+) -> *mut QuicbitDatapodPublisher {
+    clear_last_error();
+    if node.is_null() {
+        set_last_error("null node handle");
+        return ptr::null_mut();
+    }
+    let node = unsafe { &*node };
+    let topic = match unsafe { cstr(topic) } {
+        Ok(t) => t,
+        Err(()) => return ptr::null_mut(),
+    };
+    match node
+        .node
+        .publisher_with_qos::<DatapodMsg>(topic, qos.into())
+    {
+        Ok(publisher) => Box::into_raw(Box::new(QuicbitDatapodPublisher { publisher })),
+        Err(e) => {
+            set_last_error(e.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn quicbit_datapod_publisher_free(publisher: *mut QuicbitDatapodPublisher) {
+    if publisher.is_null() {
+        return;
+    }
+    unsafe { drop(Box::from_raw(publisher)) };
+}
+
+/// Publish a datapod wire message: `type_hash` plus `header || payload` bytes.
+#[unsafe(no_mangle)]
+pub extern "C" fn quicbit_datapod_publisher_send(
+    publisher: *mut QuicbitDatapodPublisher,
+    type_hash: u64,
+    wire: *const u8,
+    len: usize,
+) -> bool {
+    clear_last_error();
+    if publisher.is_null() {
+        set_last_error("null publisher handle");
+        return false;
+    }
+    let publisher = unsafe { &mut *publisher };
+    let wire = unsafe { bytes_in(wire, len) };
+    match publisher.publisher.send(&DatapodMsg::new(type_hash, wire)) {
+        Ok(_) => true,
+        Err(e) => {
+            set_last_error(e.to_string());
+            false
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn quicbit_datapod_subscriber_new_with_qos(
+    node: *const QuicbitNode,
+    peer: *const c_char,
+    topic: *const c_char,
+    qos: QuicbitTopicQos,
+) -> *mut QuicbitDatapodSubscriber {
+    clear_last_error();
+    if node.is_null() {
+        set_last_error("null node handle");
+        return ptr::null_mut();
+    }
+    let node = unsafe { &*node };
+    let peer = match unsafe { peer_arg(peer) } {
+        Ok(p) => p,
+        Err(()) => return ptr::null_mut(),
+    };
+    let topic = match unsafe { cstr(topic) } {
+        Ok(t) => t,
+        Err(()) => return ptr::null_mut(),
+    };
+    let qos = qos.into();
+    let result = match peer {
+        Ok(addr) => node
+            .node
+            .subscriber_with_qos::<DatapodMsg>(addr, topic, qos),
+        Err(name) => node
+            .node
+            .subscriber_with_qos::<DatapodMsg>(name.as_str(), topic, qos),
+    };
+    match result {
+        Ok(subscriber) => Box::into_raw(Box::new(QuicbitDatapodSubscriber { subscriber })),
+        Err(e) => {
+            set_last_error(e.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn quicbit_datapod_subscriber_free(subscriber: *mut QuicbitDatapodSubscriber) {
+    if subscriber.is_null() {
+        return;
+    }
+    unsafe { drop(Box::from_raw(subscriber)) };
+}
+
+/// Poll for a datapod sample without copying the wire bytes.
+#[unsafe(no_mangle)]
+pub extern "C" fn quicbit_datapod_subscriber_take_sample(
+    subscriber: *mut QuicbitDatapodSubscriber,
+    out_sample: *mut *mut QuicbitDatapodSample,
+) -> i32 {
+    clear_last_error();
+    if subscriber.is_null() || out_sample.is_null() {
+        set_last_error("null subscriber or out pointer");
+        return -1;
+    }
+    let subscriber = unsafe { &mut *subscriber };
+    match subscriber.subscriber.take() {
+        Ok(Some(sample)) => {
+            unsafe { *out_sample = Box::into_raw(Box::new(QuicbitDatapodSample { sample })) };
+            1
+        }
+        Ok(None) => 0,
+        Err(e) => {
+            set_last_error(e.to_string());
+            -1
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn quicbit_datapod_sample_type_hash(sample: *const QuicbitDatapodSample) -> u64 {
+    if sample.is_null() {
+        return 0;
+    }
+    unsafe { &*sample }.sample.header().type_hash
+}
+
+/// Borrowed zero-copy view of datapod `header || payload` wire bytes.
+#[unsafe(no_mangle)]
+pub extern "C" fn quicbit_datapod_sample_wire(sample: *const QuicbitDatapodSample) -> QuicbitBytes {
+    if sample.is_null() {
+        return QuicbitBytes::empty();
+    }
+    let sample = unsafe { &*sample };
+    QuicbitBytes {
+        ptr: sample.sample.payload().as_ptr(),
+        len: sample.sample.payload().len(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn quicbit_datapod_sample_free(sample: *mut QuicbitDatapodSample) {
+    if sample.is_null() {
+        return;
+    }
+    unsafe { drop(Box::from_raw(sample)) };
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn quicbit_subscriber_stats(
     subscriber: *const QuicbitSubscriber,
@@ -928,6 +1107,69 @@ pub extern "C" fn quicbit_subscriber_take(
             -1
         }
     }
+}
+
+/// Poll for the next sample without copying payload bytes.
+///
+/// Returns `1` and writes a borrowed sample handle to `*out_sample` when one is
+/// available, `0` when none is ready, and `-1` on error. A returned sample must
+/// be freed with [`quicbit_sample_free`]. The byte view returned from
+/// [`quicbit_sample_data`] is valid until that free call.
+#[unsafe(no_mangle)]
+pub extern "C" fn quicbit_subscriber_take_sample(
+    subscriber: *mut QuicbitSubscriber,
+    out_sample: *mut *mut QuicbitSample,
+) -> i32 {
+    clear_last_error();
+    if subscriber.is_null() || out_sample.is_null() {
+        set_last_error("null subscriber or out pointer");
+        return -1;
+    }
+    let subscriber = unsafe { &mut *subscriber };
+    match subscriber.subscriber.take() {
+        Ok(Some(sample)) => {
+            unsafe { *out_sample = Box::into_raw(Box::new(QuicbitSample { sample })) };
+            1
+        }
+        Ok(None) => 0,
+        Err(e) => {
+            set_last_error(e.to_string());
+            -1
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn quicbit_sample_kind(sample: *const QuicbitSample) -> u64 {
+    if sample.is_null() {
+        return 0;
+    }
+    unsafe { &*sample }.sample.header().kind
+}
+
+/// Borrowed zero-copy view of a sample payload.
+///
+/// For local SHM this points directly into the shared-memory slot and pins that
+/// slot until [`quicbit_sample_free`] is called. Copy it if you need to keep the
+/// data longer.
+#[unsafe(no_mangle)]
+pub extern "C" fn quicbit_sample_data(sample: *const QuicbitSample) -> QuicbitBytes {
+    if sample.is_null() {
+        return QuicbitBytes::empty();
+    }
+    let sample = unsafe { &*sample };
+    QuicbitBytes {
+        ptr: sample.sample.payload().as_ptr(),
+        len: sample.sample.payload().len(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn quicbit_sample_free(sample: *mut QuicbitSample) {
+    if sample.is_null() {
+        return;
+    }
+    unsafe { drop(Box::from_raw(sample)) };
 }
 
 // ---- message accessors ----
