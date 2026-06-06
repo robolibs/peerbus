@@ -21,13 +21,14 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use quicbit::demo::VideoFrame;
+use datapod::{Encoding, Grid, Pose};
 use quicbit::remote::MAX_PAYLOAD_LEN;
-use quicbit::{LocalConfig, Node, TopicQos};
+use quicbit::{DatapodMsg, LocalConfig, Node, TopicQos};
 
 const DEFAULT_WIDTH: u32 = 1280;
 const DEFAULT_HEIGHT: u32 = 720;
 const DEFAULT_FPS: u32 = 15;
+const DEFAULT_SHM_SLOTS: u32 = 32;
 const TOPIC: &str = "demo/video";
 const KEY_PATH: &str = "/tmp/quicbit_video_pub.key";
 
@@ -36,13 +37,7 @@ struct VideoSettings {
     width: u32,
     height: u32,
     fps: u32,
-}
-
-fn now_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64
+    shm_slots: u32,
 }
 
 fn init_tracing() {
@@ -58,6 +53,7 @@ fn main() -> quicbit::Result<()> {
     let width = settings.width;
     let height = settings.height;
     let fps_target = settings.fps;
+    let shm_slots = settings.shm_slots;
 
     let pixel_count = (width as usize)
         .checked_mul(height as usize)
@@ -65,18 +61,22 @@ fn main() -> quicbit::Result<()> {
     let bytes_per_frame = pixel_count
         .checked_mul(4)
         .ok_or_else(|| quicbit::Error::invalid_argument("video frame size overflow"))?;
-    if bytes_per_frame > MAX_PAYLOAD_LEN as usize {
+    let grid_header_bytes = datapod::bind::header_size::<Grid>();
+    let bytes_per_message = grid_header_bytes
+        .checked_add(bytes_per_frame)
+        .ok_or_else(|| quicbit::Error::invalid_argument("video message size overflow"))?;
+    if bytes_per_message > MAX_PAYLOAD_LEN as usize {
         return Err(quicbit::Error::PayloadTooLarge {
-            actual: bytes_per_frame,
+            actual: bytes_per_message,
             capacity: MAX_PAYLOAD_LEN as usize,
         });
     }
 
     let local_cfg = LocalConfig {
-        max_payload_bytes: bytes_per_frame + 4096,
-        subscriber_buffer: 4,
+        max_payload_bytes: bytes_per_message + 4096,
+        subscriber_buffer: shm_slots,
         max_publishers: 2,
-        max_subscribers: 4,
+        max_subscribers: 8,
         history_depth: 1,
     };
 
@@ -93,6 +93,7 @@ fn main() -> quicbit::Result<()> {
         bytes_per_frame as f64 / 1_048_576.0,
         raw_mbps
     );
+    println!("local SHM slots: {shm_slots}");
     println!("identity: {did}");
 
     // Wait for iroh to publish at least one transport address.
@@ -112,42 +113,53 @@ fn main() -> quicbit::Result<()> {
     println!();
 
     let qos = TopicQos::latest().with_max_message_bytes(MAX_PAYLOAD_LEN as usize);
-    let mut pubr = node.publisher_with_qos::<VideoFrame>(TOPIC, qos)?;
+    let mut pubr = node.publisher_with_qos::<DatapodMsg>(TOPIC, qos)?;
 
     let frame_period = Duration::from_secs_f64(1.0 / fps_target as f64);
     let t_start = Instant::now();
-    let mut frame_no: u64 = 0;
     let mut bench_start = Instant::now();
     let mut bench_frames: u64 = 0;
+    let mut bench_dropped: u64 = 0;
+    let mut pixels = vec![0u32; pixel_count];
 
     loop {
         let render_start = Instant::now();
         let t = t_start.elapsed().as_secs_f32();
 
-        let mut loan = pubr.loan(bytes_per_frame)?;
-        {
-            let header = loan.header_mut();
-            header.width = width;
-            header.height = height;
-            header.frame_no = frame_no;
-            header.stamp_ns = now_ns();
+        render_cube(&mut pixels, width as usize, height as usize, t);
+        let grid = Grid::new(
+            height,
+            width,
+            Encoding::Rgba8,
+            1.0,
+            false,
+            Pose::default(),
+            bytemuck::cast_slice(&pixels).to_vec(),
+        );
+        match pubr.send(&DatapodMsg::from_datapod(&grid)) {
+            Ok(_) => bench_frames += 1,
+            Err(quicbit::Error::NoFreeSlot { service }) => {
+                bench_dropped += 1;
+                if bench_dropped == 1 {
+                    eprintln!(
+                        "warning: local SHM service '{service}' is full; dropping latest video frames instead of exiting"
+                    );
+                    eprintln!(
+                        "         if this persists after changing SHM slot settings, stop old subscribers and remove stale /dev/shm/qb_* segments"
+                    );
+                }
+            }
+            Err(e) => return Err(e),
         }
-        {
-            let pixels: &mut [u32] = bytemuck::try_cast_slice_mut(loan.payload_mut())
-                .expect("local SHM slot 4-byte aligned");
-            render_cube(pixels, width as usize, height as usize, t);
-        }
-        pubr.publish(loan)?;
 
-        frame_no += 1;
-        bench_frames += 1;
         if bench_start.elapsed() >= Duration::from_secs(2) {
             let elapsed = bench_start.elapsed().as_secs_f64();
             let fps = bench_frames as f64 / elapsed;
             let mb_per_s = fps * bytes_per_frame as f64 / 1_048_576.0;
-            println!("[pub] {fps:>6.1} fps  |  {mb_per_s:>7.1} MB/s");
+            println!("[pub] {fps:>6.1} fps  |  {mb_per_s:>7.1} MB/s  |  dropped {bench_dropped}");
             bench_start = Instant::now();
             bench_frames = 0;
+            bench_dropped = 0;
         }
 
         if let Some(rem) = frame_period.checked_sub(render_start.elapsed()) {
@@ -160,12 +172,18 @@ fn video_settings() -> quicbit::Result<VideoSettings> {
     let width = env_u32("QUICBIT_VIDEO_WIDTH", DEFAULT_WIDTH)?;
     let height = env_u32("QUICBIT_VIDEO_HEIGHT", DEFAULT_HEIGHT)?;
     let fps = env_u32("QUICBIT_VIDEO_FPS", DEFAULT_FPS)?;
-    if width == 0 || height == 0 || fps == 0 {
+    let shm_slots = env_u32("QUICBIT_VIDEO_SHM_SLOTS", DEFAULT_SHM_SLOTS)?;
+    if width == 0 || height == 0 || fps == 0 || shm_slots == 0 {
         return Err(quicbit::Error::invalid_argument(
-            "QUICBIT_VIDEO_WIDTH, QUICBIT_VIDEO_HEIGHT and QUICBIT_VIDEO_FPS must be non-zero",
+            "QUICBIT_VIDEO_WIDTH, QUICBIT_VIDEO_HEIGHT, QUICBIT_VIDEO_FPS and QUICBIT_VIDEO_SHM_SLOTS must be non-zero",
         ));
     }
-    Ok(VideoSettings { width, height, fps })
+    Ok(VideoSettings {
+        width,
+        height,
+        fps,
+        shm_slots,
+    })
 }
 
 fn env_u32(name: &str, default: u32) -> quicbit::Result<u32> {

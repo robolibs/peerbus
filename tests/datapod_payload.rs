@@ -6,10 +6,10 @@
 use std::time::Duration;
 
 use datapod::{
-    Aabb, Acceleration, BoundingSphere, Euler, GaussianPoint, Inertial, JointLimits, Odom, Point,
-    Pose, Quaternion, Size, Triangle, Twist, Velocity, Wrench,
+    Aabb, Acceleration, BoundingSphere, DataPod, Encoding, Euler, GaussianPoint, Grid, Inertial,
+    JointLimits, Odom, Point, Pose, Quaternion, Size, Triangle, Twist, Velocity, Wrench,
 };
-use quicbit::{LocalConfig, LocalService};
+use quicbit::{DatapodMsg, LocalConfig, LocalService};
 
 fn poll_for<R>(timeout: Duration, mut f: impl FnMut() -> Option<R>) -> Option<R> {
     let deadline = std::time::Instant::now() + timeout;
@@ -140,6 +140,29 @@ fn datapod_subfolder_types_round_trip() {
     let h = got.header();
     assert_eq!(h.linear.vx, 1.0);
     assert_eq!(h.angular.vz, 0.5);
+}
+
+#[test]
+fn datapod_msg_uses_datapod_canonical_wire_message() {
+    let grid = Grid::new(
+        2,
+        2,
+        Encoding::Rgba8,
+        0.5,
+        false,
+        Pose::default(),
+        (0_u8..16).collect(),
+    );
+    let msg = DatapodMsg::from_datapod(&grid);
+    let canonical = datapod::to_wire_message(&grid);
+    assert_eq!(msg.type_hash, canonical.type_hash);
+    assert_eq!(msg.wire, canonical.bytes);
+
+    let decoded: Grid = msg.to_datapod().unwrap();
+    assert_eq!(decoded.rows, 2);
+    assert_eq!(decoded.cols, 2);
+    assert_eq!(decoded.encoding, Encoding::Rgba8);
+    assert_eq!(decoded.payload_bytes(), &(0_u8..16).collect::<Vec<_>>());
 }
 
 /// Compile-only sanity: every newly-Pod type should be usable as

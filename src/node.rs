@@ -714,6 +714,7 @@ impl Node {
     pub fn publisher<T>(&self, topic: &str) -> Result<Publisher<T>>
     where
         T: datapod::DataPod + 'static,
+        <T as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         self.publisher_with_qos(topic, TopicQos::default())
     }
@@ -721,6 +722,7 @@ impl Node {
     pub fn publisher_with_qos<T>(&self, topic: &str, qos: TopicQos) -> Result<Publisher<T>>
     where
         T: datapod::DataPod + 'static,
+        <T as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         validate_topic(topic)?;
         let route_topic = self.route_topic(topic)?;
@@ -816,6 +818,7 @@ impl Node {
     pub fn subscribe<T>(&self, topic: &str) -> Result<Subscriber<T>>
     where
         T: datapod::DataPod + 'static,
+        <T as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         self.subscribe_with_qos(topic, TopicQos::default())
     }
@@ -823,6 +826,7 @@ impl Node {
     pub fn subscribe_with_qos<T>(&self, topic: &str, _qos: TopicQos) -> Result<Subscriber<T>>
     where
         T: datapod::DataPod + 'static,
+        <T as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         validate_topic(topic)?;
         let route_topic = self.system_route_topic(topic)?;
@@ -878,6 +882,7 @@ impl Node {
     pub fn subscriber<T>(&self, peer: impl IntoPeer, topic: &str) -> Result<Subscriber<T>>
     where
         T: datapod::DataPod + 'static,
+        <T as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         self.subscriber_with_qos(peer, topic, TopicQos::default())
     }
@@ -890,6 +895,7 @@ impl Node {
     ) -> Result<Subscriber<T>>
     where
         T: datapod::DataPod + 'static,
+        <T as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         validate_topic(topic)?;
         let peer = peer.into_peer();
@@ -936,7 +942,9 @@ impl Node {
     pub fn req_server<Req, Res>(&self, topic: &str) -> Result<ReqServer<Req, Res>>
     where
         Req: datapod::DataPod + 'static,
+        <Req as datapod::DataPod>::Header: datapod::LeWireHeader,
         Res: datapod::DataPod + 'static,
+        <Res as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         self.req_server_with_qos(topic, TopicQos::default())
     }
@@ -955,7 +963,9 @@ impl Node {
     ) -> Result<ReqServer<Req, Res>>
     where
         Req: datapod::DataPod + 'static,
+        <Req as datapod::DataPod>::Header: datapod::LeWireHeader,
         Res: datapod::DataPod + 'static,
+        <Res as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         validate_topic(topic)?;
         let route_topic = self.route_topic(topic)?;
@@ -1038,7 +1048,9 @@ impl Node {
     ) -> Result<ReqClient<Req, Res>>
     where
         Req: datapod::DataPod + 'static,
+        <Req as datapod::DataPod>::Header: datapod::LeWireHeader,
         Res: datapod::DataPod + 'static,
+        <Res as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         self.req_client_with_qos(peer, topic, TopicQos::default())
     }
@@ -1056,7 +1068,9 @@ impl Node {
     ) -> Result<ReqClient<Req, Res>>
     where
         Req: datapod::DataPod + 'static,
+        <Req as datapod::DataPod>::Header: datapod::LeWireHeader,
         Res: datapod::DataPod + 'static,
+        <Res as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         validate_topic(topic)?;
         let peer = peer.into_peer();
@@ -1098,7 +1112,9 @@ impl Node {
     pub fn req<Req, Res>(&self, topic: &str) -> Result<ReqClient<Req, Res>>
     where
         Req: datapod::DataPod + 'static,
+        <Req as datapod::DataPod>::Header: datapod::LeWireHeader,
         Res: datapod::DataPod + 'static,
+        <Res as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         self.req_with_qos(topic, TopicQos::default())
     }
@@ -1107,7 +1123,9 @@ impl Node {
     pub fn req_with_qos<Req, Res>(&self, topic: &str, qos: TopicQos) -> Result<ReqClient<Req, Res>>
     where
         Req: datapod::DataPod + 'static,
+        <Req as datapod::DataPod>::Header: datapod::LeWireHeader,
         Res: datapod::DataPod + 'static,
+        <Res as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         validate_topic(topic)?;
         let route_topic = self.system_route_topic(topic)?;
@@ -1162,7 +1180,9 @@ impl Node {
     pub fn ans<Que, Ans>(&self, topic: &str) -> Result<AnsServer<Que, Ans>>
     where
         Que: datapod::DataPod + 'static,
+        <Que as datapod::DataPod>::Header: datapod::LeWireHeader,
         Ans: datapod::DataPod + 'static,
+        <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         self.ans_with_qos(topic, TopicQos::default())
     }
@@ -1175,7 +1195,9 @@ impl Node {
     pub fn ans_with_qos<Que, Ans>(&self, topic: &str, qos: TopicQos) -> Result<AnsServer<Que, Ans>>
     where
         Que: datapod::DataPod + 'static,
+        <Que as datapod::DataPod>::Header: datapod::LeWireHeader,
         Ans: datapod::DataPod + 'static,
+        <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         validate_topic(topic)?;
         let route_topic = self.route_topic(topic)?;
@@ -1255,7 +1277,9 @@ impl Node {
     ) -> Result<QueClient<Que, Ans>>
     where
         Que: datapod::DataPod + 'static,
+        <Que as datapod::DataPod>::Header: datapod::LeWireHeader,
         Ans: datapod::DataPod + 'static,
+        <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         self.que_client_with_qos(peer, topic, TopicQos::default())
     }
@@ -1269,7 +1293,9 @@ impl Node {
     ) -> Result<QueClient<Que, Ans>>
     where
         Que: datapod::DataPod + 'static,
+        <Que as datapod::DataPod>::Header: datapod::LeWireHeader,
         Ans: datapod::DataPod + 'static,
+        <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         validate_topic(topic)?;
         let peer = peer.into_peer();
@@ -1310,7 +1336,9 @@ impl Node {
     pub fn que<Que, Ans>(&self, topic: &str) -> Result<QueClient<Que, Ans>>
     where
         Que: datapod::DataPod + 'static,
+        <Que as datapod::DataPod>::Header: datapod::LeWireHeader,
         Ans: datapod::DataPod + 'static,
+        <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         self.que_with_qos(topic, TopicQos::default())
     }
@@ -1319,7 +1347,9 @@ impl Node {
     pub fn que_with_qos<Que, Ans>(&self, topic: &str, qos: TopicQos) -> Result<QueClient<Que, Ans>>
     where
         Que: datapod::DataPod + 'static,
+        <Que as datapod::DataPod>::Header: datapod::LeWireHeader,
         Ans: datapod::DataPod + 'static,
+        <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         validate_topic(topic)?;
         let route_topic = self.system_route_topic(topic)?;
@@ -1374,7 +1404,9 @@ impl Node {
     pub fn ack<Put, Ack>(&self, topic: &str) -> Result<AckServer<Put, Ack>>
     where
         Put: datapod::DataPod + 'static,
+        <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
         Ack: datapod::DataPod + 'static,
+        <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         self.ack_with_qos(topic, TopicQos::default())
     }
@@ -1387,7 +1419,9 @@ impl Node {
     pub fn ack_with_qos<Put, Ack>(&self, topic: &str, qos: TopicQos) -> Result<AckServer<Put, Ack>>
     where
         Put: datapod::DataPod + 'static,
+        <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
         Ack: datapod::DataPod + 'static,
+        <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         validate_topic(topic)?;
         let route_topic = self.route_topic(topic)?;
@@ -1467,7 +1501,9 @@ impl Node {
     ) -> Result<PutClient<Put, Ack>>
     where
         Put: datapod::DataPod + 'static,
+        <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
         Ack: datapod::DataPod + 'static,
+        <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         self.put_client_with_qos(peer, topic, TopicQos::default())
     }
@@ -1481,7 +1517,9 @@ impl Node {
     ) -> Result<PutClient<Put, Ack>>
     where
         Put: datapod::DataPod + 'static,
+        <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
         Ack: datapod::DataPod + 'static,
+        <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         validate_topic(topic)?;
         let peer = peer.into_peer();
@@ -1526,7 +1564,9 @@ impl Node {
     pub fn put<Put, Ack>(&self, topic: &str) -> Result<PutClient<Put, Ack>>
     where
         Put: datapod::DataPod + 'static,
+        <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
         Ack: datapod::DataPod + 'static,
+        <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         self.put_with_qos(topic, TopicQos::default())
     }
@@ -1535,7 +1575,9 @@ impl Node {
     pub fn put_with_qos<Put, Ack>(&self, topic: &str, qos: TopicQos) -> Result<PutClient<Put, Ack>>
     where
         Put: datapod::DataPod + 'static,
+        <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
         Ack: datapod::DataPod + 'static,
+        <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         validate_topic(topic)?;
         let route_topic = self.system_route_topic(topic)?;
@@ -1598,7 +1640,9 @@ impl Node {
     ) -> Result<PipServer<ClientMsg, ServerMsg>>
     where
         ClientMsg: datapod::DataPod + 'static,
+        <ClientMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
         ServerMsg: datapod::DataPod + 'static,
+        <ServerMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         self.pip_server_with_qos(topic, TopicQos::default())
     }
@@ -1615,7 +1659,9 @@ impl Node {
     ) -> Result<PipServer<ClientMsg, ServerMsg>>
     where
         ClientMsg: datapod::DataPod + 'static,
+        <ClientMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
         ServerMsg: datapod::DataPod + 'static,
+        <ServerMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         validate_topic(topic)?;
         let route_topic = self.route_topic(topic)?;
@@ -1695,7 +1741,9 @@ impl Node {
     ) -> Result<PipClient<ClientMsg, ServerMsg>>
     where
         ClientMsg: datapod::DataPod + 'static,
+        <ClientMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
         ServerMsg: datapod::DataPod + 'static,
+        <ServerMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         self.pip_client_with_qos(peer, topic, TopicQos::default())
     }
@@ -1709,7 +1757,9 @@ impl Node {
     ) -> Result<PipClient<ClientMsg, ServerMsg>>
     where
         ClientMsg: datapod::DataPod + 'static,
+        <ClientMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
         ServerMsg: datapod::DataPod + 'static,
+        <ServerMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         validate_topic(topic)?;
         let peer = peer.into_peer();
@@ -1754,7 +1804,9 @@ impl Node {
     pub fn pip<ClientMsg, ServerMsg>(&self, topic: &str) -> Result<PipClient<ClientMsg, ServerMsg>>
     where
         ClientMsg: datapod::DataPod + 'static,
+        <ClientMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
         ServerMsg: datapod::DataPod + 'static,
+        <ServerMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         self.pip_with_qos(topic, TopicQos::default())
     }
@@ -1767,7 +1819,9 @@ impl Node {
     ) -> Result<PipClient<ClientMsg, ServerMsg>>
     where
         ClientMsg: datapod::DataPod + 'static,
+        <ClientMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
         ServerMsg: datapod::DataPod + 'static,
+        <ServerMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         validate_topic(topic)?;
         let route_topic = self.system_route_topic(topic)?;
@@ -1827,6 +1881,7 @@ impl Node {
     ) -> Result<Subscriber<T>>
     where
         T: datapod::DataPod + 'static,
+        <T as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         // Remote path. Do one synchronous dial + handshake so the
         // caller sees a hard failure if the peer is unreachable
@@ -2399,7 +2454,9 @@ impl<T: datapod::DataPod + 'static> NodeSample<T> {
 struct LocalReqServerState<Req, Res>
 where
     Req: datapod::DataPod + 'static,
+    <Req as datapod::DataPod>::Header: datapod::LeWireHeader,
     Res: datapod::DataPod + 'static,
+    <Res as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     _service: LocalReqResService<Req, Res>,
     server: LocalReqServer<Req, Res>,
@@ -2428,6 +2485,7 @@ enum ReplyTokenSource {
 pub struct PendingReqMessage<Req>
 where
     Req: datapod::DataPod + 'static,
+    <Req as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     sample: ReqSample<Req>,
     reply: ReqReplyToken,
@@ -2436,6 +2494,7 @@ where
 impl<Req> PendingReqMessage<Req>
 where
     Req: datapod::DataPod + 'static,
+    <Req as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     pub fn sample(&self) -> &ReqSample<Req> {
         &self.sample
@@ -2449,7 +2508,9 @@ where
 pub struct ReqServer<Req, Res>
 where
     Req: datapod::DataPod + 'static,
+    <Req as datapod::DataPod>::Header: datapod::LeWireHeader,
     Res: datapod::DataPod + 'static,
+    <Res as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     inner: Arc<NodeInner>,
     route_topic: String,
@@ -2463,7 +2524,9 @@ where
 impl<Req, Res> Drop for ReqServer<Req, Res>
 where
     Req: datapod::DataPod + 'static,
+    <Req as datapod::DataPod>::Header: datapod::LeWireHeader,
     Res: datapod::DataPod + 'static,
+    <Res as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     fn drop(&mut self) {
         crate::trace::recover_poison(self.inner.request_topics.lock(), "Node::request_topics")
@@ -2474,7 +2537,9 @@ where
 impl<Req, Res> ReqServer<Req, Res>
 where
     Req: datapod::DataPod + 'static,
+    <Req as datapod::DataPod>::Header: datapod::LeWireHeader,
     Res: datapod::DataPod + 'static,
+    <Res as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     /// Snapshot remote-path counters for this req/res server.
     pub fn stats(&self) -> ReqStats {
@@ -2582,7 +2647,9 @@ where
 pub struct ReqClient<Req, Res>
 where
     Req: datapod::DataPod + 'static,
+    <Req as datapod::DataPod>::Header: datapod::LeWireHeader,
     Res: datapod::DataPod + 'static,
+    <Res as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     source: ReqClientSource<Req, Res>,
 }
@@ -2590,7 +2657,9 @@ where
 enum ReqClientSource<Req, Res>
 where
     Req: datapod::DataPod + 'static,
+    <Req as datapod::DataPod>::Header: datapod::LeWireHeader,
     Res: datapod::DataPod + 'static,
+    <Res as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     Local {
         client: crate::local::LocalReqClient<Req, Res>,
@@ -2609,7 +2678,9 @@ where
 impl<Req, Res> ReqClient<Req, Res>
 where
     Req: datapod::DataPod + 'static,
+    <Req as datapod::DataPod>::Header: datapod::LeWireHeader,
     Res: datapod::DataPod + 'static,
+    <Res as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     /// Snapshot remote-path counters for this req/res client.
     pub fn stats(&self) -> ReqStats {
@@ -2738,7 +2809,9 @@ impl<Res: datapod::DataPod + 'static> ResSample<Res> {
 pub enum ReqReply<'a, Req, Res>
 where
     Req: datapod::DataPod + 'static,
+    <Req as datapod::DataPod>::Header: datapod::LeWireHeader,
     Res: datapod::DataPod + 'static,
+    <Res as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     Local(crate::local::ReplyHandle<'a, Req, Res>),
     Remote {
@@ -2755,7 +2828,9 @@ where
 impl<Req, Res> ReqReply<'_, Req, Res>
 where
     Req: datapod::DataPod + 'static,
+    <Req as datapod::DataPod>::Header: datapod::LeWireHeader,
     Res: datapod::DataPod + 'static,
+    <Res as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     pub fn req_id(&self) -> u64 {
         match self {
@@ -2821,6 +2896,7 @@ impl RemoteReqReply {
     fn respond<Res>(&mut self, rt: &Runtime, res: &Res) -> Result<()>
     where
         Res: datapod::DataPod + 'static,
+        <Res as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         let mut send = self
             .send
@@ -2852,18 +2928,16 @@ impl RemoteReqReply {
 fn frame_from_datapod<T>(value: &T) -> Vec<u8>
 where
     T: datapod::DataPod + 'static,
+    <T as datapod::DataPod>::Header: datapod::LeWireHeader,
+    <T as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
-    let header = value.header();
-    let payload = value.payload_bytes();
-    let mut frame = Vec::with_capacity(std::mem::size_of::<T::Header>() + payload.len());
-    frame.extend_from_slice(bytemuck::bytes_of(&header));
-    frame.extend_from_slice(payload);
-    frame
+    datapod::to_wire_message(value).bytes
 }
 
 fn req_sample_from_frame<Req>(req_id: u64, frame: &[u8]) -> Result<ReqSample<Req>>
 where
     Req: datapod::DataPod + 'static,
+    <Req as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     let header_size = std::mem::size_of::<Req::Header>();
     if frame.len() < header_size {
@@ -2884,6 +2958,7 @@ where
 fn res_sample_from_frame<Res>(req_id: u64, frame: &[u8]) -> Result<ResSample<Res>>
 where
     Res: datapod::DataPod + 'static,
+    <Res as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     let header_size = std::mem::size_of::<Res::Header>();
     if frame.len() < header_size {
@@ -2906,7 +2981,9 @@ where
 struct LocalAnsServerState<Que, Ans>
 where
     Que: datapod::DataPod + 'static,
+    <Que as datapod::DataPod>::Header: datapod::LeWireHeader,
     Ans: datapod::DataPod + 'static,
+    <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     _service: LocalQueAnsService<Que, Ans>,
     server: LocalAnsServer<Que, Ans>,
@@ -2929,6 +3006,7 @@ impl AnsReplyToken {
 pub struct PendingQueMessage<Que>
 where
     Que: datapod::DataPod + 'static,
+    <Que as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     sample: QueSample<Que>,
     answers: AnsReplyToken,
@@ -2937,6 +3015,7 @@ where
 impl<Que> PendingQueMessage<Que>
 where
     Que: datapod::DataPod + 'static,
+    <Que as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     pub fn sample(&self) -> &QueSample<Que> {
         &self.sample
@@ -2950,7 +3029,9 @@ where
 pub struct AnsServer<Que, Ans>
 where
     Que: datapod::DataPod + 'static,
+    <Que as datapod::DataPod>::Header: datapod::LeWireHeader,
     Ans: datapod::DataPod + 'static,
+    <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     inner: Arc<NodeInner>,
     route_topic: String,
@@ -2964,7 +3045,9 @@ where
 impl<Que, Ans> Drop for AnsServer<Que, Ans>
 where
     Que: datapod::DataPod + 'static,
+    <Que as datapod::DataPod>::Header: datapod::LeWireHeader,
     Ans: datapod::DataPod + 'static,
+    <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     fn drop(&mut self) {
         crate::trace::recover_poison(self.inner.que_topics.lock(), "Node::que_topics")
@@ -2975,7 +3058,9 @@ where
 impl<Que, Ans> AnsServer<Que, Ans>
 where
     Que: datapod::DataPod + 'static,
+    <Que as datapod::DataPod>::Header: datapod::LeWireHeader,
     Ans: datapod::DataPod + 'static,
+    <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     /// Snapshot remote-path counters for this que/ans server.
     pub fn stats(&self) -> QueStats {
@@ -3100,7 +3185,9 @@ where
 pub struct QueClient<Que, Ans>
 where
     Que: datapod::DataPod + 'static,
+    <Que as datapod::DataPod>::Header: datapod::LeWireHeader,
     Ans: datapod::DataPod + 'static,
+    <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     source: QueClientSource<Que, Ans>,
 }
@@ -3108,7 +3195,9 @@ where
 enum QueClientSource<Que, Ans>
 where
     Que: datapod::DataPod + 'static,
+    <Que as datapod::DataPod>::Header: datapod::LeWireHeader,
     Ans: datapod::DataPod + 'static,
+    <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     Local {
         client: crate::local::LocalQueClient<Que, Ans>,
@@ -3127,7 +3216,9 @@ where
 impl<Que, Ans> QueClient<Que, Ans>
 where
     Que: datapod::DataPod + 'static,
+    <Que as datapod::DataPod>::Header: datapod::LeWireHeader,
     Ans: datapod::DataPod + 'static,
+    <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     /// Snapshot remote-path counters for this que/ans client.
     pub fn stats(&self) -> QueStats {
@@ -3252,7 +3343,9 @@ impl<Ans: datapod::DataPod + 'static> AnsSample<Ans> {
 pub enum AnsReply<'a, Que, Ans>
 where
     Que: datapod::DataPod + 'static,
+    <Que as datapod::DataPod>::Header: datapod::LeWireHeader,
     Ans: datapod::DataPod + 'static,
+    <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     Local(crate::local::AnsReply<'a, Que, Ans>),
     Remote {
@@ -3269,7 +3362,9 @@ where
 impl<Que, Ans> AnsReply<'_, Que, Ans>
 where
     Que: datapod::DataPod + 'static,
+    <Que as datapod::DataPod>::Header: datapod::LeWireHeader,
     Ans: datapod::DataPod + 'static,
+    <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     pub fn req_id(&self) -> u64 {
         match self {
@@ -3336,7 +3431,10 @@ pub enum Answers<'a, Ans: datapod::DataPod + 'static> {
     Remote(RemoteAnswers<Ans>),
 }
 
-impl<Ans: datapod::DataPod + 'static> Answers<'_, Ans> {
+impl<Ans: datapod::DataPod + 'static> Answers<'_, Ans>
+where
+    <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
+{
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<AnsSample<Ans>>> {
         match self {
@@ -3360,7 +3458,10 @@ pub struct RemoteAnswers<Ans: datapod::DataPod + 'static> {
     _phantom: PhantomData<fn() -> Ans>,
 }
 
-impl<Ans: datapod::DataPod + 'static> RemoteAnswers<Ans> {
+impl<Ans: datapod::DataPod + 'static> RemoteAnswers<Ans>
+where
+    <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
+{
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<AnsSample<Ans>>> {
         if self.done {
@@ -3411,6 +3512,7 @@ impl RemoteAnsReply {
     fn send<Ans>(&mut self, rt: &Runtime, ans: &Ans) -> Result<()>
     where
         Ans: datapod::DataPod + 'static,
+        <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
     {
         let send = self
             .send
@@ -3453,6 +3555,7 @@ impl RemoteAnsReply {
 fn que_sample_from_frame<Que>(req_id: u64, frame: &[u8]) -> Result<QueSample<Que>>
 where
     Que: datapod::DataPod + 'static,
+    <Que as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     let header_size = std::mem::size_of::<Que::Header>();
     if frame.len() < header_size {
@@ -3473,6 +3576,7 @@ where
 fn ans_sample_from_frame<Ans>(req_id: u64, frame: &[u8]) -> Result<AnsSample<Ans>>
 where
     Ans: datapod::DataPod + 'static,
+    <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     let header_size = std::mem::size_of::<Ans::Header>();
     if frame.len() < header_size {
@@ -3495,7 +3599,9 @@ where
 struct LocalAckServerState<Put, Ack>
 where
     Put: datapod::DataPod + 'static,
+    <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
     Ack: datapod::DataPod + 'static,
+    <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     _service: LocalPutAckService<Put, Ack>,
     server: LocalAckServer<Put, Ack>,
@@ -3504,7 +3610,9 @@ where
 pub struct AckServer<Put, Ack>
 where
     Put: datapod::DataPod + 'static,
+    <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
     Ack: datapod::DataPod + 'static,
+    <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     inner: Arc<NodeInner>,
     route_topic: String,
@@ -3536,6 +3644,7 @@ enum PutAckTokenSource {
 pub struct PendingPutMessage<Put>
 where
     Put: datapod::DataPod + 'static,
+    <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     req_id: u64,
     first: Option<PutSample<Put>>,
@@ -3546,6 +3655,7 @@ where
 impl<Put> PendingPutMessage<Put>
 where
     Put: datapod::DataPod + 'static,
+    <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     pub fn req_id(&self) -> u64 {
         self.req_id
@@ -3567,7 +3677,9 @@ where
 impl<Put, Ack> Drop for AckServer<Put, Ack>
 where
     Put: datapod::DataPod + 'static,
+    <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
     Ack: datapod::DataPod + 'static,
+    <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     fn drop(&mut self) {
         crate::trace::recover_poison(self.inner.put_topics.lock(), "Node::put_topics")
@@ -3578,7 +3690,9 @@ where
 impl<Put, Ack> AckServer<Put, Ack>
 where
     Put: datapod::DataPod + 'static,
+    <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
     Ack: datapod::DataPod + 'static,
+    <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     /// Snapshot remote-path counters for this put/ack server.
     pub fn stats(&self) -> PutStats {
@@ -3717,7 +3831,9 @@ where
 pub struct PutClient<Put, Ack>
 where
     Put: datapod::DataPod + 'static,
+    <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
     Ack: datapod::DataPod + 'static,
+    <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     source: PutClientSource<Put, Ack>,
     pending_remote_uploads: HashMap<u64, RemotePutSender<Put, Ack>>,
@@ -3745,7 +3861,9 @@ enum PutUploadTokenSource {
 enum PutClientSource<Put, Ack>
 where
     Put: datapod::DataPod + 'static,
+    <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
     Ack: datapod::DataPod + 'static,
+    <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     Local {
         client: crate::local::LocalPutClient<Put, Ack>,
@@ -3764,7 +3882,9 @@ where
 impl<Put, Ack> PutClient<Put, Ack>
 where
     Put: datapod::DataPod + 'static,
+    <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
     Ack: datapod::DataPod + 'static,
+    <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     /// Snapshot remote-path counters for this put/ack client.
     pub fn stats(&self) -> PutStats {
@@ -3984,7 +4104,9 @@ impl<Ack: datapod::DataPod + 'static> AckSample<Ack> {
 pub enum Puts<'a, Put, Ack>
 where
     Put: datapod::DataPod + 'static,
+    <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
     Ack: datapod::DataPod + 'static,
+    <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     Local(crate::local::LocalPuts<'a, Put, Ack>),
     Remote(RemotePuts<Put, Ack>),
@@ -3993,7 +4115,9 @@ where
 impl<Put, Ack> Puts<'_, Put, Ack>
 where
     Put: datapod::DataPod + 'static,
+    <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
     Ack: datapod::DataPod + 'static,
+    <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     pub fn req_id(&self) -> Option<u64> {
         match self {
@@ -4025,7 +4149,9 @@ where
 pub enum PutSender<'a, Put, Ack>
 where
     Put: datapod::DataPod + 'static,
+    <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
     Ack: datapod::DataPod + 'static,
+    <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     Local(crate::local::LocalPutSender<'a, Put, Ack>),
     Remote(RemotePutSender<Put, Ack>),
@@ -4034,7 +4160,9 @@ where
 impl<Put, Ack> PutSender<'_, Put, Ack>
 where
     Put: datapod::DataPod + 'static,
+    <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
     Ack: datapod::DataPod + 'static,
+    <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     pub fn req_id(&self) -> u64 {
         match self {
@@ -4068,7 +4196,9 @@ where
 pub struct RemotePuts<Put, Ack>
 where
     Put: datapod::DataPod + 'static,
+    <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
     Ack: datapod::DataPod + 'static,
+    <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     req_id: u64,
     recv: iroh::endpoint::RecvStream,
@@ -4084,7 +4214,9 @@ where
 impl<Put, Ack> RemotePuts<Put, Ack>
 where
     Put: datapod::DataPod + 'static,
+    <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
     Ack: datapod::DataPod + 'static,
+    <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     fn next(&mut self) -> Result<Option<PutSample<Put>>> {
         if self.done {
@@ -4138,7 +4270,9 @@ where
 pub struct RemotePutSender<Put, Ack>
 where
     Put: datapod::DataPod + 'static,
+    <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
     Ack: datapod::DataPod + 'static,
+    <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     req_id: u64,
     send: Option<iroh::endpoint::SendStream>,
@@ -4152,7 +4286,9 @@ where
 impl<Put, Ack> RemotePutSender<Put, Ack>
 where
     Put: datapod::DataPod + 'static,
+    <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
     Ack: datapod::DataPod + 'static,
+    <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     fn send(&mut self, put: &Put) -> Result<()> {
         let send = self
@@ -4217,6 +4353,7 @@ struct RemotePendingPuts {
 fn put_sample_from_frame<Put>(req_id: u64, frame: &[u8]) -> Result<PutSample<Put>>
 where
     Put: datapod::DataPod + 'static,
+    <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     let header_size = std::mem::size_of::<Put::Header>();
     if frame.len() < header_size {
@@ -4237,6 +4374,7 @@ where
 fn ack_sample_from_frame<Ack>(req_id: u64, frame: &[u8]) -> Result<AckSample<Ack>>
 where
     Ack: datapod::DataPod + 'static,
+    <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     let header_size = std::mem::size_of::<Ack::Header>();
     if frame.len() < header_size {
@@ -4259,7 +4397,9 @@ where
 struct LocalPipServerState<ClientMsg, ServerMsg>
 where
     ClientMsg: datapod::DataPod + 'static,
+    <ClientMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
     ServerMsg: datapod::DataPod + 'static,
+    <ServerMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     _service: LocalPipService<ClientMsg, ServerMsg>,
     server: LocalPipServer<ClientMsg, ServerMsg>,
@@ -4268,7 +4408,9 @@ where
 pub struct PipServer<ClientMsg, ServerMsg>
 where
     ClientMsg: datapod::DataPod + 'static,
+    <ClientMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
     ServerMsg: datapod::DataPod + 'static,
+    <ServerMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     inner: Arc<NodeInner>,
     route_topic: String,
@@ -4300,6 +4442,7 @@ enum PipServerTokenSource {
 pub struct PendingPipMessage<ClientMsg>
 where
     ClientMsg: datapod::DataPod + 'static,
+    <ClientMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     session_id: u64,
     first: Option<PipSample<ClientMsg>>,
@@ -4310,6 +4453,7 @@ where
 impl<ClientMsg> PendingPipMessage<ClientMsg>
 where
     ClientMsg: datapod::DataPod + 'static,
+    <ClientMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     pub fn session_id(&self) -> u64 {
         self.session_id
@@ -4331,7 +4475,9 @@ where
 impl<ClientMsg, ServerMsg> Drop for PipServer<ClientMsg, ServerMsg>
 where
     ClientMsg: datapod::DataPod + 'static,
+    <ClientMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
     ServerMsg: datapod::DataPod + 'static,
+    <ServerMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     fn drop(&mut self) {
         crate::trace::recover_poison(self.inner.pip_topics.lock(), "Node::pip_topics")
@@ -4342,7 +4488,9 @@ where
 impl<ClientMsg, ServerMsg> PipServer<ClientMsg, ServerMsg>
 where
     ClientMsg: datapod::DataPod + 'static,
+    <ClientMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
     ServerMsg: datapod::DataPod + 'static,
+    <ServerMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     /// Snapshot remote-path counters for this pip server.
     pub fn stats(&self) -> PipStats {
@@ -4502,7 +4650,9 @@ where
 pub struct PipClient<ClientMsg, ServerMsg>
 where
     ClientMsg: datapod::DataPod + 'static,
+    <ClientMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
     ServerMsg: datapod::DataPod + 'static,
+    <ServerMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     source: PipClientSource<ClientMsg, ServerMsg>,
     pending_remote_sessions: HashMap<u64, RemotePip<ClientMsg, ServerMsg>>,
@@ -4530,7 +4680,9 @@ enum PipSessionTokenSource {
 enum PipClientSource<ClientMsg, ServerMsg>
 where
     ClientMsg: datapod::DataPod + 'static,
+    <ClientMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
     ServerMsg: datapod::DataPod + 'static,
+    <ServerMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     Local {
         client: crate::local::LocalPipClient<ClientMsg, ServerMsg>,
@@ -4549,7 +4701,9 @@ where
 impl<ClientMsg, ServerMsg> PipClient<ClientMsg, ServerMsg>
 where
     ClientMsg: datapod::DataPod + 'static,
+    <ClientMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
     ServerMsg: datapod::DataPod + 'static,
+    <ServerMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     /// Snapshot remote-path counters for this pip client.
     pub fn stats(&self) -> PipStats {
@@ -4786,7 +4940,9 @@ impl<T: datapod::DataPod + 'static> PipSample<T> {
 pub enum Pip<'a, Tx, Rx>
 where
     Tx: datapod::DataPod + 'static,
+    <Tx as datapod::DataPod>::Header: datapod::LeWireHeader,
     Rx: datapod::DataPod + 'static,
+    <Rx as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     Local(crate::local::LocalPip<'a, Tx, Rx>),
     Remote(RemotePip<Tx, Rx>),
@@ -4795,7 +4951,9 @@ where
 impl<Tx, Rx> Pip<'_, Tx, Rx>
 where
     Tx: datapod::DataPod + 'static,
+    <Tx as datapod::DataPod>::Header: datapod::LeWireHeader,
     Rx: datapod::DataPod + 'static,
+    <Rx as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     pub fn session_id(&self) -> u64 {
         match self {
@@ -4834,7 +4992,9 @@ where
 pub struct RemotePip<Tx, Rx>
 where
     Tx: datapod::DataPod + 'static,
+    <Tx as datapod::DataPod>::Header: datapod::LeWireHeader,
     Rx: datapod::DataPod + 'static,
+    <Rx as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     session_id: u64,
     send: Option<iroh::endpoint::SendStream>,
@@ -4851,7 +5011,9 @@ where
 impl<Tx, Rx> RemotePip<Tx, Rx>
 where
     Tx: datapod::DataPod + 'static,
+    <Tx as datapod::DataPod>::Header: datapod::LeWireHeader,
     Rx: datapod::DataPod + 'static,
+    <Rx as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     fn send(&mut self, msg: &Tx) -> Result<()> {
         if self.outgoing_done {
@@ -4939,6 +5101,7 @@ struct RemotePendingPip {
 fn pip_sample_from_frame<T>(session_id: u64, frame: &[u8]) -> Result<PipSample<T>>
 where
     T: datapod::DataPod + 'static,
+    <T as datapod::DataPod>::Header: datapod::LeWireHeader,
 {
     let header_size = std::mem::size_of::<T::Header>();
     if frame.len() < header_size {

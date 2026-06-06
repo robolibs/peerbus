@@ -4,9 +4,9 @@ build-backend = "maturin"
 
 [project]
 name = "quicbit"
-version = "0.2.0"
+version = "0.3.0"
 description = "Python bindings for the quicbit messaging library"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 
 [tool.maturin]
 features = ["python"]

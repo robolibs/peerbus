@@ -24,7 +24,9 @@ use quicbit::{LocalConfig, LocalService};
 struct Sample {
     sent_nanos: u64,
     seq: u64,
-    _pad: [u8; 48],
+    // 48 bytes of padding. Nested as [[u8; 24]; 2] because arrays longer
+    // than 32 don't implement `Default`, which datapod 0.4.0's macro requires.
+    _pad: [[u8; 24]; 2],
 }
 
 fn now_ns() -> u64 {

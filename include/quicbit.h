@@ -106,6 +106,12 @@ typedef struct QuicbitAnsResponder QuicbitAnsResponder;
 
 typedef struct QuicbitAnsServer QuicbitAnsServer;
 
+typedef struct QuicbitDatapodPublisher QuicbitDatapodPublisher;
+
+typedef struct QuicbitDatapodSample QuicbitDatapodSample;
+
+typedef struct QuicbitDatapodSubscriber QuicbitDatapodSubscriber;
+
 /**
  * An owned, received message (kind tag + payload bytes).
  */
@@ -154,6 +160,8 @@ typedef struct QuicbitReqServer QuicbitReqServer;
  */
 typedef struct QuicbitResponder QuicbitResponder;
 
+typedef struct QuicbitSample QuicbitSample;
+
 typedef struct QuicbitSubscriber QuicbitSubscriber;
 
 /**
@@ -196,14 +204,6 @@ typedef struct {
   uint64_t send_errors;
 } QuicbitPublisherStats;
 
-typedef struct {
-  uint64_t received;
-  uint64_t disconnects;
-  uint64_t stale_dropped;
-  uint64_t incomplete_dropped;
-  uint64_t bytes_received;
-} QuicbitSubscriberStats;
-
 /**
  * A borrowed view of contiguous bytes owned by a handle.
  */
@@ -211,6 +211,14 @@ typedef struct {
   const uint8_t *ptr;
   uintptr_t len;
 } QuicbitBytes;
+
+typedef struct {
+  uint64_t received;
+  uint64_t disconnects;
+  uint64_t stale_dropped;
+  uint64_t incomplete_dropped;
+  uint64_t bytes_received;
+} QuicbitSubscriberStats;
 
 typedef struct {
   uint64_t messages_out;
@@ -337,6 +345,42 @@ QuicbitSubscriber *quicbit_subscribe_new_with_qos(const QuicbitNode *node,
 
 void quicbit_subscriber_free(QuicbitSubscriber *subscriber);
 
+QuicbitDatapodPublisher *quicbit_datapod_publisher_new_with_qos(const QuicbitNode *node,
+                                                                const char *topic,
+                                                                QuicbitTopicQos qos);
+
+void quicbit_datapod_publisher_free(QuicbitDatapodPublisher *publisher);
+
+/**
+ * Publish a datapod wire message: `type_hash` plus `header || payload` bytes.
+ */
+bool quicbit_datapod_publisher_send(QuicbitDatapodPublisher *publisher,
+                                    uint64_t type_hash,
+                                    const uint8_t *wire,
+                                    uintptr_t len);
+
+QuicbitDatapodSubscriber *quicbit_datapod_subscriber_new_with_qos(const QuicbitNode *node,
+                                                                  const char *peer,
+                                                                  const char *topic,
+                                                                  QuicbitTopicQos qos);
+
+void quicbit_datapod_subscriber_free(QuicbitDatapodSubscriber *subscriber);
+
+/**
+ * Poll for a datapod sample without copying the wire bytes.
+ */
+int32_t quicbit_datapod_subscriber_take_sample(QuicbitDatapodSubscriber *subscriber,
+                                               QuicbitDatapodSample **out_sample);
+
+uint64_t quicbit_datapod_sample_type_hash(const QuicbitDatapodSample *sample);
+
+/**
+ * Borrowed zero-copy view of datapod `header || payload` wire bytes.
+ */
+QuicbitBytes quicbit_datapod_sample_wire(const QuicbitDatapodSample *sample);
+
+void quicbit_datapod_sample_free(QuicbitDatapodSample *sample);
+
 QuicbitSubscriberStats quicbit_subscriber_stats(const QuicbitSubscriber *subscriber);
 
 /**
@@ -346,6 +390,29 @@ QuicbitSubscriberStats quicbit_subscriber_stats(const QuicbitSubscriber *subscri
  * [`quicbit_message_free`].
  */
 int32_t quicbit_subscriber_take(QuicbitSubscriber *subscriber, QuicbitMessage **out_message);
+
+/**
+ * Poll for the next sample without copying payload bytes.
+ *
+ * Returns `1` and writes a borrowed sample handle to `*out_sample` when one is
+ * available, `0` when none is ready, and `-1` on error. A returned sample must
+ * be freed with [`quicbit_sample_free`]. The byte view returned from
+ * [`quicbit_sample_data`] is valid until that free call.
+ */
+int32_t quicbit_subscriber_take_sample(QuicbitSubscriber *subscriber, QuicbitSample **out_sample);
+
+uint64_t quicbit_sample_kind(const QuicbitSample *sample);
+
+/**
+ * Borrowed zero-copy view of a sample payload.
+ *
+ * For local SHM this points directly into the shared-memory slot and pins that
+ * slot until [`quicbit_sample_free`] is called. Copy it if you need to keep the
+ * data longer.
+ */
+QuicbitBytes quicbit_sample_data(const QuicbitSample *sample);
+
+void quicbit_sample_free(QuicbitSample *sample);
 
 QuicbitMessage *quicbit_message_new(uint64_t kind, const uint8_t *data, uintptr_t len);
 

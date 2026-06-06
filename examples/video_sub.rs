@@ -11,9 +11,9 @@
 
 use std::time::{Duration, Instant};
 
+use datapod::{Encoding, Grid};
 use minifb::{Key, Window, WindowOptions};
-use quicbit::demo::VideoFrame;
-use quicbit::{LocalConfig, Node};
+use quicbit::{DatapodMsg, LocalConfig, Node};
 
 const TOPIC: &str = "demo/video";
 
@@ -34,13 +34,14 @@ fn main() -> quicbit::Result<()> {
     let node = Node::builder().local_config(local_cfg).bind()?;
 
     println!("subscribing to {did} on '{TOPIC}'  (Esc to quit)");
-    let mut sub = node.subscriber::<VideoFrame>(did.as_str(), TOPIC)?;
+    let mut sub = node.subscriber::<DatapodMsg>(did.as_str(), TOPIC)?;
 
     println!("waiting for first frame …");
-    let (width, height) = loop {
+    let (width, height, first_frame) = loop {
         if let Some(s) = sub.take()? {
-            let h = s.header();
-            break (h.width as usize, h.height as usize);
+            if let Some(grid) = decode_grid_message(s.header(), s.payload())? {
+                break (grid.cols as usize, grid.rows as usize, grid.data);
+            }
         }
         std::thread::sleep(Duration::from_millis(20));
     };
@@ -59,21 +60,18 @@ fn main() -> quicbit::Result<()> {
     window.set_target_fps(60);
 
     let mut display_buf = vec![0u32; width * height];
+    copy_payload_into(&first_frame, &mut display_buf);
     let mut bench_start = Instant::now();
     let mut bench_frames: u64 = 0;
-    let mut total_latency_us: u128 = 0;
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         let mut got = false;
         while let Some(s) = sub.take()? {
-            let h = s.header();
-            if h.width as usize == width && h.height as usize == height {
-                copy_payload_into(s.payload(), &mut display_buf);
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos() as u64;
-                total_latency_us += ((now.saturating_sub(h.stamp_ns)) / 1_000) as u128;
+            if let Some(grid) = decode_grid_message(s.header(), s.payload())?
+                && grid.cols as usize == width
+                && grid.rows as usize == height
+            {
+                copy_payload_into(&grid.data, &mut display_buf);
                 bench_frames += 1;
                 got = true;
             }
@@ -89,15 +87,9 @@ fn main() -> quicbit::Result<()> {
         if bench_start.elapsed() >= Duration::from_secs(2) {
             let elapsed = bench_start.elapsed().as_secs_f64();
             let fps = bench_frames as f64 / elapsed;
-            let mean_us = if bench_frames > 0 {
-                total_latency_us / bench_frames as u128
-            } else {
-                0
-            };
-            println!("[sub] {fps:>6.1} fps  |  pub→display ~{mean_us} µs");
+            println!("[sub] {fps:>6.1} fps  |  datapod.Grid RGBA8");
             bench_start = Instant::now();
             bench_frames = 0;
-            total_latency_us = 0;
         }
     }
     Ok(())
@@ -118,6 +110,33 @@ fn init_tracing() {
     use tracing_subscriber::{EnvFilter, fmt};
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
     let _ = fmt().with_env_filter(filter).try_init();
+}
+
+fn decode_grid_message(
+    msg: &quicbit::datapod_msg::DatapodMsgHeader,
+    wire: &[u8],
+) -> quicbit::Result<Option<Grid>> {
+    let msg = DatapodMsg::new(msg.type_hash, wire.to_vec());
+    let grid = match msg.to_datapod::<Grid>() {
+        Ok(grid) => grid,
+        Err(datapod::WireError::WrongTypeHash { .. }) => return Ok(None),
+        Err(e) => {
+            return Err(quicbit::Error::invalid_argument(format!(
+                "invalid datapod.Grid wire message: {e}"
+            )));
+        }
+    };
+    if grid.encoding != Encoding::Rgba8 {
+        return Ok(None);
+    }
+    let expected = (grid.rows as usize)
+        .checked_mul(grid.cols as usize)
+        .and_then(|n| n.checked_mul(4))
+        .ok_or_else(|| quicbit::Error::invalid_argument("video dimensions overflow"))?;
+    if grid.data.len() != expected {
+        return Ok(None);
+    }
+    Ok(Some(grid))
 }
 
 fn copy_payload_into(payload: &[u8], dst: &mut [u32]) {
