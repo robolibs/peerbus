@@ -8,7 +8,7 @@
 //! LocalConfig) and let go of the ones the new backend doesn't
 //! support.
 
-use quicbit::{Error, LocalConfig};
+use peerbus::{Error, LocalConfig};
 
 fn assert_send_sync<T: Send + Sync>() {}
 
@@ -20,7 +20,7 @@ fn auto_trait_assertions() {
 
 #[test]
 fn auto_trait_assertions_remote() {
-    use quicbit::{Node, RemoteTransport, RemoteTransportBuilder};
+    use peerbus::{Node, RemoteTransport, RemoteTransportBuilder};
     assert_send_sync::<RemoteTransport>();
     fn assert_send<T: Send>() {}
     assert_send::<RemoteTransportBuilder>();

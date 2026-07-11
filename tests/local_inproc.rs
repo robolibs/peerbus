@@ -9,7 +9,7 @@
 //! The lower-level `local::shm` unit tests cover create/open and
 //! compatibility checks; this file stays focused on the public API.
 
-use quicbit::{LocalConfig, LocalService};
+use peerbus::{LocalConfig, LocalService};
 
 #[datapod::datapod]
 struct Pose {
@@ -30,12 +30,12 @@ fn unique_name(stem: &str) -> String {
         .unwrap()
         .as_nanos();
     // Local logical names allow / and _ but not most punctuation.
-    format!("quicbit_test_{stem}_{pid}_{nanos}")
+    format!("peerbus_test_{stem}_{pid}_{nanos}")
 }
 
 fn poll_for<R>(
     timeout: std::time::Duration,
-    mut f: impl FnMut() -> quicbit::Result<Option<R>>,
+    mut f: impl FnMut() -> peerbus::Result<Option<R>>,
 ) -> R {
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
@@ -299,7 +299,7 @@ fn lagged_subscriber_reports_dropped_count_and_recovers() {
         Err(err) => err,
     };
     assert!(
-        matches!(err, quicbit::Error::Lagged { dropped: 1 }),
+        matches!(err, peerbus::Error::Lagged { dropped: 1 }),
         "got {err:?}"
     );
 
@@ -321,9 +321,9 @@ fn local_service_cross_process_publish_subscribe() {
         .arg("local_service_cross_process_child_publish")
         .arg("--ignored")
         .arg("--nocapture")
-        .env("QUICBIT_SHM_CHILD", "1")
-        .env("QUICBIT_SHM_SERVICE", &name)
-        .env("QUICBIT_SHM_VALUE", "12345")
+        .env("PEERBUS_SHM_CHILD", "1")
+        .env("PEERBUS_SHM_SERVICE", &name)
+        .env("PEERBUS_SHM_VALUE", "12345")
         .status()
         .expect("spawn child test process");
     assert!(child.success(), "child publisher failed: {child:?}");
@@ -351,9 +351,9 @@ fn local_service_reclaims_sample_held_by_dead_process() {
         .arg("local_service_cross_process_child_hold_sample_and_abort")
         .arg("--ignored")
         .arg("--nocapture")
-        .env("QUICBIT_SHM_CHILD", "1")
-        .env("QUICBIT_SHM_SERVICE", &name)
-        .env("QUICBIT_SHM_VALUE", "1")
+        .env("PEERBUS_SHM_CHILD", "1")
+        .env("PEERBUS_SHM_SERVICE", &name)
+        .env("PEERBUS_SHM_VALUE", "1")
         .status()
         .expect("spawn child holder");
     assert!(
@@ -386,9 +386,9 @@ fn local_service_reclaims_loan_held_by_dead_process() {
         .arg("local_service_cross_process_child_hold_loan_and_abort")
         .arg("--ignored")
         .arg("--nocapture")
-        .env("QUICBIT_SHM_CHILD", "1")
-        .env("QUICBIT_SHM_SERVICE", &name)
-        .env("QUICBIT_SHM_VALUE", "77")
+        .env("PEERBUS_SHM_CHILD", "1")
+        .env("PEERBUS_SHM_SERVICE", &name)
+        .env("PEERBUS_SHM_VALUE", "77")
         .status()
         .expect("spawn child writer");
     assert!(
@@ -407,12 +407,12 @@ fn local_service_reclaims_loan_held_by_dead_process() {
 #[test]
 #[ignore = "helper spawned by local_service_cross_process_publish_subscribe"]
 fn local_service_cross_process_child_publish() {
-    if std::env::var_os("QUICBIT_SHM_CHILD").is_none() {
+    if std::env::var_os("PEERBUS_SHM_CHILD").is_none() {
         return;
     }
-    let name = std::env::var("QUICBIT_SHM_SERVICE").expect("QUICBIT_SHM_SERVICE");
-    let value = std::env::var("QUICBIT_SHM_VALUE")
-        .expect("QUICBIT_SHM_VALUE")
+    let name = std::env::var("PEERBUS_SHM_SERVICE").expect("PEERBUS_SHM_SERVICE");
+    let value = std::env::var("PEERBUS_SHM_VALUE")
+        .expect("PEERBUS_SHM_VALUE")
         .parse::<u32>()
         .expect("u32 value");
 
@@ -424,12 +424,12 @@ fn local_service_cross_process_child_publish() {
 #[test]
 #[ignore = "helper spawned by local_service_reclaims_sample_held_by_dead_process"]
 fn local_service_cross_process_child_hold_sample_and_abort() {
-    if std::env::var_os("QUICBIT_SHM_CHILD").is_none() {
+    if std::env::var_os("PEERBUS_SHM_CHILD").is_none() {
         return;
     }
-    let name = std::env::var("QUICBIT_SHM_SERVICE").expect("QUICBIT_SHM_SERVICE");
-    let value = std::env::var("QUICBIT_SHM_VALUE")
-        .expect("QUICBIT_SHM_VALUE")
+    let name = std::env::var("PEERBUS_SHM_SERVICE").expect("PEERBUS_SHM_SERVICE");
+    let value = std::env::var("PEERBUS_SHM_VALUE")
+        .expect("PEERBUS_SHM_VALUE")
         .parse::<u32>()
         .expect("u32 value");
 
@@ -445,12 +445,12 @@ fn local_service_cross_process_child_hold_sample_and_abort() {
 #[test]
 #[ignore = "helper spawned by local_service_reclaims_loan_held_by_dead_process"]
 fn local_service_cross_process_child_hold_loan_and_abort() {
-    if std::env::var_os("QUICBIT_SHM_CHILD").is_none() {
+    if std::env::var_os("PEERBUS_SHM_CHILD").is_none() {
         return;
     }
-    let name = std::env::var("QUICBIT_SHM_SERVICE").expect("QUICBIT_SHM_SERVICE");
-    let value = std::env::var("QUICBIT_SHM_VALUE")
-        .expect("QUICBIT_SHM_VALUE")
+    let name = std::env::var("PEERBUS_SHM_SERVICE").expect("PEERBUS_SHM_SERVICE");
+    let value = std::env::var("PEERBUS_SHM_VALUE")
+        .expect("PEERBUS_SHM_VALUE")
         .parse::<u32>()
         .expect("u32 value");
 

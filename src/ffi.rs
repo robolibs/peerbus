@@ -1,4 +1,4 @@
-//! C ABI for quicbit.
+//! C ABI for peerbus.
 //!
 //! A thin, `extern "C"` surface over the high-level [`Node`] API,
 //! speaking opaque byte messages ([`crate::RawMsg`]) so callers in any
@@ -10,11 +10,11 @@
 //! * Handles are opaque pointers from `Box::into_raw`; free them with
 //!   the matching `*_free` and never dereference them in C.
 //! * Fallible calls return `bool`/`int` status; on failure the reason is
-//!   stashed in a thread-local and read via [`quicbit_last_error_message`].
-//! * Returned byte views ([`QuicbitBytes`]) borrow memory owned by the
+//!   stashed in a thread-local and read via [`peerbus_last_error_message`].
+//! * Returned byte views ([`PeerbusBytes`]) borrow memory owned by the
 //!   handle they came from; copy out before freeing the handle.
 //!
-//! See `include/quicbit.h` for the C declarations.
+//! See `include/peerbus.h` for the C declarations.
 
 // These `extern "C"` functions take raw pointers from C and dereference
 // them by design; the safety contract lives in the C header, not in a
@@ -46,16 +46,16 @@ fn set_last_error(message: impl Into<String>) {
     let message = message.into().replace('\0', " ");
     LAST_ERROR.with(|slot| {
         *slot.borrow_mut() = Some(
-            CString::new(message).unwrap_or_else(|_| CString::new("quicbit ffi error").unwrap()),
+            CString::new(message).unwrap_or_else(|_| CString::new("peerbus ffi error").unwrap()),
         );
     });
 }
 
 /// Returns the last error message on this thread, or NULL if the most
-/// recent call succeeded. The pointer is valid until the next quicbit
+/// recent call succeeded. The pointer is valid until the next peerbus
 /// call on the same thread.
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_last_error_message() -> *const c_char {
+pub extern "C" fn peerbus_last_error_message() -> *const c_char {
     LAST_ERROR.with(|slot| {
         slot.borrow()
             .as_ref()
@@ -67,12 +67,12 @@ pub extern "C" fn quicbit_last_error_message() -> *const c_char {
 /// A borrowed view of contiguous bytes owned by a handle.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct QuicbitBytes {
+pub struct PeerbusBytes {
     pub ptr: *const u8,
     pub len: usize,
 }
 
-impl QuicbitBytes {
+impl PeerbusBytes {
     fn empty() -> Self {
         Self {
             ptr: ptr::null(),
@@ -83,7 +83,7 @@ impl QuicbitBytes {
 
 // ---- handles ----
 
-pub struct QuicbitNode {
+pub struct PeerbusNode {
     node: Node,
 }
 
@@ -91,25 +91,29 @@ pub struct QuicbitNode {
 /// zero numeric limits mean "use the Rust default".
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct QuicbitNodeConfig {
+pub struct PeerbusNodeConfig {
     pub identity: *const c_char,
     pub no_relay: bool,
     pub system_did: *const c_char,
+    pub allowed_peers: *const *const c_char,
+    pub allowed_peers_len: usize,
     pub max_payload_bytes: usize,
     pub history_depth: u32,
     pub subscriber_buffer: u32,
+    pub max_publishers: u32,
+    pub max_subscribers: u32,
 }
 
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy)]
-pub struct QuicbitNodeStats {
+pub struct PeerbusNodeStats {
     pub publisher_topics: usize,
     pub cached_peers: usize,
 }
 
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy)]
-pub struct QuicbitPublisherStats {
+pub struct PeerbusPublisherStats {
     pub published: u64,
     pub remote_dropped: u64,
     pub stale_dropped: u64,
@@ -119,7 +123,7 @@ pub struct QuicbitPublisherStats {
 
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy)]
-pub struct QuicbitSubscriberStats {
+pub struct PeerbusSubscriberStats {
     pub received: u64,
     pub disconnects: u64,
     pub stale_dropped: u64,
@@ -129,7 +133,7 @@ pub struct QuicbitSubscriberStats {
 
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy)]
-pub struct QuicbitItemStats {
+pub struct PeerbusItemStats {
     pub messages_out: u64,
     pub messages_in: u64,
     pub bytes_out: u64,
@@ -137,142 +141,243 @@ pub struct QuicbitItemStats {
     pub errors: u64,
 }
 
-pub struct QuicbitPublisher {
+pub struct PeerbusPublisher {
     publisher: Publisher<RawMsg>,
 }
 
-pub struct QuicbitSubscriber {
+pub struct PeerbusSubscriber {
     subscriber: Subscriber<RawMsg>,
 }
 
-pub struct QuicbitSample {
+pub struct PeerbusSample {
     sample: NodeSample<RawMsg>,
 }
 
-pub struct QuicbitDatapodPublisher {
+pub struct PeerbusDatapodPublisher {
     publisher: Publisher<DatapodMsg>,
 }
 
-pub struct QuicbitDatapodSubscriber {
+pub struct PeerbusDatapodSubscriber {
     subscriber: Subscriber<DatapodMsg>,
 }
 
-pub struct QuicbitDatapodSample {
+pub struct PeerbusDatapodSample {
     sample: NodeSample<DatapodMsg>,
 }
 
+pub struct PeerbusDatapodMessage {
+    type_hash: u64,
+    wire: Vec<u8>,
+}
+
+pub struct PeerbusDatapodMessages {
+    messages: Vec<PeerbusDatapodMessage>,
+}
+
+/// Preferred three-letter generic-datapod que/ans answer list handle name.
+///
+/// `PeerbusDatapodMessages` remains the shared finite-list storage type for
+/// compatibility with earlier binding code.
+pub type PeerbusDatapodAnswers = PeerbusDatapodMessages;
+
+pub struct PeerbusPeerPathDiagnostics {
+    diag: crate::PeerPathDiagnostics,
+}
+
 /// An owned, received message (kind tag + payload bytes).
-pub struct QuicbitMessage {
+pub struct PeerbusMessage {
     kind: u64,
     data: Vec<u8>,
 }
 
-pub struct QuicbitReqClient {
+pub struct PeerbusReqClient {
     client: ReqClient<RawMsg, RawMsg>,
 }
 
-pub struct QuicbitReqServer {
+pub struct PeerbusReqServer {
     server: ReqServer<RawMsg, RawMsg>,
 }
 
-pub struct QuicbitQueClient {
+pub struct PeerbusDatapodReqClient {
+    client: ReqClient<DatapodMsg, DatapodMsg>,
+}
+
+pub struct PeerbusDatapodReqServer {
+    server: ReqServer<DatapodMsg, DatapodMsg>,
+}
+
+pub struct PeerbusDatapodQueClient {
+    client: QueClient<DatapodMsg, DatapodMsg>,
+}
+
+pub struct PeerbusDatapodAnsServer {
+    server: AnsServer<DatapodMsg, DatapodMsg>,
+}
+
+pub struct PeerbusDatapodPutClient {
+    client: PutClient<DatapodMsg, DatapodMsg>,
+}
+
+pub struct PeerbusDatapodAckServer {
+    server: AckServer<DatapodMsg, DatapodMsg>,
+}
+
+pub struct PeerbusDatapodPipClient {
+    client: PipClient<DatapodMsg, DatapodMsg>,
+}
+
+pub struct PeerbusDatapodPipServer {
+    server: PipServer<DatapodMsg, DatapodMsg>,
+}
+
+pub struct PeerbusQueClient {
     client: QueClient<RawMsg, RawMsg>,
 }
 
-pub struct QuicbitAnsServer {
+pub struct PeerbusAnsServer {
     server: AnsServer<RawMsg, RawMsg>,
 }
 
-pub struct QuicbitPutClient {
+pub struct PeerbusPutClient {
     client: PutClient<RawMsg, RawMsg>,
 }
 
-pub struct QuicbitAckServer {
+pub struct PeerbusAckServer {
     server: AckServer<RawMsg, RawMsg>,
 }
 
-pub struct QuicbitPuts {
-    server: *mut QuicbitAckServer,
+pub struct PeerbusPuts {
+    server: *mut PeerbusAckServer,
     token: Option<PutAckToken>,
-    first: Option<QuicbitMessage>,
+    first: Option<PeerbusMessage>,
     done: bool,
 }
 
-pub struct QuicbitPipClient {
-    client: PipClient<RawMsg, RawMsg>,
+pub struct PeerbusDatapodPuts {
+    server: *mut PeerbusDatapodAckServer,
+    token: Option<PutAckToken>,
+    first: Option<PeerbusDatapodMessage>,
+    done: bool,
 }
 
-pub struct QuicbitPipServer {
-    server: PipServer<RawMsg, RawMsg>,
-}
-
-pub struct QuicbitPendingReq {
-    server: *mut QuicbitReqServer,
-    reply: Option<ReqReplyToken>,
-    request: QuicbitMessage,
-}
-
-pub struct QuicbitPendingQue {
-    server: *mut QuicbitAnsServer,
-    answers: Option<AnsReplyToken>,
-    request: QuicbitMessage,
-}
-
-pub struct QuicbitPutUpload {
-    client: *mut QuicbitPutClient,
+pub struct PeerbusDatapodPutUpload {
+    client: *mut PeerbusDatapodPutClient,
     token: Option<PutUploadToken>,
 }
 
-pub struct QuicbitPip {
-    client: *mut QuicbitPipClient,
+pub struct PeerbusPipClient {
+    client: PipClient<RawMsg, RawMsg>,
+}
+
+pub struct PeerbusPipServer {
+    server: PipServer<RawMsg, RawMsg>,
+}
+
+pub struct PeerbusPendingReq {
+    server: *mut PeerbusReqServer,
+    reply: Option<ReqReplyToken>,
+    request: PeerbusMessage,
+}
+
+pub struct PeerbusPendingDatapodReq {
+    server: *mut PeerbusDatapodReqServer,
+    reply: Option<ReqReplyToken>,
+    request: PeerbusDatapodMessage,
+}
+
+pub struct PeerbusPendingDatapodQue {
+    server: *mut PeerbusDatapodAnsServer,
+    answers: Option<AnsReplyToken>,
+    request: PeerbusDatapodMessage,
+}
+
+pub struct PeerbusPendingQue {
+    server: *mut PeerbusAnsServer,
+    answers: Option<AnsReplyToken>,
+    request: PeerbusMessage,
+}
+
+pub struct PeerbusPutUpload {
+    client: *mut PeerbusPutClient,
+    token: Option<PutUploadToken>,
+}
+
+/// Preferred three-letter put/ack sender handle name.
+///
+/// `PeerbusPutUpload` remains as a compatibility alias in the C ABI.
+pub type PeerbusPutSender = PeerbusPutUpload;
+
+/// Preferred three-letter generic-datapod put/ack sender handle name.
+///
+/// `PeerbusDatapodPutUpload` remains as a compatibility alias in the C ABI.
+pub type PeerbusDatapodPutSender = PeerbusDatapodPutUpload;
+
+pub struct PeerbusPip {
+    client: *mut PeerbusPipClient,
     token: Option<PipSessionToken>,
     incoming_done: bool,
     outgoing_done: bool,
 }
 
-pub struct QuicbitPendingPip {
-    server: *mut QuicbitPipServer,
+pub struct PeerbusDatapodPip {
+    client: *mut PeerbusDatapodPipClient,
+    token: Option<PipSessionToken>,
+    incoming_done: bool,
+    outgoing_done: bool,
+}
+
+pub struct PeerbusPendingPip {
+    server: *mut PeerbusPipServer,
     token: Option<PipServerToken>,
-    first: Option<QuicbitMessage>,
+    first: Option<PeerbusMessage>,
+    incoming_done: bool,
+    outgoing_done: bool,
+}
+
+pub struct PeerbusPendingDatapodPip {
+    server: *mut PeerbusDatapodPipServer,
+    token: Option<PipServerToken>,
+    first: Option<PeerbusDatapodMessage>,
     incoming_done: bool,
     outgoing_done: bool,
 }
 
 /// Passed to a request handler so it can set the response.
-pub struct QuicbitResponder {
+pub struct PeerbusResponder {
     kind: u64,
     data: Vec<u8>,
     set: bool,
 }
 
 /// Request handler callback: receives the request `kind` + bytes and the
-/// `responder` to fill via [`quicbit_responder_set`].
-pub type QuicbitReqHandler = Option<
+/// `responder` to fill via [`peerbus_responder_set`].
+pub type PeerbusReqHandler = Option<
     unsafe extern "C" fn(
         ctx: *mut c_void,
         kind: u64,
         data: *const u8,
         len: usize,
-        responder: *mut QuicbitResponder,
+        responder: *mut PeerbusResponder,
     ),
 >;
 
 /// Delivery behavior for C QoS.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub enum QuicbitDeliveryPolicy {
-    Reliable = 0,
-    Latest = 1,
-    BestEffort = 2,
+#[allow(non_camel_case_types)]
+pub enum PeerbusDeliveryPolicy {
+    PEERBUS_DELIVERY_RELIABLE = 0,
+    PEERBUS_DELIVERY_LATEST = 1,
+    PEERBUS_DELIVERY_BEST_EFFORT = 2,
 }
 
 /// C mirror of [`TopicQos`]. Zero fields are allowed; use
-/// [`quicbit_topic_qos_reliable`], [`quicbit_topic_qos_latest`], or
-/// [`quicbit_topic_qos_best_effort`] for canonical defaults.
+/// [`peerbus_topic_qos_reliable`], [`peerbus_topic_qos_latest`], or
+/// [`peerbus_topic_qos_best_effort`] for canonical defaults.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct QuicbitTopicQos {
-    pub delivery: QuicbitDeliveryPolicy,
+pub struct PeerbusTopicQos {
+    pub delivery: PeerbusDeliveryPolicy,
     pub max_message_bytes: usize,
     pub max_inflight_bytes: usize,
     pub chunk_bytes: usize,
@@ -280,22 +385,22 @@ pub struct QuicbitTopicQos {
     pub priority: u8,
 }
 
-impl From<QuicbitDeliveryPolicy> for DeliveryPolicy {
-    fn from(value: QuicbitDeliveryPolicy) -> Self {
+impl From<PeerbusDeliveryPolicy> for DeliveryPolicy {
+    fn from(value: PeerbusDeliveryPolicy) -> Self {
         match value {
-            QuicbitDeliveryPolicy::Reliable => DeliveryPolicy::Reliable,
-            QuicbitDeliveryPolicy::Latest => DeliveryPolicy::Latest,
-            QuicbitDeliveryPolicy::BestEffort => DeliveryPolicy::BestEffort,
+            PeerbusDeliveryPolicy::PEERBUS_DELIVERY_RELIABLE => DeliveryPolicy::Reliable,
+            PeerbusDeliveryPolicy::PEERBUS_DELIVERY_LATEST => DeliveryPolicy::Latest,
+            PeerbusDeliveryPolicy::PEERBUS_DELIVERY_BEST_EFFORT => DeliveryPolicy::BestEffort,
         }
     }
 }
 
-impl From<TopicQos> for QuicbitTopicQos {
+impl From<TopicQos> for PeerbusTopicQos {
     fn from(value: TopicQos) -> Self {
         let delivery = match value.delivery {
-            DeliveryPolicy::Reliable => QuicbitDeliveryPolicy::Reliable,
-            DeliveryPolicy::Latest => QuicbitDeliveryPolicy::Latest,
-            DeliveryPolicy::BestEffort => QuicbitDeliveryPolicy::BestEffort,
+            DeliveryPolicy::Reliable => PeerbusDeliveryPolicy::PEERBUS_DELIVERY_RELIABLE,
+            DeliveryPolicy::Latest => PeerbusDeliveryPolicy::PEERBUS_DELIVERY_LATEST,
+            DeliveryPolicy::BestEffort => PeerbusDeliveryPolicy::PEERBUS_DELIVERY_BEST_EFFORT,
         };
         Self {
             delivery,
@@ -308,65 +413,90 @@ impl From<TopicQos> for QuicbitTopicQos {
     }
 }
 
-impl From<QuicbitTopicQos> for TopicQos {
-    fn from(value: QuicbitTopicQos) -> Self {
-        Self {
-            delivery: value.delivery.into(),
-            max_message_bytes: value.max_message_bytes,
-            max_inflight_bytes: value.max_inflight_bytes,
-            chunk_bytes: value.chunk_bytes,
-            subscriber_queue: value.subscriber_queue,
-            priority: value.priority,
+impl From<PeerbusTopicQos> for TopicQos {
+    fn from(value: PeerbusTopicQos) -> Self {
+        let mut qos = match value.delivery {
+            PeerbusDeliveryPolicy::PEERBUS_DELIVERY_RELIABLE => TopicQos::reliable(),
+            PeerbusDeliveryPolicy::PEERBUS_DELIVERY_LATEST => TopicQos::latest(),
+            PeerbusDeliveryPolicy::PEERBUS_DELIVERY_BEST_EFFORT => TopicQos::best_effort(),
+        };
+        if value.max_message_bytes != 0 {
+            qos.max_message_bytes = value.max_message_bytes;
         }
+        if value.max_inflight_bytes != 0 {
+            qos.max_inflight_bytes = value.max_inflight_bytes;
+        }
+        if value.chunk_bytes != 0 {
+            qos.chunk_bytes = value.chunk_bytes;
+        }
+        if value.subscriber_queue != 0 {
+            qos.subscriber_queue = value.subscriber_queue;
+        }
+        qos.priority = value.priority;
+        qos
     }
 }
 
 /// Borrowed message input used by finite C convenience APIs.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct QuicbitRawMessage {
+pub struct PeerbusRawMessage {
     pub kind: u64,
-    pub data: QuicbitBytes,
+    pub data: PeerbusBytes,
+}
+
+/// Borrowed datapod message input used by generic datapod C convenience APIs.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PeerbusDatapodRawMessage {
+    pub type_hash: u64,
+    pub wire: PeerbusBytes,
 }
 
 /// Owned message list returned by que/ans and pip convenience calls.
-pub struct QuicbitMessages {
-    messages: Vec<QuicbitMessage>,
+pub struct PeerbusMessages {
+    messages: Vec<PeerbusMessage>,
 }
 
+/// Preferred three-letter que/ans answer list handle name.
+///
+/// `PeerbusMessages` remains the shared finite-list storage type for
+/// compatibility with earlier binding code.
+pub type PeerbusAnswers = PeerbusMessages;
+
 /// Passed to a que/ans handler so it can append answer items.
-pub struct QuicbitAnsResponder {
+pub struct PeerbusAnsResponder {
     messages: Vec<RawMsg>,
 }
 
 /// Passed to put/ack or pip handlers so they can build the final reply list.
-pub struct QuicbitMessageResponder {
+pub struct PeerbusMessageResponder {
     messages: Vec<RawMsg>,
 }
 
-pub type QuicbitAnsHandler = Option<
+pub type PeerbusAnsHandler = Option<
     unsafe extern "C" fn(
         ctx: *mut c_void,
         kind: u64,
         data: *const u8,
         len: usize,
-        responder: *mut QuicbitAnsResponder,
+        responder: *mut PeerbusAnsResponder,
     ),
 >;
 
-pub type QuicbitAckHandler = Option<
+pub type PeerbusAckHandler = Option<
     unsafe extern "C" fn(
         ctx: *mut c_void,
-        items: *const QuicbitMessages,
-        responder: *mut QuicbitResponder,
+        items: *const PeerbusMessages,
+        responder: *mut PeerbusResponder,
     ),
 >;
 
-pub type QuicbitPipHandler = Option<
+pub type PeerbusPipHandler = Option<
     unsafe extern "C" fn(
         ctx: *mut c_void,
-        items: *const QuicbitMessages,
-        responder: *mut QuicbitMessageResponder,
+        items: *const PeerbusMessages,
+        responder: *mut PeerbusMessageResponder,
     ),
 >;
 
@@ -397,9 +527,9 @@ unsafe fn bytes_in<'a>(data: *const u8, len: usize) -> &'a [u8] {
 }
 
 unsafe fn raw_messages_in<'a>(
-    items: *const QuicbitRawMessage,
+    items: *const PeerbusRawMessage,
     len: usize,
-) -> Result<&'a [QuicbitRawMessage], ()> {
+) -> Result<&'a [PeerbusRawMessage], ()> {
     if items.is_null() {
         if len == 0 {
             Ok(&[])
@@ -408,7 +538,23 @@ unsafe fn raw_messages_in<'a>(
             Err(())
         }
     } else {
-        // SAFETY: caller promises `len` valid QuicbitRawMessage values.
+        // SAFETY: caller promises `len` valid PeerbusRawMessage values.
+        Ok(unsafe { std::slice::from_raw_parts(items, len) })
+    }
+}
+
+unsafe fn datapod_raw_messages_in<'a>(
+    items: *const PeerbusDatapodRawMessage,
+    len: usize,
+) -> Result<&'a [PeerbusDatapodRawMessage], ()> {
+    if items.is_null() {
+        if len == 0 {
+            Ok(&[])
+        } else {
+            set_last_error("null datapod message array with non-zero length");
+            Err(())
+        }
+    } else {
         Ok(unsafe { std::slice::from_raw_parts(items, len) })
     }
 }
@@ -488,8 +634,8 @@ unsafe fn peer_arg(peer: *const c_char) -> Result<Result<EndpointAddr, String>, 
     Ok(Err(value.to_string()))
 }
 
-fn item_stats_out(stats: crate::ItemStats) -> QuicbitItemStats {
-    QuicbitItemStats {
+fn item_stats_out(stats: crate::ItemStats) -> PeerbusItemStats {
+    PeerbusItemStats {
         messages_out: stats.messages_out,
         messages_in: stats.messages_in,
         bytes_out: stats.bytes_out,
@@ -498,20 +644,32 @@ fn item_stats_out(stats: crate::ItemStats) -> QuicbitItemStats {
     }
 }
 
-fn message_from_raw(raw: QuicbitRawMessage) -> RawMsg {
+fn message_from_raw(raw: PeerbusRawMessage) -> RawMsg {
     let bytes = unsafe { bytes_in(raw.data.ptr, raw.data.len) };
     RawMsg::new(raw.kind, bytes)
 }
 
-fn owned_message(kind: u64, payload: &[u8]) -> QuicbitMessage {
-    QuicbitMessage {
+fn message_from_datapod_raw(raw: PeerbusDatapodRawMessage) -> DatapodMsg {
+    let wire = unsafe { bytes_in(raw.wire.ptr, raw.wire.len) };
+    DatapodMsg::new(raw.type_hash, wire)
+}
+
+fn owned_message(kind: u64, payload: &[u8]) -> PeerbusMessage {
+    PeerbusMessage {
         kind,
         data: payload.to_vec(),
     }
 }
 
-fn messages_from_raw(values: Vec<RawMsg>) -> QuicbitMessages {
-    QuicbitMessages {
+fn owned_datapod_message(type_hash: u64, wire: &[u8]) -> PeerbusDatapodMessage {
+    PeerbusDatapodMessage {
+        type_hash,
+        wire: wire.to_vec(),
+    }
+}
+
+fn messages_from_raw(values: Vec<RawMsg>) -> PeerbusMessages {
+    PeerbusMessages {
         messages: values
             .into_iter()
             .map(|msg| owned_message(msg.kind, &msg.data))
@@ -519,7 +677,7 @@ fn messages_from_raw(values: Vec<RawMsg>) -> QuicbitMessages {
     }
 }
 
-fn build_node_from_config(cfg: QuicbitNodeConfig) -> Result<Node, ()> {
+fn build_node_from_config(cfg: PeerbusNodeConfig) -> Result<Node, ()> {
     let mut builder = Node::builder();
     if !cfg.identity.is_null() {
         let identity = unsafe { cstr(cfg.identity) }?;
@@ -532,7 +690,24 @@ fn build_node_from_config(cfg: QuicbitNodeConfig) -> Result<Node, ()> {
         let system_did = unsafe { cstr(cfg.system_did) }?;
         builder = builder.system_did(system_did);
     }
-    if cfg.max_payload_bytes != 0 || cfg.history_depth != 0 || cfg.subscriber_buffer != 0 {
+    if cfg.allowed_peers_len != 0 {
+        if cfg.allowed_peers.is_null() {
+            set_last_error("allowed_peers is null but allowed_peers_len is non-zero");
+            return Err(());
+        }
+        // SAFETY: caller promises `allowed_peers_len` valid C string pointers.
+        let peers = unsafe { std::slice::from_raw_parts(cfg.allowed_peers, cfg.allowed_peers_len) };
+        for peer in peers {
+            let peer = unsafe { cstr(*peer) }?;
+            builder = builder.allow_peer(peer);
+        }
+    }
+    if cfg.max_payload_bytes != 0
+        || cfg.history_depth != 0
+        || cfg.subscriber_buffer != 0
+        || cfg.max_publishers != 0
+        || cfg.max_subscribers != 0
+    {
         let mut local_cfg = LocalConfig::default();
         if cfg.max_payload_bytes != 0 {
             local_cfg.max_payload_bytes = cfg.max_payload_bytes;
@@ -542,6 +717,12 @@ fn build_node_from_config(cfg: QuicbitNodeConfig) -> Result<Node, ()> {
         }
         if cfg.subscriber_buffer != 0 {
             local_cfg.subscriber_buffer = cfg.subscriber_buffer;
+        }
+        if cfg.max_publishers != 0 {
+            local_cfg.max_publishers = cfg.max_publishers;
+        }
+        if cfg.max_subscribers != 0 {
+            local_cfg.max_subscribers = cfg.max_subscribers;
         }
         builder = builder.local_config(local_cfg);
     }
@@ -553,59 +734,67 @@ fn build_node_from_config(cfg: QuicbitNodeConfig) -> Result<Node, ()> {
 // ---- node ----
 
 /// Create a node. `identity` may be NULL for an ephemeral key. Returns
-/// NULL on failure (see [`quicbit_last_error_message`]).
+/// NULL on failure (see [`peerbus_last_error_message`]).
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_node_new(identity: *const c_char, no_relay: bool) -> *mut QuicbitNode {
+pub extern "C" fn peerbus_node_new(identity: *const c_char, no_relay: bool) -> *mut PeerbusNode {
     clear_last_error();
-    let cfg = QuicbitNodeConfig {
+    let cfg = PeerbusNodeConfig {
         identity,
         no_relay,
         system_did: ptr::null(),
+        allowed_peers: ptr::null(),
+        allowed_peers_len: 0,
         max_payload_bytes: 0,
         history_depth: 0,
         subscriber_buffer: 0,
+        max_publishers: 0,
+        max_subscribers: 0,
     };
     match build_node_from_config(cfg) {
-        Ok(node) => Box::into_raw(Box::new(QuicbitNode { node })),
+        Ok(node) => Box::into_raw(Box::new(PeerbusNode { node })),
         Err(()) => ptr::null_mut(),
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_node_config_default() -> QuicbitNodeConfig {
-    QuicbitNodeConfig {
+pub extern "C" fn peerbus_node_config_default() -> PeerbusNodeConfig {
+    PeerbusNodeConfig {
         identity: ptr::null(),
         no_relay: false,
         system_did: ptr::null(),
+        allowed_peers: ptr::null(),
+        allowed_peers_len: 0,
         max_payload_bytes: 0,
         history_depth: 0,
         subscriber_buffer: 0,
+        max_publishers: 0,
+        max_subscribers: 0,
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_node_new_with_config(cfg: QuicbitNodeConfig) -> *mut QuicbitNode {
+pub extern "C" fn peerbus_node_new_with_config(cfg: PeerbusNodeConfig) -> *mut PeerbusNode {
     clear_last_error();
     match build_node_from_config(cfg) {
-        Ok(node) => Box::into_raw(Box::new(QuicbitNode { node })),
+        Ok(node) => Box::into_raw(Box::new(PeerbusNode { node })),
         Err(()) => ptr::null_mut(),
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_node_free(node: *mut QuicbitNode) {
+pub extern "C" fn peerbus_node_free(node: *mut PeerbusNode) {
     if node.is_null() {
         return;
     }
-    // SAFETY: originated from Box::into_raw in quicbit_node_new.
+    // SAFETY: originated from Box::into_raw in peerbus_node_new.
     unsafe { drop(Box::from_raw(node)) };
 }
 
 /// This node's identity as a `did:key:z6Mk…` string. Caller owns the
-/// returned C string and must free it with [`quicbit_string_free`].
+/// returned C string and must free it with [`peerbus_string_free`].
 /// Returns NULL on failure.
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_node_did_key(node: *const QuicbitNode) -> *mut c_char {
+pub extern "C" fn peerbus_node_did_key(node: *const PeerbusNode) -> *mut c_char {
     clear_last_error();
     if node.is_null() {
         set_last_error("null node handle");
@@ -623,7 +812,7 @@ pub extern "C" fn quicbit_node_did_key(node: *const QuicbitNode) -> *mut c_char 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_node_endpoint_addr(node: *const QuicbitNode) -> *mut c_char {
+pub extern "C" fn peerbus_node_endpoint_addr(node: *const PeerbusNode) -> *mut c_char {
     clear_last_error();
     if node.is_null() {
         set_last_error("null node handle");
@@ -637,8 +826,8 @@ pub extern "C" fn quicbit_node_endpoint_addr(node: *const QuicbitNode) -> *mut c
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_node_add_topic_route(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_node_add_topic_route(
+    node: *const PeerbusNode,
     topic: *const c_char,
     endpoint_addr: *const c_char,
 ) -> bool {
@@ -666,8 +855,8 @@ pub extern "C" fn quicbit_node_add_topic_route(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_node_add_system_peer(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_node_add_system_peer(
+    node: *const PeerbusNode,
     endpoint_addr: *const c_char,
 ) -> bool {
     clear_last_error();
@@ -690,20 +879,258 @@ pub extern "C" fn quicbit_node_add_system_peer(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_node_stats(node: *const QuicbitNode) -> QuicbitNodeStats {
+pub extern "C" fn peerbus_node_stats(node: *const PeerbusNode) -> PeerbusNodeStats {
     if node.is_null() {
-        return QuicbitNodeStats::default();
+        return PeerbusNodeStats::default();
     }
     let stats = unsafe { &*node }.node.stats();
-    QuicbitNodeStats {
+    PeerbusNodeStats {
         publisher_topics: stats.publisher_topics,
         cached_peers: stats.cached_peers,
     }
 }
 
-/// Free a string returned by quicbit (e.g. [`quicbit_node_did_key`]).
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_string_free(s: *mut c_char) {
+pub extern "C" fn peerbus_node_peer_path_diagnostics(
+    node: *const PeerbusNode,
+    endpoint_addr: *const c_char,
+) -> *mut PeerbusPeerPathDiagnostics {
+    clear_last_error();
+    if node.is_null() {
+        set_last_error("null node handle");
+        return ptr::null_mut();
+    }
+    let endpoint_addr = match unsafe { endpoint_addr_in(endpoint_addr) } {
+        Ok(addr) => addr,
+        Err(()) => return ptr::null_mut(),
+    };
+    let node = unsafe { &*node };
+    match node.node.peer_path_diagnostics(endpoint_addr) {
+        Ok(Some(diag)) => Box::into_raw(Box::new(PeerbusPeerPathDiagnostics { diag })),
+        Ok(None) => ptr::null_mut(),
+        Err(e) => {
+            set_last_error(e.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_peer_path_diagnostics_free(diag: *mut PeerbusPeerPathDiagnostics) {
+    if diag.is_null() {
+        return;
+    }
+    unsafe { drop(Box::from_raw(diag)) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_peer_path_diagnostics_peer(
+    diag: *const PeerbusPeerPathDiagnostics,
+) -> *mut c_char {
+    clear_last_error();
+    if diag.is_null() {
+        set_last_error("null peer path diagnostics handle");
+        return ptr::null_mut();
+    }
+    let did = crate::did_key::endpoint_id_to_did_key(&unsafe { &*diag }.diag.peer);
+    match CString::new(did) {
+        Ok(s) => s.into_raw(),
+        Err(_) => {
+            set_last_error("peer did:key contained a NUL byte");
+            ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_peer_path_diagnostics_path_count(
+    diag: *const PeerbusPeerPathDiagnostics,
+) -> usize {
+    if diag.is_null() {
+        return 0;
+    }
+    unsafe { &*diag }.diag.paths.len()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_peer_path_diagnostics_max_datagram_size(
+    diag: *const PeerbusPeerPathDiagnostics,
+    out: *mut usize,
+) -> bool {
+    if diag.is_null() || out.is_null() {
+        return false;
+    }
+    let Some(value) = unsafe { &*diag }.diag.max_datagram_size else {
+        return false;
+    };
+    unsafe { *out = value };
+    true
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_peer_path_diagnostics_datagram_send_buffer_space(
+    diag: *const PeerbusPeerPathDiagnostics,
+) -> usize {
+    if diag.is_null() {
+        return 0;
+    }
+    unsafe { &*diag }.diag.datagram_send_buffer_space
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_peer_path_diagnostics_path_id(
+    diag: *const PeerbusPeerPathDiagnostics,
+    index: usize,
+) -> *mut c_char {
+    clear_last_error();
+    if diag.is_null() {
+        set_last_error("null peer path diagnostics handle");
+        return ptr::null_mut();
+    }
+    let Some(path) = unsafe { &*diag }.diag.paths.get(index) else {
+        set_last_error("path index out of range");
+        return ptr::null_mut();
+    };
+    match CString::new(path.path_id.as_str()) {
+        Ok(s) => s.into_raw(),
+        Err(_) => {
+            set_last_error("path id contained a NUL byte");
+            ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_peer_path_diagnostics_remote_addr(
+    diag: *const PeerbusPeerPathDiagnostics,
+    index: usize,
+) -> *mut c_char {
+    clear_last_error();
+    if diag.is_null() {
+        set_last_error("null peer path diagnostics handle");
+        return ptr::null_mut();
+    }
+    let Some(path) = unsafe { &*diag }.diag.paths.get(index) else {
+        set_last_error("path index out of range");
+        return ptr::null_mut();
+    };
+    match CString::new(path.remote_addr.as_str()) {
+        Ok(s) => s.into_raw(),
+        Err(_) => {
+            set_last_error("path remote addr contained a NUL byte");
+            ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_peer_path_diagnostics_path_selected(
+    diag: *const PeerbusPeerPathDiagnostics,
+    index: usize,
+) -> bool {
+    if diag.is_null() {
+        return false;
+    }
+    unsafe { &*diag }
+        .diag
+        .paths
+        .get(index)
+        .is_some_and(|path| path.selected)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_peer_path_diagnostics_path_is_ip(
+    diag: *const PeerbusPeerPathDiagnostics,
+    index: usize,
+) -> bool {
+    if diag.is_null() {
+        return false;
+    }
+    unsafe { &*diag }
+        .diag
+        .paths
+        .get(index)
+        .is_some_and(|path| path.is_ip)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_peer_path_diagnostics_path_is_relay(
+    diag: *const PeerbusPeerPathDiagnostics,
+    index: usize,
+) -> bool {
+    if diag.is_null() {
+        return false;
+    }
+    unsafe { &*diag }
+        .diag
+        .paths
+        .get(index)
+        .is_some_and(|path| path.is_relay)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_peer_path_diagnostics_path_rtt_ms(
+    diag: *const PeerbusPeerPathDiagnostics,
+    index: usize,
+) -> f64 {
+    if diag.is_null() {
+        return 0.0;
+    }
+    unsafe { &*diag }
+        .diag
+        .paths
+        .get(index)
+        .map_or(0.0, |path| path.rtt.as_secs_f64() * 1000.0)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_peer_path_diagnostics_path_current_mtu(
+    diag: *const PeerbusPeerPathDiagnostics,
+    index: usize,
+) -> u16 {
+    if diag.is_null() {
+        return 0;
+    }
+    unsafe { &*diag }
+        .diag
+        .paths
+        .get(index)
+        .map_or(0, |path| path.current_mtu)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_peer_path_diagnostics_path_cwnd(
+    diag: *const PeerbusPeerPathDiagnostics,
+    index: usize,
+) -> u64 {
+    if diag.is_null() {
+        return 0;
+    }
+    unsafe { &*diag }
+        .diag
+        .paths
+        .get(index)
+        .map_or(0, |path| path.cwnd)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_peer_path_diagnostics_path_lost_packets(
+    diag: *const PeerbusPeerPathDiagnostics,
+    index: usize,
+) -> u64 {
+    if diag.is_null() {
+        return 0;
+    }
+    unsafe { &*diag }
+        .diag
+        .paths
+        .get(index)
+        .map_or(0, |path| path.lost_packets)
+}
+
+/// Free a string returned by peerbus (e.g. [`peerbus_node_did_key`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_string_free(s: *mut c_char) {
     if s.is_null() {
         return;
     }
@@ -712,36 +1139,36 @@ pub extern "C" fn quicbit_string_free(s: *mut c_char) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_topic_qos_reliable() -> QuicbitTopicQos {
+pub extern "C" fn peerbus_topic_qos_reliable() -> PeerbusTopicQos {
     TopicQos::reliable().into()
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_topic_qos_latest() -> QuicbitTopicQos {
+pub extern "C" fn peerbus_topic_qos_latest() -> PeerbusTopicQos {
     TopicQos::latest().into()
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_topic_qos_best_effort() -> QuicbitTopicQos {
+pub extern "C" fn peerbus_topic_qos_best_effort() -> PeerbusTopicQos {
     TopicQos::best_effort().into()
 }
 
 // ---- pub/sub ----
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_publisher_new(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_publisher_new(
+    node: *const PeerbusNode,
     topic: *const c_char,
-) -> *mut QuicbitPublisher {
-    quicbit_publisher_new_with_qos(node, topic, quicbit_topic_qos_reliable())
+) -> *mut PeerbusPublisher {
+    peerbus_publisher_new_with_qos(node, topic, peerbus_topic_qos_reliable())
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_publisher_new_with_qos(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_publisher_new_with_qos(
+    node: *const PeerbusNode,
     topic: *const c_char,
-    qos: QuicbitTopicQos,
-) -> *mut QuicbitPublisher {
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusPublisher {
     clear_last_error();
     if node.is_null() {
         set_last_error("null node handle");
@@ -754,7 +1181,7 @@ pub extern "C" fn quicbit_publisher_new_with_qos(
         Err(()) => return ptr::null_mut(),
     };
     match node.node.publisher_with_qos::<RawMsg>(topic, qos.into()) {
-        Ok(publisher) => Box::into_raw(Box::new(QuicbitPublisher { publisher })),
+        Ok(publisher) => Box::into_raw(Box::new(PeerbusPublisher { publisher })),
         Err(e) => {
             set_last_error(e.to_string());
             ptr::null_mut()
@@ -763,7 +1190,7 @@ pub extern "C" fn quicbit_publisher_new_with_qos(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_publisher_free(publisher: *mut QuicbitPublisher) {
+pub extern "C" fn peerbus_publisher_free(publisher: *mut PeerbusPublisher) {
     if publisher.is_null() {
         return;
     }
@@ -772,14 +1199,14 @@ pub extern "C" fn quicbit_publisher_free(publisher: *mut QuicbitPublisher) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_publisher_stats(
-    publisher: *const QuicbitPublisher,
-) -> QuicbitPublisherStats {
+pub extern "C" fn peerbus_publisher_stats(
+    publisher: *const PeerbusPublisher,
+) -> PeerbusPublisherStats {
     if publisher.is_null() {
-        return QuicbitPublisherStats::default();
+        return PeerbusPublisherStats::default();
     }
     let stats = unsafe { &*publisher }.publisher.stats();
-    QuicbitPublisherStats {
+    PeerbusPublisherStats {
         published: stats.published,
         remote_dropped: stats.remote_dropped,
         stale_dropped: stats.stale_dropped,
@@ -791,8 +1218,8 @@ pub extern "C" fn quicbit_publisher_stats(
 /// Publish `data` (`len` bytes) with user tag `kind`. Returns false on
 /// failure.
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_publisher_send(
-    publisher: *mut QuicbitPublisher,
+pub extern "C" fn peerbus_publisher_send(
+    publisher: *mut PeerbusPublisher,
     kind: u64,
     data: *const u8,
     len: usize,
@@ -815,21 +1242,21 @@ pub extern "C" fn quicbit_publisher_send(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_subscriber_new(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_subscriber_new(
+    node: *const PeerbusNode,
     peer: *const c_char,
     topic: *const c_char,
-) -> *mut QuicbitSubscriber {
-    quicbit_subscriber_new_with_qos(node, peer, topic, quicbit_topic_qos_reliable())
+) -> *mut PeerbusSubscriber {
+    peerbus_subscriber_new_with_qos(node, peer, topic, peerbus_topic_qos_reliable())
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_subscriber_new_with_qos(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_subscriber_new_with_qos(
+    node: *const PeerbusNode,
     peer: *const c_char,
     topic: *const c_char,
-    qos: QuicbitTopicQos,
-) -> *mut QuicbitSubscriber {
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusSubscriber {
     clear_last_error();
     if node.is_null() {
         set_last_error("null node handle");
@@ -853,7 +1280,7 @@ pub extern "C" fn quicbit_subscriber_new_with_qos(
             .subscriber_with_qos::<RawMsg>(name.as_str(), topic, qos),
     };
     match result {
-        Ok(subscriber) => Box::into_raw(Box::new(QuicbitSubscriber { subscriber })),
+        Ok(subscriber) => Box::into_raw(Box::new(PeerbusSubscriber { subscriber })),
         Err(e) => {
             set_last_error(e.to_string());
             ptr::null_mut()
@@ -862,11 +1289,11 @@ pub extern "C" fn quicbit_subscriber_new_with_qos(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_subscribe_new_with_qos(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_subscribe_new_with_qos(
+    node: *const PeerbusNode,
     topic: *const c_char,
-    qos: QuicbitTopicQos,
-) -> *mut QuicbitSubscriber {
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusSubscriber {
     clear_last_error();
     if node.is_null() {
         set_last_error("null node handle");
@@ -878,7 +1305,7 @@ pub extern "C" fn quicbit_subscribe_new_with_qos(
         Err(()) => return ptr::null_mut(),
     };
     match node.node.subscribe_with_qos::<RawMsg>(topic, qos.into()) {
-        Ok(subscriber) => Box::into_raw(Box::new(QuicbitSubscriber { subscriber })),
+        Ok(subscriber) => Box::into_raw(Box::new(PeerbusSubscriber { subscriber })),
         Err(e) => {
             set_last_error(e.to_string());
             ptr::null_mut()
@@ -887,7 +1314,7 @@ pub extern "C" fn quicbit_subscribe_new_with_qos(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_subscriber_free(subscriber: *mut QuicbitSubscriber) {
+pub extern "C" fn peerbus_subscriber_free(subscriber: *mut PeerbusSubscriber) {
     if subscriber.is_null() {
         return;
     }
@@ -898,11 +1325,11 @@ pub extern "C" fn quicbit_subscriber_free(subscriber: *mut QuicbitSubscriber) {
 // ---- generic datapod pub/sub ----
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_datapod_publisher_new_with_qos(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_datapod_publisher_new_with_qos(
+    node: *const PeerbusNode,
     topic: *const c_char,
-    qos: QuicbitTopicQos,
-) -> *mut QuicbitDatapodPublisher {
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusDatapodPublisher {
     clear_last_error();
     if node.is_null() {
         set_last_error("null node handle");
@@ -917,7 +1344,7 @@ pub extern "C" fn quicbit_datapod_publisher_new_with_qos(
         .node
         .publisher_with_qos::<DatapodMsg>(topic, qos.into())
     {
-        Ok(publisher) => Box::into_raw(Box::new(QuicbitDatapodPublisher { publisher })),
+        Ok(publisher) => Box::into_raw(Box::new(PeerbusDatapodPublisher { publisher })),
         Err(e) => {
             set_last_error(e.to_string());
             ptr::null_mut()
@@ -926,7 +1353,16 @@ pub extern "C" fn quicbit_datapod_publisher_new_with_qos(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_datapod_publisher_free(publisher: *mut QuicbitDatapodPublisher) {
+pub extern "C" fn peerbus_subscribe_with_qos(
+    node: *const PeerbusNode,
+    topic: *const c_char,
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusSubscriber {
+    peerbus_subscribe_new_with_qos(node, topic, qos)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_publisher_free(publisher: *mut PeerbusDatapodPublisher) {
     if publisher.is_null() {
         return;
     }
@@ -935,8 +1371,8 @@ pub extern "C" fn quicbit_datapod_publisher_free(publisher: *mut QuicbitDatapodP
 
 /// Publish a datapod wire message: `type_hash` plus `header || payload` bytes.
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_datapod_publisher_send(
-    publisher: *mut QuicbitDatapodPublisher,
+pub extern "C" fn peerbus_datapod_publisher_send(
+    publisher: *mut PeerbusDatapodPublisher,
     type_hash: u64,
     wire: *const u8,
     len: usize,
@@ -958,12 +1394,12 @@ pub extern "C" fn quicbit_datapod_publisher_send(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_datapod_subscriber_new_with_qos(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_datapod_subscriber_new_with_qos(
+    node: *const PeerbusNode,
     peer: *const c_char,
     topic: *const c_char,
-    qos: QuicbitTopicQos,
-) -> *mut QuicbitDatapodSubscriber {
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusDatapodSubscriber {
     clear_last_error();
     if node.is_null() {
         set_last_error("null node handle");
@@ -988,7 +1424,7 @@ pub extern "C" fn quicbit_datapod_subscriber_new_with_qos(
             .subscriber_with_qos::<DatapodMsg>(name.as_str(), topic, qos),
     };
     match result {
-        Ok(subscriber) => Box::into_raw(Box::new(QuicbitDatapodSubscriber { subscriber })),
+        Ok(subscriber) => Box::into_raw(Box::new(PeerbusDatapodSubscriber { subscriber })),
         Err(e) => {
             set_last_error(e.to_string());
             ptr::null_mut()
@@ -997,7 +1433,44 @@ pub extern "C" fn quicbit_datapod_subscriber_new_with_qos(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_datapod_subscriber_free(subscriber: *mut QuicbitDatapodSubscriber) {
+pub extern "C" fn peerbus_datapod_subscribe_new_with_qos(
+    node: *const PeerbusNode,
+    topic: *const c_char,
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusDatapodSubscriber {
+    clear_last_error();
+    if node.is_null() {
+        set_last_error("null node handle");
+        return ptr::null_mut();
+    }
+    let node = unsafe { &*node };
+    let topic = match unsafe { cstr(topic) } {
+        Ok(t) => t,
+        Err(()) => return ptr::null_mut(),
+    };
+    match node
+        .node
+        .subscribe_with_qos::<DatapodMsg>(topic, qos.into())
+    {
+        Ok(subscriber) => Box::into_raw(Box::new(PeerbusDatapodSubscriber { subscriber })),
+        Err(e) => {
+            set_last_error(e.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_subscribe_with_qos(
+    node: *const PeerbusNode,
+    topic: *const c_char,
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusDatapodSubscriber {
+    peerbus_datapod_subscribe_new_with_qos(node, topic, qos)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_subscriber_free(subscriber: *mut PeerbusDatapodSubscriber) {
     if subscriber.is_null() {
         return;
     }
@@ -1006,9 +1479,9 @@ pub extern "C" fn quicbit_datapod_subscriber_free(subscriber: *mut QuicbitDatapo
 
 /// Poll for a datapod sample without copying the wire bytes.
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_datapod_subscriber_take_sample(
-    subscriber: *mut QuicbitDatapodSubscriber,
-    out_sample: *mut *mut QuicbitDatapodSample,
+pub extern "C" fn peerbus_datapod_subscriber_take_sample(
+    subscriber: *mut PeerbusDatapodSubscriber,
+    out_sample: *mut *mut PeerbusDatapodSample,
 ) -> i32 {
     clear_last_error();
     if subscriber.is_null() || out_sample.is_null() {
@@ -1018,7 +1491,7 @@ pub extern "C" fn quicbit_datapod_subscriber_take_sample(
     let subscriber = unsafe { &mut *subscriber };
     match subscriber.subscriber.take() {
         Ok(Some(sample)) => {
-            unsafe { *out_sample = Box::into_raw(Box::new(QuicbitDatapodSample { sample })) };
+            unsafe { *out_sample = Box::into_raw(Box::new(PeerbusDatapodSample { sample })) };
             1
         }
         Ok(None) => 0,
@@ -1030,7 +1503,7 @@ pub extern "C" fn quicbit_datapod_subscriber_take_sample(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_datapod_sample_type_hash(sample: *const QuicbitDatapodSample) -> u64 {
+pub extern "C" fn peerbus_datapod_sample_type_hash(sample: *const PeerbusDatapodSample) -> u64 {
     if sample.is_null() {
         return 0;
     }
@@ -1039,19 +1512,19 @@ pub extern "C" fn quicbit_datapod_sample_type_hash(sample: *const QuicbitDatapod
 
 /// Borrowed zero-copy view of datapod `header || payload` wire bytes.
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_datapod_sample_wire(sample: *const QuicbitDatapodSample) -> QuicbitBytes {
+pub extern "C" fn peerbus_datapod_sample_wire(sample: *const PeerbusDatapodSample) -> PeerbusBytes {
     if sample.is_null() {
-        return QuicbitBytes::empty();
+        return PeerbusBytes::empty();
     }
     let sample = unsafe { &*sample };
-    QuicbitBytes {
+    PeerbusBytes {
         ptr: sample.sample.payload().as_ptr(),
         len: sample.sample.payload().len(),
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_datapod_sample_free(sample: *mut QuicbitDatapodSample) {
+pub extern "C" fn peerbus_datapod_sample_free(sample: *mut PeerbusDatapodSample) {
     if sample.is_null() {
         return;
     }
@@ -1059,14 +1532,121 @@ pub extern "C" fn quicbit_datapod_sample_free(sample: *mut QuicbitDatapodSample)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_subscriber_stats(
-    subscriber: *const QuicbitSubscriber,
-) -> QuicbitSubscriberStats {
+pub extern "C" fn peerbus_datapod_message_type_hash(message: *const PeerbusDatapodMessage) -> u64 {
+    if message.is_null() {
+        return 0;
+    }
+    unsafe { &*message }.type_hash
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_message_wire(
+    message: *const PeerbusDatapodMessage,
+) -> PeerbusBytes {
+    if message.is_null() {
+        return PeerbusBytes::empty();
+    }
+    let message = unsafe { &*message };
+    PeerbusBytes {
+        ptr: message.wire.as_ptr(),
+        len: message.wire.len(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_message_free(message: *mut PeerbusDatapodMessage) {
+    if message.is_null() {
+        return;
+    }
+    unsafe { drop(Box::from_raw(message)) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_messages_len(messages: *const PeerbusDatapodMessages) -> usize {
+    if messages.is_null() {
+        return 0;
+    }
+    unsafe { &*messages }.messages.len()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_messages_type_hash_at(
+    messages: *const PeerbusDatapodMessages,
+    index: usize,
+) -> u64 {
+    if messages.is_null() {
+        return 0;
+    }
+    unsafe { &*messages }
+        .messages
+        .get(index)
+        .map_or(0, |message| message.type_hash)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_messages_wire_at(
+    messages: *const PeerbusDatapodMessages,
+    index: usize,
+) -> PeerbusBytes {
+    if messages.is_null() {
+        return PeerbusBytes::empty();
+    }
+    unsafe { &*messages }
+        .messages
+        .get(index)
+        .map_or_else(PeerbusBytes::empty, |message| PeerbusBytes {
+            ptr: message.wire.as_ptr(),
+            len: message.wire.len(),
+        })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_messages_free(messages: *mut PeerbusDatapodMessages) {
+    if messages.is_null() {
+        return;
+    }
+    unsafe { drop(Box::from_raw(messages)) };
+}
+
+// Preferred que/ans answer-list aliases. These wrap the shared finite-list
+// storage used by the older `messages` names so callers can use the public
+// three-letter `ans` terminology without a second ownership model.
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_answers_len(answers: *const PeerbusDatapodAnswers) -> usize {
+    peerbus_datapod_messages_len(answers)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_answers_type_hash_at(
+    answers: *const PeerbusDatapodAnswers,
+    index: usize,
+) -> u64 {
+    peerbus_datapod_messages_type_hash_at(answers, index)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_answers_wire_at(
+    answers: *const PeerbusDatapodAnswers,
+    index: usize,
+) -> PeerbusBytes {
+    peerbus_datapod_messages_wire_at(answers, index)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_answers_free(answers: *mut PeerbusDatapodAnswers) {
+    peerbus_datapod_messages_free(answers);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_subscriber_stats(
+    subscriber: *const PeerbusSubscriber,
+) -> PeerbusSubscriberStats {
     if subscriber.is_null() {
-        return QuicbitSubscriberStats::default();
+        return PeerbusSubscriberStats::default();
     }
     let stats = unsafe { &*subscriber }.subscriber.stats();
-    QuicbitSubscriberStats {
+    PeerbusSubscriberStats {
         received: stats.received,
         disconnects: stats.disconnects,
         stale_dropped: stats.stale_dropped,
@@ -1078,11 +1658,11 @@ pub extern "C" fn quicbit_subscriber_stats(
 /// Poll for the next sample. Returns `1` and writes an owned message to
 /// `*out_message` when one is available, `0` when none is ready, and
 /// `-1` on error. A returned message must be freed with
-/// [`quicbit_message_free`].
+/// [`peerbus_message_free`].
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_subscriber_take(
-    subscriber: *mut QuicbitSubscriber,
-    out_message: *mut *mut QuicbitMessage,
+pub extern "C" fn peerbus_subscriber_take(
+    subscriber: *mut PeerbusSubscriber,
+    out_message: *mut *mut PeerbusMessage,
 ) -> i32 {
     clear_last_error();
     if subscriber.is_null() || out_message.is_null() {
@@ -1093,7 +1673,7 @@ pub extern "C" fn quicbit_subscriber_take(
     let subscriber = unsafe { &mut *subscriber };
     match subscriber.subscriber.take() {
         Ok(Some(sample)) => {
-            let msg = QuicbitMessage {
+            let msg = PeerbusMessage {
                 kind: sample.header().kind,
                 data: sample.payload().to_vec(),
             };
@@ -1113,12 +1693,12 @@ pub extern "C" fn quicbit_subscriber_take(
 ///
 /// Returns `1` and writes a borrowed sample handle to `*out_sample` when one is
 /// available, `0` when none is ready, and `-1` on error. A returned sample must
-/// be freed with [`quicbit_sample_free`]. The byte view returned from
-/// [`quicbit_sample_data`] is valid until that free call.
+/// be freed with [`peerbus_sample_free`]. The byte view returned from
+/// [`peerbus_sample_data`] is valid until that free call.
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_subscriber_take_sample(
-    subscriber: *mut QuicbitSubscriber,
-    out_sample: *mut *mut QuicbitSample,
+pub extern "C" fn peerbus_subscriber_take_sample(
+    subscriber: *mut PeerbusSubscriber,
+    out_sample: *mut *mut PeerbusSample,
 ) -> i32 {
     clear_last_error();
     if subscriber.is_null() || out_sample.is_null() {
@@ -1128,7 +1708,7 @@ pub extern "C" fn quicbit_subscriber_take_sample(
     let subscriber = unsafe { &mut *subscriber };
     match subscriber.subscriber.take() {
         Ok(Some(sample)) => {
-            unsafe { *out_sample = Box::into_raw(Box::new(QuicbitSample { sample })) };
+            unsafe { *out_sample = Box::into_raw(Box::new(PeerbusSample { sample })) };
             1
         }
         Ok(None) => 0,
@@ -1140,7 +1720,7 @@ pub extern "C" fn quicbit_subscriber_take_sample(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_sample_kind(sample: *const QuicbitSample) -> u64 {
+pub extern "C" fn peerbus_sample_kind(sample: *const PeerbusSample) -> u64 {
     if sample.is_null() {
         return 0;
     }
@@ -1150,22 +1730,22 @@ pub extern "C" fn quicbit_sample_kind(sample: *const QuicbitSample) -> u64 {
 /// Borrowed zero-copy view of a sample payload.
 ///
 /// For local SHM this points directly into the shared-memory slot and pins that
-/// slot until [`quicbit_sample_free`] is called. Copy it if you need to keep the
+/// slot until [`peerbus_sample_free`] is called. Copy it if you need to keep the
 /// data longer.
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_sample_data(sample: *const QuicbitSample) -> QuicbitBytes {
+pub extern "C" fn peerbus_sample_data(sample: *const PeerbusSample) -> PeerbusBytes {
     if sample.is_null() {
-        return QuicbitBytes::empty();
+        return PeerbusBytes::empty();
     }
     let sample = unsafe { &*sample };
-    QuicbitBytes {
+    PeerbusBytes {
         ptr: sample.sample.payload().as_ptr(),
         len: sample.sample.payload().len(),
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_sample_free(sample: *mut QuicbitSample) {
+pub extern "C" fn peerbus_sample_free(sample: *mut PeerbusSample) {
     if sample.is_null() {
         return;
     }
@@ -1175,17 +1755,17 @@ pub extern "C" fn quicbit_sample_free(sample: *mut QuicbitSample) {
 // ---- message accessors ----
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_message_new(
+pub extern "C" fn peerbus_message_new(
     kind: u64,
     data: *const u8,
     len: usize,
-) -> *mut QuicbitMessage {
+) -> *mut PeerbusMessage {
     let bytes = unsafe { bytes_in(data, len) };
     Box::into_raw(Box::new(owned_message(kind, bytes)))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_message_kind(message: *const QuicbitMessage) -> u64 {
+pub extern "C" fn peerbus_message_kind(message: *const PeerbusMessage) -> u64 {
     if message.is_null() {
         return 0;
     }
@@ -1196,20 +1776,20 @@ pub extern "C" fn quicbit_message_kind(message: *const QuicbitMessage) -> u64 {
 /// Borrowed view of the message payload, valid until the message is
 /// freed.
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_message_data(message: *const QuicbitMessage) -> QuicbitBytes {
+pub extern "C" fn peerbus_message_data(message: *const PeerbusMessage) -> PeerbusBytes {
     if message.is_null() {
-        return QuicbitBytes::empty();
+        return PeerbusBytes::empty();
     }
     // SAFETY: validated non-null.
     let message = unsafe { &*message };
-    QuicbitBytes {
+    PeerbusBytes {
         ptr: message.data.as_ptr(),
         len: message.data.len(),
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_message_free(message: *mut QuicbitMessage) {
+pub extern "C" fn peerbus_message_free(message: *mut PeerbusMessage) {
     if message.is_null() {
         return;
     }
@@ -1217,24 +1797,1595 @@ pub extern "C" fn quicbit_message_free(message: *mut QuicbitMessage) {
     unsafe { drop(Box::from_raw(message)) };
 }
 
-// ---- req/res client ----
+// ---- generic datapod req/res client ----
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_req_client_new(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_datapod_req_client_new_with_qos(
+    node: *const PeerbusNode,
     peer: *const c_char,
     topic: *const c_char,
-) -> *mut QuicbitReqClient {
-    quicbit_req_client_new_with_qos(node, peer, topic, quicbit_topic_qos_reliable())
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusDatapodReqClient {
+    clear_last_error();
+    if node.is_null() {
+        set_last_error("null node handle");
+        return ptr::null_mut();
+    }
+    let node = unsafe { &*node };
+    let peer = match unsafe { peer_arg(peer) } {
+        Ok(p) => p,
+        Err(()) => return ptr::null_mut(),
+    };
+    let topic = match unsafe { cstr(topic) } {
+        Ok(t) => t,
+        Err(()) => return ptr::null_mut(),
+    };
+    let qos = qos.into();
+    let result = match peer {
+        Ok(addr) => node
+            .node
+            .req_client_with_qos::<DatapodMsg, DatapodMsg>(addr, topic, qos),
+        Err(name) => {
+            node.node
+                .req_client_with_qos::<DatapodMsg, DatapodMsg>(name.as_str(), topic, qos)
+        }
+    };
+    match result {
+        Ok(client) => Box::into_raw(Box::new(PeerbusDatapodReqClient { client })),
+        Err(e) => {
+            set_last_error(e.to_string());
+            ptr::null_mut()
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_req_client_new_with_qos(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_datapod_req_system_client_new_with_qos(
+    node: *const PeerbusNode,
+    topic: *const c_char,
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusDatapodReqClient {
+    clear_last_error();
+    if node.is_null() {
+        set_last_error("null node handle");
+        return ptr::null_mut();
+    }
+    let node = unsafe { &*node };
+    let topic = match unsafe { cstr(topic) } {
+        Ok(t) => t,
+        Err(()) => return ptr::null_mut(),
+    };
+    match node
+        .node
+        .req_with_qos::<DatapodMsg, DatapodMsg>(topic, qos.into())
+    {
+        Ok(client) => Box::into_raw(Box::new(PeerbusDatapodReqClient { client })),
+        Err(e) => {
+            set_last_error(e.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_req_client_free(client: *mut PeerbusDatapodReqClient) {
+    if client.is_null() {
+        return;
+    }
+    unsafe { drop(Box::from_raw(client)) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_req_client_stats(
+    client: *const PeerbusDatapodReqClient,
+) -> PeerbusItemStats {
+    if client.is_null() {
+        return PeerbusItemStats::default();
+    }
+    item_stats_out(unsafe { &*client }.client.stats())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_req_client_call(
+    client: *mut PeerbusDatapodReqClient,
+    type_hash: u64,
+    wire: *const u8,
+    len: usize,
+    out_message: *mut *mut PeerbusDatapodMessage,
+) -> bool {
+    clear_last_error();
+    if client.is_null() || out_message.is_null() {
+        set_last_error("null datapod req client or out pointer");
+        return false;
+    }
+    let client = unsafe { &mut *client };
+    let wire = unsafe { bytes_in(wire, len) };
+    match client.client.call(&DatapodMsg::new(type_hash, wire)) {
+        Ok(res) => {
+            let msg = owned_datapod_message(res.header().type_hash, res.payload());
+            unsafe { *out_message = Box::into_raw(Box::new(msg)) };
+            true
+        }
+        Err(e) => {
+            set_last_error(e.to_string());
+            false
+        }
+    }
+}
+
+// ---- generic datapod req/res server ----
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_req_server_new_with_qos(
+    node: *const PeerbusNode,
+    topic: *const c_char,
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusDatapodReqServer {
+    clear_last_error();
+    if node.is_null() {
+        set_last_error("null node handle");
+        return ptr::null_mut();
+    }
+    let node = unsafe { &*node };
+    let topic = match unsafe { cstr(topic) } {
+        Ok(t) => t,
+        Err(()) => return ptr::null_mut(),
+    };
+    match node
+        .node
+        .req_server_with_qos::<DatapodMsg, DatapodMsg>(topic, qos.into())
+    {
+        Ok(server) => Box::into_raw(Box::new(PeerbusDatapodReqServer { server })),
+        Err(e) => {
+            set_last_error(e.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_req_server_free(server: *mut PeerbusDatapodReqServer) {
+    if server.is_null() {
+        return;
+    }
+    unsafe { drop(Box::from_raw(server)) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_req_server_stats(
+    server: *const PeerbusDatapodReqServer,
+) -> PeerbusItemStats {
+    if server.is_null() {
+        return PeerbusItemStats::default();
+    }
+    item_stats_out(unsafe { &*server }.server.stats())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_req_server_take(
+    server: *mut PeerbusDatapodReqServer,
+    timeout_ms: u64,
+    out_pending: *mut *mut PeerbusPendingDatapodReq,
+) -> i32 {
+    clear_last_error();
+    if server.is_null() || out_pending.is_null() {
+        set_last_error("null datapod req server or out pointer");
+        return -1;
+    }
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        let server_ref = unsafe { &mut *server };
+        match server_ref.server.take_message() {
+            Ok(Some(pending)) => {
+                let (req, reply) = pending.into_parts();
+                let handle = PeerbusPendingDatapodReq {
+                    server,
+                    reply: Some(reply),
+                    request: owned_datapod_message(req.header().type_hash, req.payload()),
+                };
+                unsafe { *out_pending = Box::into_raw(Box::new(handle)) };
+                return 1;
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    unsafe { *out_pending = ptr::null_mut() };
+                    return 0;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Err(e) => {
+                set_last_error(e.to_string());
+                return -1;
+            }
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_pending_datapod_req_request(
+    pending: *const PeerbusPendingDatapodReq,
+) -> *const PeerbusDatapodMessage {
+    if pending.is_null() {
+        return ptr::null();
+    }
+    &unsafe { &*pending }.request as *const PeerbusDatapodMessage
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_pending_datapod_req_reply(
+    pending: *mut PeerbusPendingDatapodReq,
+    type_hash: u64,
+    wire: *const u8,
+    len: usize,
+) -> bool {
+    clear_last_error();
+    if pending.is_null() {
+        set_last_error("null pending datapod req handle");
+        return false;
+    }
+    let pending = unsafe { &mut *pending };
+    let Some(reply) = pending.reply.take() else {
+        set_last_error("pending datapod req already replied");
+        return false;
+    };
+    if pending.server.is_null() {
+        set_last_error("pending datapod req has null server");
+        return false;
+    }
+    let wire = unsafe { bytes_in(wire, len) };
+    let server = unsafe { &mut *pending.server };
+    match server
+        .server
+        .respond_pending(reply, &DatapodMsg::new(type_hash, wire))
+    {
+        Ok(()) => true,
+        Err(e) => {
+            set_last_error(e.to_string());
+            false
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_pending_datapod_req_free(pending: *mut PeerbusPendingDatapodReq) {
+    if pending.is_null() {
+        return;
+    }
+    unsafe { drop(Box::from_raw(pending)) };
+}
+
+// ---- generic datapod que/ans ----
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_que_client_new_with_qos(
+    node: *const PeerbusNode,
     peer: *const c_char,
     topic: *const c_char,
-    qos: QuicbitTopicQos,
-) -> *mut QuicbitReqClient {
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusDatapodQueClient {
+    clear_last_error();
+    if node.is_null() {
+        set_last_error("null node handle");
+        return ptr::null_mut();
+    }
+    let node = unsafe { &*node };
+    let peer = match unsafe { peer_arg(peer) } {
+        Ok(p) => p,
+        Err(()) => return ptr::null_mut(),
+    };
+    let topic = match unsafe { cstr(topic) } {
+        Ok(t) => t,
+        Err(()) => return ptr::null_mut(),
+    };
+    let qos = qos.into();
+    let result = match peer {
+        Ok(addr) => node
+            .node
+            .que_client_with_qos::<DatapodMsg, DatapodMsg>(addr, topic, qos),
+        Err(name) => {
+            node.node
+                .que_client_with_qos::<DatapodMsg, DatapodMsg>(name.as_str(), topic, qos)
+        }
+    };
+    match result {
+        Ok(client) => Box::into_raw(Box::new(PeerbusDatapodQueClient { client })),
+        Err(e) => {
+            set_last_error(e.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_que_system_client_new_with_qos(
+    node: *const PeerbusNode,
+    topic: *const c_char,
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusDatapodQueClient {
+    clear_last_error();
+    if node.is_null() {
+        set_last_error("null node handle");
+        return ptr::null_mut();
+    }
+    let node = unsafe { &*node };
+    let topic = match unsafe { cstr(topic) } {
+        Ok(t) => t,
+        Err(()) => return ptr::null_mut(),
+    };
+    match node
+        .node
+        .que_with_qos::<DatapodMsg, DatapodMsg>(topic, qos.into())
+    {
+        Ok(client) => Box::into_raw(Box::new(PeerbusDatapodQueClient { client })),
+        Err(e) => {
+            set_last_error(e.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_que_client_free(client: *mut PeerbusDatapodQueClient) {
+    if client.is_null() {
+        return;
+    }
+    unsafe { drop(Box::from_raw(client)) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_que_client_stats(
+    client: *const PeerbusDatapodQueClient,
+) -> PeerbusItemStats {
+    if client.is_null() {
+        return PeerbusItemStats::default();
+    }
+    item_stats_out(unsafe { &*client }.client.stats())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_que_client_send(
+    client: *mut PeerbusDatapodQueClient,
+    type_hash: u64,
+    wire: *const u8,
+    len: usize,
+    out_messages: *mut *mut PeerbusDatapodMessages,
+) -> bool {
+    clear_last_error();
+    if client.is_null() || out_messages.is_null() {
+        set_last_error("null datapod que client or out pointer");
+        return false;
+    }
+    let client = unsafe { &mut *client };
+    let wire = unsafe { bytes_in(wire, len) };
+    let mut answers = match client.client.send(&DatapodMsg::new(type_hash, wire)) {
+        Ok(answers) => answers,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return false;
+        }
+    };
+    let mut messages = Vec::new();
+    loop {
+        match answers.next() {
+            Ok(Some(ans)) => {
+                messages.push(owned_datapod_message(ans.header().type_hash, ans.payload()))
+            }
+            Ok(None) => break,
+            Err(e) => {
+                set_last_error(e.to_string());
+                return false;
+            }
+        }
+    }
+    unsafe { *out_messages = Box::into_raw(Box::new(PeerbusDatapodMessages { messages })) };
+    true
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_ans_server_new_with_qos(
+    node: *const PeerbusNode,
+    topic: *const c_char,
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusDatapodAnsServer {
+    clear_last_error();
+    if node.is_null() {
+        set_last_error("null node handle");
+        return ptr::null_mut();
+    }
+    let node = unsafe { &*node };
+    let topic = match unsafe { cstr(topic) } {
+        Ok(t) => t,
+        Err(()) => return ptr::null_mut(),
+    };
+    match node
+        .node
+        .ans_with_qos::<DatapodMsg, DatapodMsg>(topic, qos.into())
+    {
+        Ok(server) => Box::into_raw(Box::new(PeerbusDatapodAnsServer { server })),
+        Err(e) => {
+            set_last_error(e.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_ans_server_free(server: *mut PeerbusDatapodAnsServer) {
+    if server.is_null() {
+        return;
+    }
+    unsafe { drop(Box::from_raw(server)) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_ans_server_stats(
+    server: *const PeerbusDatapodAnsServer,
+) -> PeerbusItemStats {
+    if server.is_null() {
+        return PeerbusItemStats::default();
+    }
+    item_stats_out(unsafe { &*server }.server.stats())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_ans_server_take(
+    server: *mut PeerbusDatapodAnsServer,
+    timeout_ms: u64,
+    out_pending: *mut *mut PeerbusPendingDatapodQue,
+) -> i32 {
+    clear_last_error();
+    if server.is_null() || out_pending.is_null() {
+        set_last_error("null datapod ans server or out pointer");
+        return -1;
+    }
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        let server_ref = unsafe { &mut *server };
+        match server_ref.server.take_message() {
+            Ok(Some(pending)) => {
+                let (que, answers) = pending.into_parts();
+                let handle = PeerbusPendingDatapodQue {
+                    server,
+                    answers: Some(answers),
+                    request: owned_datapod_message(que.header().type_hash, que.payload()),
+                };
+                unsafe { *out_pending = Box::into_raw(Box::new(handle)) };
+                return 1;
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    unsafe { *out_pending = ptr::null_mut() };
+                    return 0;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Err(e) => {
+                set_last_error(e.to_string());
+                return -1;
+            }
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_pending_datapod_que_request(
+    pending: *const PeerbusPendingDatapodQue,
+) -> *const PeerbusDatapodMessage {
+    if pending.is_null() {
+        return ptr::null();
+    }
+    &unsafe { &*pending }.request as *const PeerbusDatapodMessage
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_pending_datapod_que_send(
+    pending: *mut PeerbusPendingDatapodQue,
+    type_hash: u64,
+    wire: *const u8,
+    len: usize,
+) -> bool {
+    clear_last_error();
+    if pending.is_null() {
+        set_last_error("null pending datapod que handle");
+        return false;
+    }
+    let pending = unsafe { &mut *pending };
+    let Some(answers) = pending.answers else {
+        set_last_error("pending datapod que already finished");
+        return false;
+    };
+    if pending.server.is_null() {
+        set_last_error("pending datapod que has null server");
+        return false;
+    }
+    let wire = unsafe { bytes_in(wire, len) };
+    let server = unsafe { &mut *pending.server };
+    match server
+        .server
+        .send_pending(answers, &DatapodMsg::new(type_hash, wire))
+    {
+        Ok(()) => true,
+        Err(e) => {
+            set_last_error(e.to_string());
+            false
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_pending_datapod_que_finish(
+    pending: *mut PeerbusPendingDatapodQue,
+) -> bool {
+    clear_last_error();
+    if pending.is_null() {
+        set_last_error("null pending datapod que handle");
+        return false;
+    }
+    let pending = unsafe { &mut *pending };
+    let Some(answers) = pending.answers.take() else {
+        return true;
+    };
+    if pending.server.is_null() {
+        set_last_error("pending datapod que has null server");
+        return false;
+    }
+    let server = unsafe { &mut *pending.server };
+    match server.server.finish_pending(answers) {
+        Ok(()) => true,
+        Err(e) => {
+            set_last_error(e.to_string());
+            false
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_pending_datapod_que_free(pending: *mut PeerbusPendingDatapodQue) {
+    if pending.is_null() {
+        return;
+    }
+    unsafe { drop(Box::from_raw(pending)) };
+}
+
+// ---- generic datapod put/ack ----
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_put_client_new_with_qos(
+    node: *const PeerbusNode,
+    peer: *const c_char,
+    topic: *const c_char,
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusDatapodPutClient {
+    clear_last_error();
+    if node.is_null() {
+        set_last_error("null node handle");
+        return ptr::null_mut();
+    }
+    let node = unsafe { &*node };
+    let peer = match unsafe { peer_arg(peer) } {
+        Ok(p) => p,
+        Err(()) => return ptr::null_mut(),
+    };
+    let topic = match unsafe { cstr(topic) } {
+        Ok(t) => t,
+        Err(()) => return ptr::null_mut(),
+    };
+    let qos = qos.into();
+    let result = match peer {
+        Ok(addr) => node
+            .node
+            .put_client_with_qos::<DatapodMsg, DatapodMsg>(addr, topic, qos),
+        Err(name) => {
+            node.node
+                .put_client_with_qos::<DatapodMsg, DatapodMsg>(name.as_str(), topic, qos)
+        }
+    };
+    match result {
+        Ok(client) => Box::into_raw(Box::new(PeerbusDatapodPutClient { client })),
+        Err(e) => {
+            set_last_error(e.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_put_system_client_new_with_qos(
+    node: *const PeerbusNode,
+    topic: *const c_char,
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusDatapodPutClient {
+    clear_last_error();
+    if node.is_null() {
+        set_last_error("null node handle");
+        return ptr::null_mut();
+    }
+    let node = unsafe { &*node };
+    let topic = match unsafe { cstr(topic) } {
+        Ok(t) => t,
+        Err(()) => return ptr::null_mut(),
+    };
+    match node
+        .node
+        .put_with_qos::<DatapodMsg, DatapodMsg>(topic, qos.into())
+    {
+        Ok(client) => Box::into_raw(Box::new(PeerbusDatapodPutClient { client })),
+        Err(e) => {
+            set_last_error(e.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_put_client_free(client: *mut PeerbusDatapodPutClient) {
+    if client.is_null() {
+        return;
+    }
+    unsafe { drop(Box::from_raw(client)) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_put_client_stats(
+    client: *const PeerbusDatapodPutClient,
+) -> PeerbusItemStats {
+    if client.is_null() {
+        return PeerbusItemStats::default();
+    }
+    item_stats_out(unsafe { &*client }.client.stats())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_put_client_upload(
+    client: *mut PeerbusDatapodPutClient,
+    items: *const PeerbusDatapodRawMessage,
+    len: usize,
+    out_message: *mut *mut PeerbusDatapodMessage,
+) -> bool {
+    clear_last_error();
+    if client.is_null() || out_message.is_null() {
+        set_last_error("null datapod put client or out pointer");
+        return false;
+    }
+    let raw_items = match unsafe { datapod_raw_messages_in(items, len) } {
+        Ok(items) => items,
+        Err(()) => return false,
+    };
+    let client = unsafe { &mut *client };
+    let mut sender = match client.client.open() {
+        Ok(sender) => sender,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return false;
+        }
+    };
+    for raw in raw_items {
+        if let Err(e) = sender.send(&message_from_datapod_raw(*raw)) {
+            set_last_error(e.to_string());
+            return false;
+        }
+    }
+    match sender.finish() {
+        Ok(ack) => {
+            unsafe {
+                *out_message = Box::into_raw(Box::new(owned_datapod_message(
+                    ack.header().type_hash,
+                    ack.payload(),
+                )));
+            }
+            true
+        }
+        Err(e) => {
+            set_last_error(e.to_string());
+            false
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_put_client_put(
+    client: *mut PeerbusDatapodPutClient,
+    items: *const PeerbusDatapodRawMessage,
+    len: usize,
+    out_message: *mut *mut PeerbusDatapodMessage,
+) -> bool {
+    peerbus_datapod_put_client_upload(client, items, len, out_message)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_put_client_open(
+    client: *mut PeerbusDatapodPutClient,
+    out_upload: *mut *mut PeerbusDatapodPutUpload,
+) -> bool {
+    clear_last_error();
+    if client.is_null() || out_upload.is_null() {
+        set_last_error("null datapod put client or out pointer");
+        return false;
+    }
+    let client_ref = unsafe { &mut *client };
+    match client_ref.client.open_upload() {
+        Ok(token) => {
+            unsafe {
+                *out_upload = Box::into_raw(Box::new(PeerbusDatapodPutUpload {
+                    client,
+                    token: Some(token),
+                }));
+            }
+            true
+        }
+        Err(e) => {
+            set_last_error(e.to_string());
+            false
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_put_client_open_sender(
+    client: *mut PeerbusDatapodPutClient,
+    out_sender: *mut *mut PeerbusDatapodPutSender,
+) -> bool {
+    peerbus_datapod_put_client_open(client, out_sender)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_put_upload_send(
+    upload: *mut PeerbusDatapodPutUpload,
+    type_hash: u64,
+    wire: *const u8,
+    len: usize,
+) -> bool {
+    clear_last_error();
+    if upload.is_null() {
+        set_last_error("null datapod put upload handle");
+        return false;
+    }
+    let upload = unsafe { &mut *upload };
+    let Some(token) = upload.token else {
+        set_last_error("datapod put upload already finished");
+        return false;
+    };
+    if upload.client.is_null() {
+        set_last_error("datapod put upload has null client");
+        return false;
+    }
+    let wire = unsafe { bytes_in(wire, len) };
+    let client = unsafe { &mut *upload.client };
+    match client
+        .client
+        .send_pending(token, &DatapodMsg::new(type_hash, wire))
+    {
+        Ok(()) => true,
+        Err(e) => {
+            set_last_error(e.to_string());
+            false
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_put_sender_send(
+    sender: *mut PeerbusDatapodPutSender,
+    type_hash: u64,
+    wire: *const u8,
+    len: usize,
+) -> bool {
+    peerbus_datapod_put_upload_send(sender, type_hash, wire, len)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_put_upload_finish(
+    upload: *mut PeerbusDatapodPutUpload,
+    out_message: *mut *mut PeerbusDatapodMessage,
+) -> bool {
+    clear_last_error();
+    if upload.is_null() || out_message.is_null() {
+        set_last_error("null datapod put upload or out pointer");
+        return false;
+    }
+    let upload = unsafe { &mut *upload };
+    let Some(token) = upload.token.take() else {
+        set_last_error("datapod put upload already finished");
+        return false;
+    };
+    if upload.client.is_null() {
+        set_last_error("datapod put upload has null client");
+        return false;
+    }
+    let client = unsafe { &mut *upload.client };
+    match client.client.finish_pending(token) {
+        Ok(ack) => {
+            unsafe {
+                *out_message = Box::into_raw(Box::new(owned_datapod_message(
+                    ack.header().type_hash,
+                    ack.payload(),
+                )));
+            }
+            true
+        }
+        Err(e) => {
+            set_last_error(e.to_string());
+            false
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_put_sender_finish(
+    sender: *mut PeerbusDatapodPutSender,
+    out_message: *mut *mut PeerbusDatapodMessage,
+) -> bool {
+    peerbus_datapod_put_upload_finish(sender, out_message)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_put_upload_free(upload: *mut PeerbusDatapodPutUpload) {
+    if upload.is_null() {
+        return;
+    }
+    unsafe { drop(Box::from_raw(upload)) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_put_sender_free(sender: *mut PeerbusDatapodPutSender) {
+    peerbus_datapod_put_upload_free(sender);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_ack_server_new_with_qos(
+    node: *const PeerbusNode,
+    topic: *const c_char,
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusDatapodAckServer {
+    clear_last_error();
+    if node.is_null() {
+        set_last_error("null node handle");
+        return ptr::null_mut();
+    }
+    let node = unsafe { &*node };
+    let topic = match unsafe { cstr(topic) } {
+        Ok(t) => t,
+        Err(()) => return ptr::null_mut(),
+    };
+    match node
+        .node
+        .ack_with_qos::<DatapodMsg, DatapodMsg>(topic, qos.into())
+    {
+        Ok(server) => Box::into_raw(Box::new(PeerbusDatapodAckServer { server })),
+        Err(e) => {
+            set_last_error(e.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_ack_server_free(server: *mut PeerbusDatapodAckServer) {
+    if server.is_null() {
+        return;
+    }
+    unsafe { drop(Box::from_raw(server)) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_ack_server_stats(
+    server: *const PeerbusDatapodAckServer,
+) -> PeerbusItemStats {
+    if server.is_null() {
+        return PeerbusItemStats::default();
+    }
+    item_stats_out(unsafe { &*server }.server.stats())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_ack_server_take(
+    server: *mut PeerbusDatapodAckServer,
+    timeout_ms: u64,
+    out_puts: *mut *mut PeerbusDatapodPuts,
+) -> i32 {
+    clear_last_error();
+    if server.is_null() || out_puts.is_null() {
+        set_last_error("null datapod ack server or out pointer");
+        return -1;
+    }
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        let server_ref = unsafe { &mut *server };
+        match server_ref.server.take_message() {
+            Ok(Some(pending)) => {
+                let (_req_id, first, done, token) = pending.into_parts();
+                let handle = PeerbusDatapodPuts {
+                    server,
+                    token: Some(token),
+                    first: first
+                        .map(|msg| owned_datapod_message(msg.header().type_hash, msg.payload())),
+                    done,
+                };
+                unsafe { *out_puts = Box::into_raw(Box::new(handle)) };
+                return 1;
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    unsafe { *out_puts = ptr::null_mut() };
+                    return 0;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Err(e) => {
+                set_last_error(e.to_string());
+                return -1;
+            }
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_puts_next(
+    puts: *mut PeerbusDatapodPuts,
+    out_message: *mut *mut PeerbusDatapodMessage,
+) -> i32 {
+    clear_last_error();
+    if puts.is_null() || out_message.is_null() {
+        set_last_error("null datapod puts or out pointer");
+        return -1;
+    }
+    let puts = unsafe { &mut *puts };
+    if let Some(first) = puts.first.take() {
+        unsafe { *out_message = Box::into_raw(Box::new(first)) };
+        return 1;
+    }
+    if puts.done {
+        unsafe { *out_message = ptr::null_mut() };
+        return 0;
+    }
+    let Some(token) = puts.token else {
+        set_last_error("datapod puts handle already acked or closed");
+        return -1;
+    };
+    if puts.server.is_null() {
+        set_last_error("datapod puts handle has null server");
+        return -1;
+    }
+    let server = unsafe { &mut *puts.server };
+    match server.server.next_pending(token) {
+        Ok(Some(msg)) => {
+            unsafe {
+                *out_message = Box::into_raw(Box::new(owned_datapod_message(
+                    msg.header().type_hash,
+                    msg.payload(),
+                )));
+            }
+            1
+        }
+        Ok(None) => {
+            puts.done = true;
+            unsafe { *out_message = ptr::null_mut() };
+            0
+        }
+        Err(e) => {
+            set_last_error(e.to_string());
+            -1
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_puts_ack(
+    puts: *mut PeerbusDatapodPuts,
+    type_hash: u64,
+    wire: *const u8,
+    len: usize,
+) -> bool {
+    clear_last_error();
+    if puts.is_null() {
+        set_last_error("null datapod puts handle");
+        return false;
+    }
+    let puts = unsafe { &mut *puts };
+    let Some(token) = puts.token.take() else {
+        set_last_error("datapod puts handle already acked or closed");
+        return false;
+    };
+    if puts.server.is_null() {
+        set_last_error("datapod puts handle has null server");
+        return false;
+    }
+    let wire = unsafe { bytes_in(wire, len) };
+    let server = unsafe { &mut *puts.server };
+    match server
+        .server
+        .ack_pending(token, &DatapodMsg::new(type_hash, wire))
+    {
+        Ok(()) => true,
+        Err(e) => {
+            set_last_error(e.to_string());
+            false
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_puts_free(puts: *mut PeerbusDatapodPuts) {
+    if puts.is_null() {
+        return;
+    }
+    let puts_ref = unsafe { &mut *puts };
+    if let Some(token) = puts_ref.token.take()
+        && !puts_ref.server.is_null()
+    {
+        let server = unsafe { &mut *puts_ref.server };
+        server.server.close_pending(token);
+    }
+    unsafe { drop(Box::from_raw(puts)) };
+}
+
+// ---- generic datapod pip ----
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_pip_client_new_with_qos(
+    node: *const PeerbusNode,
+    peer: *const c_char,
+    topic: *const c_char,
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusDatapodPipClient {
+    clear_last_error();
+    if node.is_null() {
+        set_last_error("null node handle");
+        return ptr::null_mut();
+    }
+    let node = unsafe { &*node };
+    let peer = match unsafe { peer_arg(peer) } {
+        Ok(p) => p,
+        Err(()) => return ptr::null_mut(),
+    };
+    let topic = match unsafe { cstr(topic) } {
+        Ok(t) => t,
+        Err(()) => return ptr::null_mut(),
+    };
+    let qos = qos.into();
+    let result = match peer {
+        Ok(addr) => node
+            .node
+            .pip_client_with_qos::<DatapodMsg, DatapodMsg>(addr, topic, qos),
+        Err(name) => {
+            node.node
+                .pip_client_with_qos::<DatapodMsg, DatapodMsg>(name.as_str(), topic, qos)
+        }
+    };
+    match result {
+        Ok(client) => Box::into_raw(Box::new(PeerbusDatapodPipClient { client })),
+        Err(e) => {
+            set_last_error(e.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_pip_system_client_new_with_qos(
+    node: *const PeerbusNode,
+    topic: *const c_char,
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusDatapodPipClient {
+    clear_last_error();
+    if node.is_null() {
+        set_last_error("null node handle");
+        return ptr::null_mut();
+    }
+    let node = unsafe { &*node };
+    let topic = match unsafe { cstr(topic) } {
+        Ok(t) => t,
+        Err(()) => return ptr::null_mut(),
+    };
+    match node
+        .node
+        .pip_with_qos::<DatapodMsg, DatapodMsg>(topic, qos.into())
+    {
+        Ok(client) => Box::into_raw(Box::new(PeerbusDatapodPipClient { client })),
+        Err(e) => {
+            set_last_error(e.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_pip_client_free(client: *mut PeerbusDatapodPipClient) {
+    if client.is_null() {
+        return;
+    }
+    unsafe { drop(Box::from_raw(client)) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_pip_client_stats(
+    client: *const PeerbusDatapodPipClient,
+) -> PeerbusItemStats {
+    if client.is_null() {
+        return PeerbusItemStats::default();
+    }
+    item_stats_out(unsafe { &*client }.client.stats())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_pip_client_exchange(
+    client: *mut PeerbusDatapodPipClient,
+    items: *const PeerbusDatapodRawMessage,
+    len: usize,
+    out_messages: *mut *mut PeerbusDatapodMessages,
+) -> bool {
+    clear_last_error();
+    if client.is_null() || out_messages.is_null() {
+        set_last_error("null datapod pip client or out pointer");
+        return false;
+    }
+    let raw_items = match unsafe { datapod_raw_messages_in(items, len) } {
+        Ok(items) => items,
+        Err(()) => return false,
+    };
+    let client = unsafe { &mut *client };
+    let mut pip = match client.client.open() {
+        Ok(pip) => pip,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return false;
+        }
+    };
+    for raw in raw_items {
+        if let Err(e) = pip.send(&message_from_datapod_raw(*raw)) {
+            set_last_error(e.to_string());
+            return false;
+        }
+    }
+    if let Err(e) = pip.finish_send() {
+        set_last_error(e.to_string());
+        return false;
+    }
+    let mut messages = Vec::new();
+    loop {
+        match pip.next() {
+            Ok(Some(msg)) => {
+                messages.push(owned_datapod_message(msg.header().type_hash, msg.payload()))
+            }
+            Ok(None) => break,
+            Err(e) => {
+                set_last_error(e.to_string());
+                return false;
+            }
+        }
+    }
+    unsafe { *out_messages = Box::into_raw(Box::new(PeerbusDatapodMessages { messages })) };
+    true
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_pip_client_open(
+    client: *mut PeerbusDatapodPipClient,
+    out_pip: *mut *mut PeerbusDatapodPip,
+) -> bool {
+    clear_last_error();
+    if client.is_null() || out_pip.is_null() {
+        set_last_error("null datapod pip client or out pointer");
+        return false;
+    }
+    let client_ref = unsafe { &mut *client };
+    match client_ref.client.open_session() {
+        Ok(token) => {
+            unsafe {
+                *out_pip = Box::into_raw(Box::new(PeerbusDatapodPip {
+                    client,
+                    token: Some(token),
+                    incoming_done: false,
+                    outgoing_done: false,
+                }));
+            }
+            true
+        }
+        Err(e) => {
+            set_last_error(e.to_string());
+            false
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_pip_send(
+    pip: *mut PeerbusDatapodPip,
+    type_hash: u64,
+    wire: *const u8,
+    len: usize,
+) -> bool {
+    clear_last_error();
+    if pip.is_null() {
+        set_last_error("null datapod pip handle");
+        return false;
+    }
+    let pip = unsafe { &mut *pip };
+    if pip.outgoing_done {
+        set_last_error("datapod pip outgoing direction is done");
+        return false;
+    }
+    let Some(token) = pip.token else {
+        set_last_error("datapod pip session is closed");
+        return false;
+    };
+    if pip.client.is_null() {
+        set_last_error("datapod pip session has null client");
+        return false;
+    }
+    let wire = unsafe { bytes_in(wire, len) };
+    let client = unsafe { &mut *pip.client };
+    match client
+        .client
+        .send_pending(token, &DatapodMsg::new(type_hash, wire))
+    {
+        Ok(()) => true,
+        Err(e) => {
+            set_last_error(e.to_string());
+            false
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_pip_finish_send(pip: *mut PeerbusDatapodPip) -> bool {
+    clear_last_error();
+    if pip.is_null() {
+        set_last_error("null datapod pip handle");
+        return false;
+    }
+    let pip = unsafe { &mut *pip };
+    if pip.outgoing_done {
+        return true;
+    }
+    let Some(token) = pip.token else {
+        set_last_error("datapod pip session is closed");
+        return false;
+    };
+    if pip.client.is_null() {
+        set_last_error("datapod pip session has null client");
+        return false;
+    }
+    let client = unsafe { &mut *pip.client };
+    match client.client.finish_send_pending(token) {
+        Ok(()) => {
+            pip.outgoing_done = true;
+            true
+        }
+        Err(e) => {
+            set_last_error(e.to_string());
+            false
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_pip_next(
+    pip: *mut PeerbusDatapodPip,
+    out_message: *mut *mut PeerbusDatapodMessage,
+) -> i32 {
+    clear_last_error();
+    if pip.is_null() || out_message.is_null() {
+        set_last_error("null datapod pip handle or out pointer");
+        return -1;
+    }
+    let pip = unsafe { &mut *pip };
+    if pip.incoming_done {
+        unsafe { *out_message = ptr::null_mut() };
+        return 0;
+    }
+    let Some(token) = pip.token else {
+        set_last_error("datapod pip session is closed");
+        return -1;
+    };
+    if pip.client.is_null() {
+        set_last_error("datapod pip session has null client");
+        return -1;
+    }
+    let client = unsafe { &mut *pip.client };
+    match client.client.next_pending(token) {
+        Ok(Some(msg)) => {
+            unsafe {
+                *out_message = Box::into_raw(Box::new(owned_datapod_message(
+                    msg.header().type_hash,
+                    msg.payload(),
+                )));
+            }
+            1
+        }
+        Ok(None) => {
+            pip.incoming_done = true;
+            unsafe { *out_message = ptr::null_mut() };
+            0
+        }
+        Err(e) => {
+            set_last_error(e.to_string());
+            -1
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_pip_close(pip: *mut PeerbusDatapodPip) {
+    if pip.is_null() {
+        return;
+    }
+    let pip_ref = unsafe { &mut *pip };
+    if let Some(token) = pip_ref.token.take()
+        && !pip_ref.client.is_null()
+    {
+        let client = unsafe { &mut *pip_ref.client };
+        client.client.close_session(token);
+    }
+    pip_ref.incoming_done = true;
+    pip_ref.outgoing_done = true;
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_pip_free(pip: *mut PeerbusDatapodPip) {
+    if pip.is_null() {
+        return;
+    }
+    peerbus_datapod_pip_close(pip);
+    unsafe { drop(Box::from_raw(pip)) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_pip_server_new_with_qos(
+    node: *const PeerbusNode,
+    topic: *const c_char,
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusDatapodPipServer {
+    clear_last_error();
+    if node.is_null() {
+        set_last_error("null node handle");
+        return ptr::null_mut();
+    }
+    let node = unsafe { &*node };
+    let topic = match unsafe { cstr(topic) } {
+        Ok(t) => t,
+        Err(()) => return ptr::null_mut(),
+    };
+    match node
+        .node
+        .pip_server_with_qos::<DatapodMsg, DatapodMsg>(topic, qos.into())
+    {
+        Ok(server) => Box::into_raw(Box::new(PeerbusDatapodPipServer { server })),
+        Err(e) => {
+            set_last_error(e.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_pip_server_free(server: *mut PeerbusDatapodPipServer) {
+    if server.is_null() {
+        return;
+    }
+    unsafe { drop(Box::from_raw(server)) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_pip_server_stats(
+    server: *const PeerbusDatapodPipServer,
+) -> PeerbusItemStats {
+    if server.is_null() {
+        return PeerbusItemStats::default();
+    }
+    item_stats_out(unsafe { &*server }.server.stats())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_datapod_pip_server_take(
+    server: *mut PeerbusDatapodPipServer,
+    timeout_ms: u64,
+    out_pending: *mut *mut PeerbusPendingDatapodPip,
+) -> i32 {
+    clear_last_error();
+    if server.is_null() || out_pending.is_null() {
+        set_last_error("null datapod pip server or out pointer");
+        return -1;
+    }
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        let server_ref = unsafe { &mut *server };
+        match server_ref.server.take_message() {
+            Ok(Some(pending)) => {
+                let (_session_id, first, incoming_done, token) = pending.into_parts();
+                let handle = PeerbusPendingDatapodPip {
+                    server,
+                    token: Some(token),
+                    first: first
+                        .map(|msg| owned_datapod_message(msg.header().type_hash, msg.payload())),
+                    incoming_done,
+                    outgoing_done: false,
+                };
+                unsafe { *out_pending = Box::into_raw(Box::new(handle)) };
+                return 1;
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    unsafe { *out_pending = ptr::null_mut() };
+                    return 0;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Err(e) => {
+                set_last_error(e.to_string());
+                return -1;
+            }
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_pending_datapod_pip_next(
+    pip: *mut PeerbusPendingDatapodPip,
+    out_message: *mut *mut PeerbusDatapodMessage,
+) -> i32 {
+    clear_last_error();
+    if pip.is_null() || out_message.is_null() {
+        set_last_error("null pending datapod pip or out pointer");
+        return -1;
+    }
+    let pip = unsafe { &mut *pip };
+    if let Some(first) = pip.first.take() {
+        unsafe { *out_message = Box::into_raw(Box::new(first)) };
+        return 1;
+    }
+    if pip.incoming_done {
+        unsafe { *out_message = ptr::null_mut() };
+        return 0;
+    }
+    let Some(token) = pip.token else {
+        set_last_error("pending datapod pip is closed");
+        return -1;
+    };
+    if pip.server.is_null() {
+        set_last_error("pending datapod pip has null server");
+        return -1;
+    }
+    let server = unsafe { &mut *pip.server };
+    match server.server.next_pending(token) {
+        Ok(Some(msg)) => {
+            unsafe {
+                *out_message = Box::into_raw(Box::new(owned_datapod_message(
+                    msg.header().type_hash,
+                    msg.payload(),
+                )));
+            }
+            1
+        }
+        Ok(None) => {
+            pip.incoming_done = true;
+            unsafe { *out_message = ptr::null_mut() };
+            0
+        }
+        Err(e) => {
+            set_last_error(e.to_string());
+            -1
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_pending_datapod_pip_send(
+    pip: *mut PeerbusPendingDatapodPip,
+    type_hash: u64,
+    wire: *const u8,
+    len: usize,
+) -> bool {
+    clear_last_error();
+    if pip.is_null() {
+        set_last_error("null pending datapod pip handle");
+        return false;
+    }
+    let pip = unsafe { &mut *pip };
+    if pip.outgoing_done {
+        set_last_error("pending datapod pip outgoing direction is done");
+        return false;
+    }
+    let Some(token) = pip.token else {
+        set_last_error("pending datapod pip is closed");
+        return false;
+    };
+    if pip.server.is_null() {
+        set_last_error("pending datapod pip has null server");
+        return false;
+    }
+    let wire = unsafe { bytes_in(wire, len) };
+    let server = unsafe { &mut *pip.server };
+    match server
+        .server
+        .send_pending(token, &DatapodMsg::new(type_hash, wire))
+    {
+        Ok(()) => true,
+        Err(e) => {
+            set_last_error(e.to_string());
+            false
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_pending_datapod_pip_finish_send(
+    pip: *mut PeerbusPendingDatapodPip,
+) -> bool {
+    clear_last_error();
+    if pip.is_null() {
+        set_last_error("null pending datapod pip handle");
+        return false;
+    }
+    let pip = unsafe { &mut *pip };
+    if pip.outgoing_done {
+        return true;
+    }
+    let Some(token) = pip.token else {
+        set_last_error("pending datapod pip is closed");
+        return false;
+    };
+    if pip.server.is_null() {
+        set_last_error("pending datapod pip has null server");
+        return false;
+    }
+    let server = unsafe { &mut *pip.server };
+    match server.server.finish_send_pending(token) {
+        Ok(()) => {
+            pip.outgoing_done = true;
+            true
+        }
+        Err(e) => {
+            set_last_error(e.to_string());
+            false
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_pending_datapod_pip_close(pip: *mut PeerbusPendingDatapodPip) {
+    if pip.is_null() {
+        return;
+    }
+    let pip_ref = unsafe { &mut *pip };
+    if let Some(token) = pip_ref.token.take()
+        && !pip_ref.server.is_null()
+    {
+        let server = unsafe { &mut *pip_ref.server };
+        server.server.close_pending(token);
+    }
+    pip_ref.first = None;
+    pip_ref.incoming_done = true;
+    pip_ref.outgoing_done = true;
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_pending_datapod_pip_free(pip: *mut PeerbusPendingDatapodPip) {
+    if pip.is_null() {
+        return;
+    }
+    peerbus_pending_datapod_pip_close(pip);
+    unsafe { drop(Box::from_raw(pip)) };
+}
+
+// ---- req/res client ----
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_req_client_new(
+    node: *const PeerbusNode,
+    peer: *const c_char,
+    topic: *const c_char,
+) -> *mut PeerbusReqClient {
+    peerbus_req_client_new_with_qos(node, peer, topic, peerbus_topic_qos_reliable())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_req_client_new_with_qos(
+    node: *const PeerbusNode,
+    peer: *const c_char,
+    topic: *const c_char,
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusReqClient {
     clear_last_error();
     if node.is_null() {
         set_last_error("null node handle");
@@ -1260,7 +3411,7 @@ pub extern "C" fn quicbit_req_client_new_with_qos(
             .req_client_with_qos::<RawMsg, RawMsg>(name.as_str(), topic, qos),
     };
     match result {
-        Ok(client) => Box::into_raw(Box::new(QuicbitReqClient { client })),
+        Ok(client) => Box::into_raw(Box::new(PeerbusReqClient { client })),
         Err(e) => {
             set_last_error(e.to_string());
             ptr::null_mut()
@@ -1269,11 +3420,11 @@ pub extern "C" fn quicbit_req_client_new_with_qos(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_req_system_client_new_with_qos(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_req_system_client_new_with_qos(
+    node: *const PeerbusNode,
     topic: *const c_char,
-    qos: QuicbitTopicQos,
-) -> *mut QuicbitReqClient {
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusReqClient {
     clear_last_error();
     if node.is_null() {
         set_last_error("null node handle");
@@ -1285,7 +3436,7 @@ pub extern "C" fn quicbit_req_system_client_new_with_qos(
         Err(()) => return ptr::null_mut(),
     };
     match node.node.req_with_qos::<RawMsg, RawMsg>(topic, qos.into()) {
-        Ok(client) => Box::into_raw(Box::new(QuicbitReqClient { client })),
+        Ok(client) => Box::into_raw(Box::new(PeerbusReqClient { client })),
         Err(e) => {
             set_last_error(e.to_string());
             ptr::null_mut()
@@ -1294,7 +3445,7 @@ pub extern "C" fn quicbit_req_system_client_new_with_qos(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_req_client_free(client: *mut QuicbitReqClient) {
+pub extern "C" fn peerbus_req_client_free(client: *mut PeerbusReqClient) {
     if client.is_null() {
         return;
     }
@@ -1303,23 +3454,23 @@ pub extern "C" fn quicbit_req_client_free(client: *mut QuicbitReqClient) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_req_client_stats(client: *const QuicbitReqClient) -> QuicbitItemStats {
+pub extern "C" fn peerbus_req_client_stats(client: *const PeerbusReqClient) -> PeerbusItemStats {
     if client.is_null() {
-        return QuicbitItemStats::default();
+        return PeerbusItemStats::default();
     }
     item_stats_out(unsafe { &*client }.client.stats())
 }
 
 /// Send a request and block for the response. Returns false on failure;
 /// on success writes an owned response message to `*out_message` (free
-/// with [`quicbit_message_free`]).
+/// with [`peerbus_message_free`]).
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_req_client_call(
-    client: *mut QuicbitReqClient,
+pub extern "C" fn peerbus_req_client_call(
+    client: *mut PeerbusReqClient,
     kind: u64,
     data: *const u8,
     len: usize,
-    out_message: *mut *mut QuicbitMessage,
+    out_message: *mut *mut PeerbusMessage,
 ) -> bool {
     clear_last_error();
     if client.is_null() || out_message.is_null() {
@@ -1331,7 +3482,7 @@ pub extern "C" fn quicbit_req_client_call(
     let bytes = unsafe { bytes_in(data, len) };
     match client.client.call(&RawMsg::new(kind, bytes)) {
         Ok(res) => {
-            let msg = QuicbitMessage {
+            let msg = PeerbusMessage {
                 kind: res.header().kind,
                 data: res.payload().to_vec(),
             };
@@ -1349,19 +3500,19 @@ pub extern "C" fn quicbit_req_client_call(
 // ---- req/res server ----
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_req_server_new(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_req_server_new(
+    node: *const PeerbusNode,
     topic: *const c_char,
-) -> *mut QuicbitReqServer {
-    quicbit_req_server_new_with_qos(node, topic, quicbit_topic_qos_reliable())
+) -> *mut PeerbusReqServer {
+    peerbus_req_server_new_with_qos(node, topic, peerbus_topic_qos_reliable())
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_req_server_new_with_qos(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_req_server_new_with_qos(
+    node: *const PeerbusNode,
     topic: *const c_char,
-    qos: QuicbitTopicQos,
-) -> *mut QuicbitReqServer {
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusReqServer {
     clear_last_error();
     if node.is_null() {
         set_last_error("null node handle");
@@ -1377,7 +3528,7 @@ pub extern "C" fn quicbit_req_server_new_with_qos(
         .node
         .req_server_with_qos::<RawMsg, RawMsg>(topic, qos.into())
     {
-        Ok(server) => Box::into_raw(Box::new(QuicbitReqServer { server })),
+        Ok(server) => Box::into_raw(Box::new(PeerbusReqServer { server })),
         Err(e) => {
             set_last_error(e.to_string());
             ptr::null_mut()
@@ -1386,7 +3537,7 @@ pub extern "C" fn quicbit_req_server_new_with_qos(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_req_server_free(server: *mut QuicbitReqServer) {
+pub extern "C" fn peerbus_req_server_free(server: *mut PeerbusReqServer) {
     if server.is_null() {
         return;
     }
@@ -1395,9 +3546,9 @@ pub extern "C" fn quicbit_req_server_free(server: *mut QuicbitReqServer) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_req_server_stats(server: *const QuicbitReqServer) -> QuicbitItemStats {
+pub extern "C" fn peerbus_req_server_stats(server: *const PeerbusReqServer) -> PeerbusItemStats {
     if server.is_null() {
-        return QuicbitItemStats::default();
+        return PeerbusItemStats::default();
     }
     item_stats_out(unsafe { &*server }.server.stats())
 }
@@ -1405,8 +3556,8 @@ pub extern "C" fn quicbit_req_server_stats(server: *const QuicbitReqServer) -> Q
 /// Set the response on a responder passed to a request handler. Copies
 /// `data` immediately; safe to call once per handler invocation.
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_responder_set(
-    responder: *mut QuicbitResponder,
+pub extern "C" fn peerbus_responder_set(
+    responder: *mut PeerbusResponder,
     kind: u64,
     data: *const u8,
     len: usize,
@@ -1424,13 +3575,13 @@ pub extern "C" fn quicbit_responder_set(
 
 /// Serve at most one request, waiting up to `timeout_ms`. Invokes
 /// `handler` with the request and a responder; whatever the handler sets
-/// (via [`quicbit_responder_set`]) is sent back. Returns `1` if a request
+/// (via [`peerbus_responder_set`]) is sent back. Returns `1` if a request
 /// was served, `0` on timeout, `-1` on error.
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_req_server_serve_one(
-    server: *mut QuicbitReqServer,
+pub extern "C" fn peerbus_req_server_serve_one(
+    server: *mut PeerbusReqServer,
     timeout_ms: u64,
-    handler: QuicbitReqHandler,
+    handler: PeerbusReqHandler,
     ctx: *mut c_void,
 ) -> i32 {
     clear_last_error();
@@ -1450,7 +3601,7 @@ pub extern "C" fn quicbit_req_server_serve_one(
             Ok(Some((req, reply))) => {
                 let kind = req.header().kind;
                 let payload = req.payload();
-                let mut responder = QuicbitResponder {
+                let mut responder = PeerbusResponder {
                     kind: 0,
                     data: Vec::new(),
                     set: false,
@@ -1463,7 +3614,7 @@ pub extern "C" fn quicbit_req_server_serve_one(
                         kind,
                         payload.as_ptr(),
                         payload.len(),
-                        &mut responder as *mut QuicbitResponder,
+                        &mut responder as *mut PeerbusResponder,
                     )
                 };
                 let response = RawMsg::new(responder.kind, &responder.data);
@@ -1490,10 +3641,10 @@ pub extern "C" fn quicbit_req_server_serve_one(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_req_server_take(
-    server: *mut QuicbitReqServer,
+pub extern "C" fn peerbus_req_server_take(
+    server: *mut PeerbusReqServer,
     timeout_ms: u64,
-    out_pending: *mut *mut QuicbitPendingReq,
+    out_pending: *mut *mut PeerbusPendingReq,
 ) -> i32 {
     clear_last_error();
     if server.is_null() || out_pending.is_null() {
@@ -1506,7 +3657,7 @@ pub extern "C" fn quicbit_req_server_take(
         match server_ref.server.take_message() {
             Ok(Some(pending)) => {
                 let (req, reply) = pending.into_parts();
-                let handle = QuicbitPendingReq {
+                let handle = PeerbusPendingReq {
                     server,
                     reply: Some(reply),
                     request: owned_message(req.header().kind, req.payload()),
@@ -1530,18 +3681,18 @@ pub extern "C" fn quicbit_req_server_take(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pending_req_request(
-    pending: *const QuicbitPendingReq,
-) -> *const QuicbitMessage {
+pub extern "C" fn peerbus_pending_req_request(
+    pending: *const PeerbusPendingReq,
+) -> *const PeerbusMessage {
     if pending.is_null() {
         return ptr::null();
     }
-    &unsafe { &*pending }.request as *const QuicbitMessage
+    &unsafe { &*pending }.request as *const PeerbusMessage
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pending_req_reply(
-    pending: *mut QuicbitPendingReq,
+pub extern "C" fn peerbus_pending_req_reply(
+    pending: *mut PeerbusPendingReq,
     kind: u64,
     data: *const u8,
     len: usize,
@@ -1575,7 +3726,7 @@ pub extern "C" fn quicbit_pending_req_reply(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pending_req_free(pending: *mut QuicbitPendingReq) {
+pub extern "C" fn peerbus_pending_req_free(pending: *mut PeerbusPendingReq) {
     if pending.is_null() {
         return;
     }
@@ -1585,7 +3736,7 @@ pub extern "C" fn quicbit_pending_req_free(pending: *mut QuicbitPendingReq) {
 // ---- message-list accessors ----
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_messages_len(messages: *const QuicbitMessages) -> usize {
+pub extern "C" fn peerbus_messages_len(messages: *const PeerbusMessages) -> usize {
     if messages.is_null() {
         return 0;
     }
@@ -1593,7 +3744,7 @@ pub extern "C" fn quicbit_messages_len(messages: *const QuicbitMessages) -> usiz
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_messages_kind_at(messages: *const QuicbitMessages, index: usize) -> u64 {
+pub extern "C" fn peerbus_messages_kind_at(messages: *const PeerbusMessages, index: usize) -> u64 {
     if messages.is_null() {
         return 0;
     }
@@ -1605,40 +3756,66 @@ pub extern "C" fn quicbit_messages_kind_at(messages: *const QuicbitMessages, ind
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_messages_data_at(
-    messages: *const QuicbitMessages,
+pub extern "C" fn peerbus_messages_data_at(
+    messages: *const PeerbusMessages,
     index: usize,
-) -> QuicbitBytes {
+) -> PeerbusBytes {
     if messages.is_null() {
-        return QuicbitBytes::empty();
+        return PeerbusBytes::empty();
     }
     unsafe { &*messages }
         .messages
         .get(index)
-        .map(|msg| QuicbitBytes {
+        .map(|msg| PeerbusBytes {
             ptr: msg.data.as_ptr(),
             len: msg.data.len(),
         })
-        .unwrap_or_else(QuicbitBytes::empty)
+        .unwrap_or_else(PeerbusBytes::empty)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_messages_free(messages: *mut QuicbitMessages) {
+pub extern "C" fn peerbus_messages_free(messages: *mut PeerbusMessages) {
     if messages.is_null() {
         return;
     }
     unsafe { drop(Box::from_raw(messages)) };
 }
 
+// Preferred que/ans answer-list aliases. These wrap `PeerbusMessages` so old
+// `messages` accessors and new `answers` accessors remain ownership-compatible.
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_answers_len(answers: *const PeerbusAnswers) -> usize {
+    peerbus_messages_len(answers)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_answers_kind_at(answers: *const PeerbusAnswers, index: usize) -> u64 {
+    peerbus_messages_kind_at(answers, index)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_answers_data_at(
+    answers: *const PeerbusAnswers,
+    index: usize,
+) -> PeerbusBytes {
+    peerbus_messages_data_at(answers, index)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_answers_free(answers: *mut PeerbusAnswers) {
+    peerbus_messages_free(answers);
+}
+
 // ---- que/ans ----
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_que_client_new_with_qos(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_que_client_new_with_qos(
+    node: *const PeerbusNode,
     peer: *const c_char,
     topic: *const c_char,
-    qos: QuicbitTopicQos,
-) -> *mut QuicbitQueClient {
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusQueClient {
     clear_last_error();
     if node.is_null() {
         set_last_error("null node handle");
@@ -1663,7 +3840,7 @@ pub extern "C" fn quicbit_que_client_new_with_qos(
             .que_client_with_qos::<RawMsg, RawMsg>(name.as_str(), topic, qos),
     };
     match result {
-        Ok(client) => Box::into_raw(Box::new(QuicbitQueClient { client })),
+        Ok(client) => Box::into_raw(Box::new(PeerbusQueClient { client })),
         Err(e) => {
             set_last_error(e.to_string());
             ptr::null_mut()
@@ -1672,20 +3849,20 @@ pub extern "C" fn quicbit_que_client_new_with_qos(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_que_client_new(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_que_client_new(
+    node: *const PeerbusNode,
     peer: *const c_char,
     topic: *const c_char,
-) -> *mut QuicbitQueClient {
-    quicbit_que_client_new_with_qos(node, peer, topic, quicbit_topic_qos_reliable())
+) -> *mut PeerbusQueClient {
+    peerbus_que_client_new_with_qos(node, peer, topic, peerbus_topic_qos_reliable())
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_que_system_client_new_with_qos(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_que_system_client_new_with_qos(
+    node: *const PeerbusNode,
     topic: *const c_char,
-    qos: QuicbitTopicQos,
-) -> *mut QuicbitQueClient {
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusQueClient {
     clear_last_error();
     if node.is_null() {
         set_last_error("null node handle");
@@ -1697,7 +3874,7 @@ pub extern "C" fn quicbit_que_system_client_new_with_qos(
         Err(()) => return ptr::null_mut(),
     };
     match node.node.que_with_qos::<RawMsg, RawMsg>(topic, qos.into()) {
-        Ok(client) => Box::into_raw(Box::new(QuicbitQueClient { client })),
+        Ok(client) => Box::into_raw(Box::new(PeerbusQueClient { client })),
         Err(e) => {
             set_last_error(e.to_string());
             ptr::null_mut()
@@ -1706,7 +3883,7 @@ pub extern "C" fn quicbit_que_system_client_new_with_qos(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_que_client_free(client: *mut QuicbitQueClient) {
+pub extern "C" fn peerbus_que_client_free(client: *mut PeerbusQueClient) {
     if client.is_null() {
         return;
     }
@@ -1714,20 +3891,20 @@ pub extern "C" fn quicbit_que_client_free(client: *mut QuicbitQueClient) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_que_client_stats(client: *const QuicbitQueClient) -> QuicbitItemStats {
+pub extern "C" fn peerbus_que_client_stats(client: *const PeerbusQueClient) -> PeerbusItemStats {
     if client.is_null() {
-        return QuicbitItemStats::default();
+        return PeerbusItemStats::default();
     }
     item_stats_out(unsafe { &*client }.client.stats())
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_que_client_send(
-    client: *mut QuicbitQueClient,
+pub extern "C" fn peerbus_que_client_send(
+    client: *mut PeerbusQueClient,
     kind: u64,
     data: *const u8,
     len: usize,
-    out_messages: *mut *mut QuicbitMessages,
+    out_messages: *mut *mut PeerbusMessages,
 ) -> bool {
     clear_last_error();
     if client.is_null() || out_messages.is_null() {
@@ -1754,16 +3931,16 @@ pub extern "C" fn quicbit_que_client_send(
             }
         }
     }
-    unsafe { *out_messages = Box::into_raw(Box::new(QuicbitMessages { messages })) };
+    unsafe { *out_messages = Box::into_raw(Box::new(PeerbusMessages { messages })) };
     true
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_ans_server_new_with_qos(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_ans_server_new_with_qos(
+    node: *const PeerbusNode,
     topic: *const c_char,
-    qos: QuicbitTopicQos,
-) -> *mut QuicbitAnsServer {
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusAnsServer {
     clear_last_error();
     if node.is_null() {
         set_last_error("null node handle");
@@ -1775,7 +3952,7 @@ pub extern "C" fn quicbit_ans_server_new_with_qos(
         Err(()) => return ptr::null_mut(),
     };
     match node.node.ans_with_qos::<RawMsg, RawMsg>(topic, qos.into()) {
-        Ok(server) => Box::into_raw(Box::new(QuicbitAnsServer { server })),
+        Ok(server) => Box::into_raw(Box::new(PeerbusAnsServer { server })),
         Err(e) => {
             set_last_error(e.to_string());
             ptr::null_mut()
@@ -1784,15 +3961,15 @@ pub extern "C" fn quicbit_ans_server_new_with_qos(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_ans_server_new(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_ans_server_new(
+    node: *const PeerbusNode,
     topic: *const c_char,
-) -> *mut QuicbitAnsServer {
-    quicbit_ans_server_new_with_qos(node, topic, quicbit_topic_qos_reliable())
+) -> *mut PeerbusAnsServer {
+    peerbus_ans_server_new_with_qos(node, topic, peerbus_topic_qos_reliable())
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_ans_server_free(server: *mut QuicbitAnsServer) {
+pub extern "C" fn peerbus_ans_server_free(server: *mut PeerbusAnsServer) {
     if server.is_null() {
         return;
     }
@@ -1800,16 +3977,16 @@ pub extern "C" fn quicbit_ans_server_free(server: *mut QuicbitAnsServer) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_ans_server_stats(server: *const QuicbitAnsServer) -> QuicbitItemStats {
+pub extern "C" fn peerbus_ans_server_stats(server: *const PeerbusAnsServer) -> PeerbusItemStats {
     if server.is_null() {
-        return QuicbitItemStats::default();
+        return PeerbusItemStats::default();
     }
     item_stats_out(unsafe { &*server }.server.stats())
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_ans_responder_send(
-    responder: *mut QuicbitAnsResponder,
+pub extern "C" fn peerbus_ans_responder_send(
+    responder: *mut PeerbusAnsResponder,
     kind: u64,
     data: *const u8,
     len: usize,
@@ -1824,10 +4001,10 @@ pub extern "C" fn quicbit_ans_responder_send(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_ans_server_serve_one(
-    server: *mut QuicbitAnsServer,
+pub extern "C" fn peerbus_ans_server_serve_one(
+    server: *mut PeerbusAnsServer,
     timeout_ms: u64,
-    handler: QuicbitAnsHandler,
+    handler: PeerbusAnsHandler,
     ctx: *mut c_void,
 ) -> i32 {
     clear_last_error();
@@ -1844,7 +4021,7 @@ pub extern "C" fn quicbit_ans_server_serve_one(
     loop {
         match server.server.take() {
             Ok(Some((que, mut ans))) => {
-                let mut responder = QuicbitAnsResponder {
+                let mut responder = PeerbusAnsResponder {
                     messages: Vec::new(),
                 };
                 unsafe {
@@ -1885,10 +4062,10 @@ pub extern "C" fn quicbit_ans_server_serve_one(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_ans_server_take(
-    server: *mut QuicbitAnsServer,
+pub extern "C" fn peerbus_ans_server_take(
+    server: *mut PeerbusAnsServer,
     timeout_ms: u64,
-    out_pending: *mut *mut QuicbitPendingQue,
+    out_pending: *mut *mut PeerbusPendingQue,
 ) -> i32 {
     clear_last_error();
     if server.is_null() || out_pending.is_null() {
@@ -1901,7 +4078,7 @@ pub extern "C" fn quicbit_ans_server_take(
         match server_ref.server.take_message() {
             Ok(Some(pending)) => {
                 let (que, answers) = pending.into_parts();
-                let handle = QuicbitPendingQue {
+                let handle = PeerbusPendingQue {
                     server,
                     answers: Some(answers),
                     request: owned_message(que.header().kind, que.payload()),
@@ -1925,18 +4102,18 @@ pub extern "C" fn quicbit_ans_server_take(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pending_que_request(
-    pending: *const QuicbitPendingQue,
-) -> *const QuicbitMessage {
+pub extern "C" fn peerbus_pending_que_request(
+    pending: *const PeerbusPendingQue,
+) -> *const PeerbusMessage {
     if pending.is_null() {
         return ptr::null();
     }
-    &unsafe { &*pending }.request as *const QuicbitMessage
+    &unsafe { &*pending }.request as *const PeerbusMessage
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pending_que_send(
-    pending: *mut QuicbitPendingQue,
+pub extern "C" fn peerbus_pending_que_send(
+    pending: *mut PeerbusPendingQue,
     kind: u64,
     data: *const u8,
     len: usize,
@@ -1970,7 +4147,7 @@ pub extern "C" fn quicbit_pending_que_send(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pending_que_finish(pending: *mut QuicbitPendingQue) -> bool {
+pub extern "C" fn peerbus_pending_que_finish(pending: *mut PeerbusPendingQue) -> bool {
     clear_last_error();
     if pending.is_null() {
         set_last_error("null pending que handle");
@@ -1995,7 +4172,7 @@ pub extern "C" fn quicbit_pending_que_finish(pending: *mut QuicbitPendingQue) ->
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pending_que_free(pending: *mut QuicbitPendingQue) {
+pub extern "C" fn peerbus_pending_que_free(pending: *mut PeerbusPendingQue) {
     if pending.is_null() {
         return;
     }
@@ -2005,12 +4182,12 @@ pub extern "C" fn quicbit_pending_que_free(pending: *mut QuicbitPendingQue) {
 // ---- put/ack ----
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_put_client_new_with_qos(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_put_client_new_with_qos(
+    node: *const PeerbusNode,
     peer: *const c_char,
     topic: *const c_char,
-    qos: QuicbitTopicQos,
-) -> *mut QuicbitPutClient {
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusPutClient {
     clear_last_error();
     if node.is_null() {
         set_last_error("null node handle");
@@ -2035,7 +4212,7 @@ pub extern "C" fn quicbit_put_client_new_with_qos(
             .put_client_with_qos::<RawMsg, RawMsg>(name.as_str(), topic, qos),
     };
     match result {
-        Ok(client) => Box::into_raw(Box::new(QuicbitPutClient { client })),
+        Ok(client) => Box::into_raw(Box::new(PeerbusPutClient { client })),
         Err(e) => {
             set_last_error(e.to_string());
             ptr::null_mut()
@@ -2044,20 +4221,20 @@ pub extern "C" fn quicbit_put_client_new_with_qos(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_put_client_new(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_put_client_new(
+    node: *const PeerbusNode,
     peer: *const c_char,
     topic: *const c_char,
-) -> *mut QuicbitPutClient {
-    quicbit_put_client_new_with_qos(node, peer, topic, quicbit_topic_qos_reliable())
+) -> *mut PeerbusPutClient {
+    peerbus_put_client_new_with_qos(node, peer, topic, peerbus_topic_qos_reliable())
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_put_system_client_new_with_qos(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_put_system_client_new_with_qos(
+    node: *const PeerbusNode,
     topic: *const c_char,
-    qos: QuicbitTopicQos,
-) -> *mut QuicbitPutClient {
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusPutClient {
     clear_last_error();
     if node.is_null() {
         set_last_error("null node handle");
@@ -2069,7 +4246,7 @@ pub extern "C" fn quicbit_put_system_client_new_with_qos(
         Err(()) => return ptr::null_mut(),
     };
     match node.node.put_with_qos::<RawMsg, RawMsg>(topic, qos.into()) {
-        Ok(client) => Box::into_raw(Box::new(QuicbitPutClient { client })),
+        Ok(client) => Box::into_raw(Box::new(PeerbusPutClient { client })),
         Err(e) => {
             set_last_error(e.to_string());
             ptr::null_mut()
@@ -2078,7 +4255,7 @@ pub extern "C" fn quicbit_put_system_client_new_with_qos(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_put_client_free(client: *mut QuicbitPutClient) {
+pub extern "C" fn peerbus_put_client_free(client: *mut PeerbusPutClient) {
     if client.is_null() {
         return;
     }
@@ -2086,19 +4263,19 @@ pub extern "C" fn quicbit_put_client_free(client: *mut QuicbitPutClient) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_put_client_stats(client: *const QuicbitPutClient) -> QuicbitItemStats {
+pub extern "C" fn peerbus_put_client_stats(client: *const PeerbusPutClient) -> PeerbusItemStats {
     if client.is_null() {
-        return QuicbitItemStats::default();
+        return PeerbusItemStats::default();
     }
     item_stats_out(unsafe { &*client }.client.stats())
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_put_client_upload(
-    client: *mut QuicbitPutClient,
-    items: *const QuicbitRawMessage,
+pub extern "C" fn peerbus_put_client_upload(
+    client: *mut PeerbusPutClient,
+    items: *const PeerbusRawMessage,
     len: usize,
-    out_message: *mut *mut QuicbitMessage,
+    out_message: *mut *mut PeerbusMessage,
 ) -> bool {
     clear_last_error();
     if client.is_null() || out_message.is_null() {
@@ -2139,9 +4316,19 @@ pub extern "C" fn quicbit_put_client_upload(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_put_client_open(
-    client: *mut QuicbitPutClient,
-    out_upload: *mut *mut QuicbitPutUpload,
+pub extern "C" fn peerbus_put_client_put(
+    client: *mut PeerbusPutClient,
+    items: *const PeerbusRawMessage,
+    len: usize,
+    out_message: *mut *mut PeerbusMessage,
+) -> bool {
+    peerbus_put_client_upload(client, items, len, out_message)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_put_client_open(
+    client: *mut PeerbusPutClient,
+    out_upload: *mut *mut PeerbusPutUpload,
 ) -> bool {
     clear_last_error();
     if client.is_null() || out_upload.is_null() {
@@ -2152,7 +4339,7 @@ pub extern "C" fn quicbit_put_client_open(
     match client_ref.client.open_upload() {
         Ok(token) => {
             unsafe {
-                *out_upload = Box::into_raw(Box::new(QuicbitPutUpload {
+                *out_upload = Box::into_raw(Box::new(PeerbusPutUpload {
                     client,
                     token: Some(token),
                 }));
@@ -2167,8 +4354,16 @@ pub extern "C" fn quicbit_put_client_open(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_put_upload_send(
-    upload: *mut QuicbitPutUpload,
+pub extern "C" fn peerbus_put_client_open_sender(
+    client: *mut PeerbusPutClient,
+    out_sender: *mut *mut PeerbusPutSender,
+) -> bool {
+    peerbus_put_client_open(client, out_sender)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_put_upload_send(
+    upload: *mut PeerbusPutUpload,
     kind: u64,
     data: *const u8,
     len: usize,
@@ -2199,9 +4394,19 @@ pub extern "C" fn quicbit_put_upload_send(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_put_upload_finish(
-    upload: *mut QuicbitPutUpload,
-    out_message: *mut *mut QuicbitMessage,
+pub extern "C" fn peerbus_put_sender_send(
+    sender: *mut PeerbusPutSender,
+    kind: u64,
+    data: *const u8,
+    len: usize,
+) -> bool {
+    peerbus_put_upload_send(sender, kind, data, len)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_put_upload_finish(
+    upload: *mut PeerbusPutUpload,
+    out_message: *mut *mut PeerbusMessage,
 ) -> bool {
     clear_last_error();
     if upload.is_null() || out_message.is_null() {
@@ -2234,7 +4439,15 @@ pub extern "C" fn quicbit_put_upload_finish(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_put_upload_free(upload: *mut QuicbitPutUpload) {
+pub extern "C" fn peerbus_put_sender_finish(
+    sender: *mut PeerbusPutSender,
+    out_message: *mut *mut PeerbusMessage,
+) -> bool {
+    peerbus_put_upload_finish(sender, out_message)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_put_upload_free(upload: *mut PeerbusPutUpload) {
     if upload.is_null() {
         return;
     }
@@ -2242,11 +4455,16 @@ pub extern "C" fn quicbit_put_upload_free(upload: *mut QuicbitPutUpload) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_ack_server_new_with_qos(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_put_sender_free(sender: *mut PeerbusPutSender) {
+    peerbus_put_upload_free(sender);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn peerbus_ack_server_new_with_qos(
+    node: *const PeerbusNode,
     topic: *const c_char,
-    qos: QuicbitTopicQos,
-) -> *mut QuicbitAckServer {
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusAckServer {
     clear_last_error();
     if node.is_null() {
         set_last_error("null node handle");
@@ -2258,7 +4476,7 @@ pub extern "C" fn quicbit_ack_server_new_with_qos(
         Err(()) => return ptr::null_mut(),
     };
     match node.node.ack_with_qos::<RawMsg, RawMsg>(topic, qos.into()) {
-        Ok(server) => Box::into_raw(Box::new(QuicbitAckServer { server })),
+        Ok(server) => Box::into_raw(Box::new(PeerbusAckServer { server })),
         Err(e) => {
             set_last_error(e.to_string());
             ptr::null_mut()
@@ -2267,15 +4485,15 @@ pub extern "C" fn quicbit_ack_server_new_with_qos(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_ack_server_new(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_ack_server_new(
+    node: *const PeerbusNode,
     topic: *const c_char,
-) -> *mut QuicbitAckServer {
-    quicbit_ack_server_new_with_qos(node, topic, quicbit_topic_qos_reliable())
+) -> *mut PeerbusAckServer {
+    peerbus_ack_server_new_with_qos(node, topic, peerbus_topic_qos_reliable())
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_ack_server_free(server: *mut QuicbitAckServer) {
+pub extern "C" fn peerbus_ack_server_free(server: *mut PeerbusAckServer) {
     if server.is_null() {
         return;
     }
@@ -2283,18 +4501,18 @@ pub extern "C" fn quicbit_ack_server_free(server: *mut QuicbitAckServer) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_ack_server_stats(server: *const QuicbitAckServer) -> QuicbitItemStats {
+pub extern "C" fn peerbus_ack_server_stats(server: *const PeerbusAckServer) -> PeerbusItemStats {
     if server.is_null() {
-        return QuicbitItemStats::default();
+        return PeerbusItemStats::default();
     }
     item_stats_out(unsafe { &*server }.server.stats())
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_ack_server_serve_one(
-    server: *mut QuicbitAckServer,
+pub extern "C" fn peerbus_ack_server_serve_one(
+    server: *mut PeerbusAckServer,
     timeout_ms: u64,
-    handler: QuicbitAckHandler,
+    handler: PeerbusAckHandler,
     ctx: *mut c_void,
 ) -> i32 {
     clear_last_error();
@@ -2323,7 +4541,7 @@ pub extern "C" fn quicbit_ack_server_serve_one(
                     }
                 }
                 let messages = messages_from_raw(values);
-                let mut responder = QuicbitResponder {
+                let mut responder = PeerbusResponder {
                     kind: 0,
                     data: Vec::new(),
                     set: false,
@@ -2353,10 +4571,10 @@ pub extern "C" fn quicbit_ack_server_serve_one(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_ack_server_take(
-    server: *mut QuicbitAckServer,
+pub extern "C" fn peerbus_ack_server_take(
+    server: *mut PeerbusAckServer,
     timeout_ms: u64,
-    out_puts: *mut *mut QuicbitPuts,
+    out_puts: *mut *mut PeerbusPuts,
 ) -> i32 {
     clear_last_error();
     if server.is_null() || out_puts.is_null() {
@@ -2369,7 +4587,7 @@ pub extern "C" fn quicbit_ack_server_take(
         match server_ref.server.take_message() {
             Ok(Some(pending)) => {
                 let (_req_id, first, done, token) = pending.into_parts();
-                let handle = QuicbitPuts {
+                let handle = PeerbusPuts {
                     server,
                     token: Some(token),
                     first: first.map(|msg| owned_message(msg.header().kind, msg.payload())),
@@ -2394,9 +4612,9 @@ pub extern "C" fn quicbit_ack_server_take(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_puts_next(
-    puts: *mut QuicbitPuts,
-    out_message: *mut *mut QuicbitMessage,
+pub extern "C" fn peerbus_puts_next(
+    puts: *mut PeerbusPuts,
+    out_message: *mut *mut PeerbusMessage,
 ) -> i32 {
     clear_last_error();
     if puts.is_null() || out_message.is_null() {
@@ -2442,8 +4660,8 @@ pub extern "C" fn quicbit_puts_next(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_puts_ack(
-    puts: *mut QuicbitPuts,
+pub extern "C" fn peerbus_puts_ack(
+    puts: *mut PeerbusPuts,
     kind: u64,
     data: *const u8,
     len: usize,
@@ -2474,7 +4692,7 @@ pub extern "C" fn quicbit_puts_ack(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_puts_free(puts: *mut QuicbitPuts) {
+pub extern "C" fn peerbus_puts_free(puts: *mut PeerbusPuts) {
     if puts.is_null() {
         return;
     }
@@ -2491,12 +4709,12 @@ pub extern "C" fn quicbit_puts_free(puts: *mut QuicbitPuts) {
 // ---- pip ----
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pip_client_new_with_qos(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_pip_client_new_with_qos(
+    node: *const PeerbusNode,
     peer: *const c_char,
     topic: *const c_char,
-    qos: QuicbitTopicQos,
-) -> *mut QuicbitPipClient {
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusPipClient {
     clear_last_error();
     if node.is_null() {
         set_last_error("null node handle");
@@ -2521,7 +4739,7 @@ pub extern "C" fn quicbit_pip_client_new_with_qos(
             .pip_client_with_qos::<RawMsg, RawMsg>(name.as_str(), topic, qos),
     };
     match result {
-        Ok(client) => Box::into_raw(Box::new(QuicbitPipClient { client })),
+        Ok(client) => Box::into_raw(Box::new(PeerbusPipClient { client })),
         Err(e) => {
             set_last_error(e.to_string());
             ptr::null_mut()
@@ -2530,20 +4748,20 @@ pub extern "C" fn quicbit_pip_client_new_with_qos(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pip_client_new(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_pip_client_new(
+    node: *const PeerbusNode,
     peer: *const c_char,
     topic: *const c_char,
-) -> *mut QuicbitPipClient {
-    quicbit_pip_client_new_with_qos(node, peer, topic, quicbit_topic_qos_reliable())
+) -> *mut PeerbusPipClient {
+    peerbus_pip_client_new_with_qos(node, peer, topic, peerbus_topic_qos_reliable())
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pip_system_client_new_with_qos(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_pip_system_client_new_with_qos(
+    node: *const PeerbusNode,
     topic: *const c_char,
-    qos: QuicbitTopicQos,
-) -> *mut QuicbitPipClient {
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusPipClient {
     clear_last_error();
     if node.is_null() {
         set_last_error("null node handle");
@@ -2555,7 +4773,7 @@ pub extern "C" fn quicbit_pip_system_client_new_with_qos(
         Err(()) => return ptr::null_mut(),
     };
     match node.node.pip_with_qos::<RawMsg, RawMsg>(topic, qos.into()) {
-        Ok(client) => Box::into_raw(Box::new(QuicbitPipClient { client })),
+        Ok(client) => Box::into_raw(Box::new(PeerbusPipClient { client })),
         Err(e) => {
             set_last_error(e.to_string());
             ptr::null_mut()
@@ -2564,7 +4782,7 @@ pub extern "C" fn quicbit_pip_system_client_new_with_qos(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pip_client_free(client: *mut QuicbitPipClient) {
+pub extern "C" fn peerbus_pip_client_free(client: *mut PeerbusPipClient) {
     if client.is_null() {
         return;
     }
@@ -2572,19 +4790,19 @@ pub extern "C" fn quicbit_pip_client_free(client: *mut QuicbitPipClient) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pip_client_stats(client: *const QuicbitPipClient) -> QuicbitItemStats {
+pub extern "C" fn peerbus_pip_client_stats(client: *const PeerbusPipClient) -> PeerbusItemStats {
     if client.is_null() {
-        return QuicbitItemStats::default();
+        return PeerbusItemStats::default();
     }
     item_stats_out(unsafe { &*client }.client.stats())
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pip_client_exchange(
-    client: *mut QuicbitPipClient,
-    items: *const QuicbitRawMessage,
+pub extern "C" fn peerbus_pip_client_exchange(
+    client: *mut PeerbusPipClient,
+    items: *const PeerbusRawMessage,
     len: usize,
-    out_messages: *mut *mut QuicbitMessages,
+    out_messages: *mut *mut PeerbusMessages,
 ) -> bool {
     clear_last_error();
     if client.is_null() || out_messages.is_null() {
@@ -2624,14 +4842,14 @@ pub extern "C" fn quicbit_pip_client_exchange(
             }
         }
     }
-    unsafe { *out_messages = Box::into_raw(Box::new(QuicbitMessages { messages })) };
+    unsafe { *out_messages = Box::into_raw(Box::new(PeerbusMessages { messages })) };
     true
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pip_client_open(
-    client: *mut QuicbitPipClient,
-    out_pip: *mut *mut QuicbitPip,
+pub extern "C" fn peerbus_pip_client_open(
+    client: *mut PeerbusPipClient,
+    out_pip: *mut *mut PeerbusPip,
 ) -> bool {
     clear_last_error();
     if client.is_null() || out_pip.is_null() {
@@ -2642,7 +4860,7 @@ pub extern "C" fn quicbit_pip_client_open(
     match client_ref.client.open_session() {
         Ok(token) => {
             unsafe {
-                *out_pip = Box::into_raw(Box::new(QuicbitPip {
+                *out_pip = Box::into_raw(Box::new(PeerbusPip {
                     client,
                     token: Some(token),
                     incoming_done: false,
@@ -2659,8 +4877,8 @@ pub extern "C" fn quicbit_pip_client_open(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pip_send(
-    pip: *mut QuicbitPip,
+pub extern "C" fn peerbus_pip_send(
+    pip: *mut PeerbusPip,
     kind: u64,
     data: *const u8,
     len: usize,
@@ -2695,7 +4913,7 @@ pub extern "C" fn quicbit_pip_send(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pip_finish_send(pip: *mut QuicbitPip) -> bool {
+pub extern "C" fn peerbus_pip_finish_send(pip: *mut PeerbusPip) -> bool {
     clear_last_error();
     if pip.is_null() {
         set_last_error("null pip handle");
@@ -2727,9 +4945,9 @@ pub extern "C" fn quicbit_pip_finish_send(pip: *mut QuicbitPip) -> bool {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pip_next(
-    pip: *mut QuicbitPip,
-    out_message: *mut *mut QuicbitMessage,
+pub extern "C" fn peerbus_pip_next(
+    pip: *mut PeerbusPip,
+    out_message: *mut *mut PeerbusMessage,
 ) -> i32 {
     clear_last_error();
     if pip.is_null() || out_message.is_null() {
@@ -2771,7 +4989,7 @@ pub extern "C" fn quicbit_pip_next(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pip_close(pip: *mut QuicbitPip) {
+pub extern "C" fn peerbus_pip_close(pip: *mut PeerbusPip) {
     if pip.is_null() {
         return;
     }
@@ -2787,20 +5005,20 @@ pub extern "C" fn quicbit_pip_close(pip: *mut QuicbitPip) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pip_free(pip: *mut QuicbitPip) {
+pub extern "C" fn peerbus_pip_free(pip: *mut PeerbusPip) {
     if pip.is_null() {
         return;
     }
-    quicbit_pip_close(pip);
+    peerbus_pip_close(pip);
     unsafe { drop(Box::from_raw(pip)) };
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pip_server_new_with_qos(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_pip_server_new_with_qos(
+    node: *const PeerbusNode,
     topic: *const c_char,
-    qos: QuicbitTopicQos,
-) -> *mut QuicbitPipServer {
+    qos: PeerbusTopicQos,
+) -> *mut PeerbusPipServer {
     clear_last_error();
     if node.is_null() {
         set_last_error("null node handle");
@@ -2815,7 +5033,7 @@ pub extern "C" fn quicbit_pip_server_new_with_qos(
         .node
         .pip_server_with_qos::<RawMsg, RawMsg>(topic, qos.into())
     {
-        Ok(server) => Box::into_raw(Box::new(QuicbitPipServer { server })),
+        Ok(server) => Box::into_raw(Box::new(PeerbusPipServer { server })),
         Err(e) => {
             set_last_error(e.to_string());
             ptr::null_mut()
@@ -2824,15 +5042,15 @@ pub extern "C" fn quicbit_pip_server_new_with_qos(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pip_server_new(
-    node: *const QuicbitNode,
+pub extern "C" fn peerbus_pip_server_new(
+    node: *const PeerbusNode,
     topic: *const c_char,
-) -> *mut QuicbitPipServer {
-    quicbit_pip_server_new_with_qos(node, topic, quicbit_topic_qos_reliable())
+) -> *mut PeerbusPipServer {
+    peerbus_pip_server_new_with_qos(node, topic, peerbus_topic_qos_reliable())
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pip_server_free(server: *mut QuicbitPipServer) {
+pub extern "C" fn peerbus_pip_server_free(server: *mut PeerbusPipServer) {
     if server.is_null() {
         return;
     }
@@ -2840,16 +5058,16 @@ pub extern "C" fn quicbit_pip_server_free(server: *mut QuicbitPipServer) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pip_server_stats(server: *const QuicbitPipServer) -> QuicbitItemStats {
+pub extern "C" fn peerbus_pip_server_stats(server: *const PeerbusPipServer) -> PeerbusItemStats {
     if server.is_null() {
-        return QuicbitItemStats::default();
+        return PeerbusItemStats::default();
     }
     item_stats_out(unsafe { &*server }.server.stats())
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_message_responder_send(
-    responder: *mut QuicbitMessageResponder,
+pub extern "C" fn peerbus_message_responder_send(
+    responder: *mut PeerbusMessageResponder,
     kind: u64,
     data: *const u8,
     len: usize,
@@ -2864,10 +5082,10 @@ pub extern "C" fn quicbit_message_responder_send(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pip_server_serve_one(
-    server: *mut QuicbitPipServer,
+pub extern "C" fn peerbus_pip_server_serve_one(
+    server: *mut PeerbusPipServer,
     timeout_ms: u64,
-    handler: QuicbitPipHandler,
+    handler: PeerbusPipHandler,
     ctx: *mut c_void,
 ) -> i32 {
     clear_last_error();
@@ -2896,7 +5114,7 @@ pub extern "C" fn quicbit_pip_server_serve_one(
                     }
                 }
                 let messages = messages_from_raw(values);
-                let mut responder = QuicbitMessageResponder {
+                let mut responder = PeerbusMessageResponder {
                     messages: Vec::new(),
                 };
                 unsafe { handler(ctx, &messages, &mut responder) };
@@ -2929,10 +5147,10 @@ pub extern "C" fn quicbit_pip_server_serve_one(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pip_server_take(
-    server: *mut QuicbitPipServer,
+pub extern "C" fn peerbus_pip_server_take(
+    server: *mut PeerbusPipServer,
     timeout_ms: u64,
-    out_pending: *mut *mut QuicbitPendingPip,
+    out_pending: *mut *mut PeerbusPendingPip,
 ) -> i32 {
     clear_last_error();
     if server.is_null() || out_pending.is_null() {
@@ -2945,7 +5163,7 @@ pub extern "C" fn quicbit_pip_server_take(
         match server_ref.server.take_message() {
             Ok(Some(pending)) => {
                 let (_session_id, first, incoming_done, token) = pending.into_parts();
-                let handle = QuicbitPendingPip {
+                let handle = PeerbusPendingPip {
                     server,
                     token: Some(token),
                     first: first.map(|msg| owned_message(msg.header().kind, msg.payload())),
@@ -2971,9 +5189,9 @@ pub extern "C" fn quicbit_pip_server_take(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pending_pip_next(
-    pip: *mut QuicbitPendingPip,
-    out_message: *mut *mut QuicbitMessage,
+pub extern "C" fn peerbus_pending_pip_next(
+    pip: *mut PeerbusPendingPip,
+    out_message: *mut *mut PeerbusMessage,
 ) -> i32 {
     clear_last_error();
     if pip.is_null() || out_message.is_null() {
@@ -3019,8 +5237,8 @@ pub extern "C" fn quicbit_pending_pip_next(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pending_pip_send(
-    pip: *mut QuicbitPendingPip,
+pub extern "C" fn peerbus_pending_pip_send(
+    pip: *mut PeerbusPendingPip,
     kind: u64,
     data: *const u8,
     len: usize,
@@ -3055,7 +5273,7 @@ pub extern "C" fn quicbit_pending_pip_send(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pending_pip_finish_send(pip: *mut QuicbitPendingPip) -> bool {
+pub extern "C" fn peerbus_pending_pip_finish_send(pip: *mut PeerbusPendingPip) -> bool {
     clear_last_error();
     if pip.is_null() {
         set_last_error("null pending pip handle");
@@ -3087,7 +5305,7 @@ pub extern "C" fn quicbit_pending_pip_finish_send(pip: *mut QuicbitPendingPip) -
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pending_pip_close(pip: *mut QuicbitPendingPip) {
+pub extern "C" fn peerbus_pending_pip_close(pip: *mut PeerbusPendingPip) {
     if pip.is_null() {
         return;
     }
@@ -3104,10 +5322,10 @@ pub extern "C" fn quicbit_pending_pip_close(pip: *mut QuicbitPendingPip) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn quicbit_pending_pip_free(pip: *mut QuicbitPendingPip) {
+pub extern "C" fn peerbus_pending_pip_free(pip: *mut PeerbusPendingPip) {
     if pip.is_null() {
         return;
     }
-    quicbit_pending_pip_close(pip);
+    peerbus_pending_pip_close(pip);
     unsafe { drop(Box::from_raw(pip)) };
 }

@@ -9,7 +9,7 @@
 
 use std::time::{Duration, Instant};
 
-use quicbit::Node;
+use peerbus::Node;
 
 #[datapod::datapod]
 struct Pose {
@@ -18,7 +18,7 @@ struct Pose {
     yaw: f32,
 }
 
-fn main() -> quicbit::Result<()> {
+fn main() -> peerbus::Result<()> {
     // One process running both sides for the demo. In the real
     // world these are separate binaries — same code, just separate
     // identities.

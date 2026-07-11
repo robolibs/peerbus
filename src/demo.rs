@@ -6,8 +6,8 @@
 //! SHM and remote routing agree on the wire shape.
 //!
 //! Putting the type here gives both binaries the same concrete
-//! `quicbit::demo::VideoFrame` and its generated
-//! `quicbit::demo::VideoFrameHeader`, so SHM routing works.
+//! `peerbus::demo::VideoFrame` and its generated
+//! `peerbus::demo::VideoFrameHeader`, so SHM routing works.
 
 /// Demo video frame. RGBA-packed `u32` pixels in row-major order
 /// (`0x00RRGGBB`). The header (width, height, frame_no, stamp_ns)

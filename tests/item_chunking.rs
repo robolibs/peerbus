@@ -18,7 +18,7 @@
 
 use std::time::{Duration, Instant};
 
-use quicbit::{Node, TopicQos};
+use peerbus::{Node, TopicQos};
 
 static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

@@ -13,9 +13,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use datapod::{Point, Pose, Quaternion};
-use quicbit::Node;
+use peerbus::Node;
 
-fn main() -> quicbit::Result<()> {
+fn main() -> peerbus::Result<()> {
     let pub_node = Node::builder().no_relay().identity("rover-a").bind()?;
     let sub_node = Node::builder().no_relay().identity("planner").bind()?;
 

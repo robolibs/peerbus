@@ -21,7 +21,7 @@ pub fn shared() -> Result<Arc<Runtime>, Error> {
     }
     let rt = Builder::new_multi_thread()
         .enable_all()
-        .thread_name("quicbit-iroh")
+        .thread_name("peerbus-iroh")
         .build()
         .map_err(|e| Error::Remote(format!("tokio runtime: {e}")))?;
     let arc = Arc::new(rt);

@@ -1,14 +1,14 @@
 [package]
-name = "quicbit"
-version = "0.3.1"
+name = "peerbus"
+version = "0.3.2"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Trim Bresilla <trim.bresilla@gmail.com>"]
 description = "Typed zero-copy messaging for robotics: loan-publish-consume pub/sub over shared memory on the same host, iroh peer-to-peer QUIC streams over the network, one service-oriented API for both"
 license = "MIT"
 readme = "README.md"
-repository = "https://codeberg.org/robolibs/quicbit"
-homepage = "https://codeberg.org/robolibs/quicbit"
+repository = "https://codeberg.org/robolibs/peerbus"
+homepage = "https://codeberg.org/robolibs/peerbus"
 keywords = ["robotics", "ipc", "pubsub", "quic", "shared-memory"]
 categories = ["network-programming", "concurrency", "embedded"]
 publish = false
@@ -46,8 +46,11 @@ config = ["dep:serde_json", "dep:toml"]
 python = ["dep:pyo3"]
 python-extension = ["python"]
 
+[profile.python]
+inherits = "dev"
+
 [dependencies]
-datapod = { version = "0.4.0", path = "../datapod" }
+datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.4.1" }
 thiserror = "2.0"
 bytes = "1"
 bon = "3"
@@ -92,7 +95,7 @@ tempfile = "3.10"
 # sequences of pop/push/publish/acquire/release; asserts no slot
 # leaks and seq monotonicity.
 proptest = { version = "1.5", default-features = false, features = ["std"] }
-# wirebit is quicbit's TEST substrate, not a runtime dep. iroh wraps
+# wirebit is peerbus's TEST substrate, not a runtime dep. iroh wraps
 # its own UDP socket so plugging wirebit's TunLink underneath is
 # nontrivial; see PLAN §Phase 6 for the current testing strategy.
 wirebit = { git = "https://codeberg.org/robolibs/wirebit.git", rev = "f4b72c4c2c16563a8897e3f7f0fe6efbfee97441" }
@@ -100,6 +103,6 @@ wirebit = { git = "https://codeberg.org/robolibs/wirebit.git", rev = "f4b72c4c2c
 # raw framebuffer. Force Wayland-only on Linux: no X11/XWayland backend
 # for the GUI example.
 minifb = { version = "0.27", default-features = false, features = ["wayland"] }
-# tracing-subscriber for the examples so iroh / quicbit emit logs
-# under RUST_LOG=iroh=info,quicbit=info etc.
+# tracing-subscriber for the examples so iroh / peerbus emit logs
+# under RUST_LOG=iroh=info,peerbus=info etc.
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

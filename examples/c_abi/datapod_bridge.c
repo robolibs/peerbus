@@ -1,4 +1,4 @@
-#include "quicbit.h"
+#include "peerbus.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -9,7 +9,7 @@
  * Minimal C-side datapod bridge shape.
  *
  * Real datapod C helpers should provide the same pieces: a stable
- * TYPE_HASH/kind and wire bytes. quicbit stays decoupled and only
+ * TYPE_HASH/kind and wire bytes. peerbus stays decoupled and only
  * transports kind + bytes.
  */
 
@@ -31,30 +31,30 @@ static uint32_t demo_pod_from_wire(const uint8_t *data, uintptr_t len) {
 }
 
 int main(void) {
-  QuicbitNode *node = quicbit_node_new("c-pod-demo", true);
+  PeerbusNode *node = peerbus_node_new("c-pod-demo", true);
   if (!node) {
-    fprintf(stderr, "node: %s\n", quicbit_last_error_message());
+    fprintf(stderr, "node: %s\n", peerbus_last_error_message());
     return 1;
   }
 
-  QuicbitPublisher *pub = quicbit_publisher_new(node, "c/pod");
-  QuicbitSubscriber *sub = quicbit_subscriber_new(node, "c-pod-demo", "c/pod");
+  PeerbusPublisher *pub = peerbus_publisher_new(node, "c/pod");
+  PeerbusSubscriber *sub = peerbus_subscriber_new(node, "c-pod-demo", "c/pod");
   if (!pub || !sub) {
-    fprintf(stderr, "setup: %s\n", quicbit_last_error_message());
+    fprintf(stderr, "setup: %s\n", peerbus_last_error_message());
     return 1;
   }
 
   uint8_t wire[4];
   demo_pod_to_wire(1234, wire);
-  if (!quicbit_publisher_send(pub, DEMO_POD_TYPE_HASH, wire, sizeof wire)) {
-    fprintf(stderr, "send: %s\n", quicbit_last_error_message());
+  if (!peerbus_publisher_send(pub, DEMO_POD_TYPE_HASH, wire, sizeof wire)) {
+    fprintf(stderr, "send: %s\n", peerbus_last_error_message());
     return 1;
   }
 
-  QuicbitMessage *msg = NULL;
+  PeerbusMessage *msg = NULL;
   int rc = 0;
   for (int i = 0; i < 200 && rc == 0; i++) {
-    rc = quicbit_subscriber_take(sub, &msg);
+    rc = peerbus_subscriber_take(sub, &msg);
     if (rc == 0) {
       usleep(5000);
     }
@@ -62,18 +62,18 @@ int main(void) {
 
   int status = 1;
   if (rc == 1) {
-    QuicbitBytes bytes = quicbit_message_data(msg);
+    PeerbusBytes bytes = peerbus_message_data(msg);
     uint32_t value = demo_pod_from_wire(bytes.ptr, bytes.len);
-    printf("pod kind=%llu value=%u\n", (unsigned long long)quicbit_message_kind(msg), value);
-    status = quicbit_message_kind(msg) == DEMO_POD_TYPE_HASH && value == 1234 ? 0 : 1;
-    quicbit_message_free(msg);
+    printf("pod kind=%llu value=%u\n", (unsigned long long)peerbus_message_kind(msg), value);
+    status = peerbus_message_kind(msg) == DEMO_POD_TYPE_HASH && value == 1234 ? 0 : 1;
+    peerbus_message_free(msg);
   } else {
-    fprintf(stderr, "take rc=%d: %s\n", rc, quicbit_last_error_message());
+    fprintf(stderr, "take rc=%d: %s\n", rc, peerbus_last_error_message());
   }
 
-  quicbit_subscriber_free(sub);
-  quicbit_publisher_free(pub);
-  quicbit_node_free(node);
+  peerbus_subscriber_free(sub);
+  peerbus_publisher_free(pub);
+  peerbus_node_free(node);
   printf(status == 0 ? "OK\n" : "MISMATCH\n");
   return status;
 }

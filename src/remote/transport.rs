@@ -64,7 +64,7 @@ pub(crate) struct RequestServerEntry {
 
 /// Default ALPN. Applications wanting protocol isolation can
 /// override it via `RemoteTransportBuilder::alpn`.
-pub const DEFAULT_ALPN: &[u8] = b"quicbit/1";
+pub const DEFAULT_ALPN: &[u8] = b"peerbus/1";
 
 /// Channel depth for outgoing broadcast and incoming mpsc.
 const CHANNEL_CAPACITY: usize = 256;
@@ -80,7 +80,7 @@ pub struct RemoteTransportBuilder {
 }
 
 impl RemoteTransportBuilder {
-    /// Override the ALPN. Defaults to `b"quicbit/1"`.
+    /// Override the ALPN. Defaults to `b"peerbus/1"`.
     pub fn alpn(mut self, alpn: impl Into<Vec<u8>>) -> Self {
         self.alpn = alpn.into();
         self
@@ -590,40 +590,40 @@ impl<T: LocalPayload> SubscriberOps<T> for RemoteSubscriber<T> {
 
 #[cfg_attr(not(feature = "tracing"), allow(unused_variables))]
 async fn run_accept_loop(inner: Arc<InnerShared>) -> Result<()> {
-    qb_debug!(target: "quicbit::remote", name = %inner.name, "accept loop started");
+    qb_debug!(target: "peerbus::remote", name = %inner.name, "accept loop started");
     while let Some(accept) = inner.endpoint.accept().await {
         let inner = inner.clone();
         tokio::spawn(async move {
             let mut iconn = match accept.accept() {
                 Ok(c) => c,
                 Err(e) => {
-                    qb_warn!(target: "quicbit::remote", error = %e, "incoming.accept failed");
+                    qb_warn!(target: "peerbus::remote", error = %e, "incoming.accept failed");
                     return;
                 }
             };
             let _alpn = match iconn.alpn().await {
                 Ok(a) => a,
                 Err(e) => {
-                    qb_warn!(target: "quicbit::remote", error = %e, "alpn negotiation failed");
+                    qb_warn!(target: "peerbus::remote", error = %e, "alpn negotiation failed");
                     return;
                 }
             };
             let conn = match iconn.await {
                 Ok(c) => c,
                 Err(e) => {
-                    qb_warn!(target: "quicbit::remote", error = %e, "connection handshake failed");
+                    qb_warn!(target: "peerbus::remote", error = %e, "connection handshake failed");
                     return;
                 }
             };
             qb_debug!(
-                target: "quicbit::remote",
+                target: "peerbus::remote",
                 remote = %conn.remote_id(),
                 "accepted connection"
             );
             let _ = serve_incoming_connection(inner, conn).await;
         });
     }
-    qb_debug!(target: "quicbit::remote", "accept loop exiting");
+    qb_debug!(target: "peerbus::remote", "accept loop exiting");
     Ok(())
 }
 
@@ -705,7 +705,7 @@ async fn pump_broadcast(
             }
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 qb_warn!(
-                    target: "quicbit::remote",
+                    target: "peerbus::remote",
                     dropped = n,
                     "broadcast lagged on publisher serve path"
                 );
@@ -741,7 +741,7 @@ async fn run_subscriber(inner: Arc<InnerShared>, topic: String, type_hash: u64, 
                 // torn down. Exit cleanly.
                 None => {
                     qb_debug!(
-                        target: "quicbit::remote",
+                        target: "peerbus::remote",
                         topic = %topic,
                         "dispatcher exiting: topic state gone"
                     );
@@ -754,7 +754,7 @@ async fn run_subscriber(inner: Arc<InnerShared>, topic: String, type_hash: u64, 
         // `subscriber()` call will spawn a fresh dispatcher.
         if sender.receiver_count() == 0 {
             qb_debug!(
-                target: "quicbit::remote",
+                target: "peerbus::remote",
                 topic = %topic,
                 "dispatcher exiting: no remaining receivers"
             );
@@ -764,7 +764,7 @@ async fn run_subscriber(inner: Arc<InnerShared>, topic: String, type_hash: u64, 
         match subscribe_pump_once(&inner, &topic, type_hash, payload_size, &sender).await {
             Ok(()) => {
                 qb_warn!(
-                    target: "quicbit::remote",
+                    target: "peerbus::remote",
                     topic = %topic,
                     "subscriber stream ended, will reconnect"
                 );
@@ -772,7 +772,7 @@ async fn run_subscriber(inner: Arc<InnerShared>, topic: String, type_hash: u64, 
             }
             Err(e) => {
                 qb_debug!(
-                    target: "quicbit::remote",
+                    target: "peerbus::remote",
                     topic = %topic,
                     error = %e,
                     backoff_ms = backoff.as_millis() as u64,
@@ -823,7 +823,7 @@ pub(crate) async fn ensure_peer_connection(inner: &Arc<InnerShared>) -> Result<C
             return Ok(conn.clone());
         }
         qb_warn!(
-            target: "quicbit::remote",
+            target: "peerbus::remote",
             reason = ?conn.close_reason(),
             "cached connection is dead, re-dialing"
         );
@@ -834,7 +834,7 @@ pub(crate) async fn ensure_peer_connection(inner: &Arc<InnerShared>) -> Result<C
         .clone()
         .ok_or_else(|| Error::invalid_argument("no peer configured"))?;
     qb_info!(
-        target: "quicbit::remote",
+        target: "peerbus::remote",
         peer = %peer.id,
         "dialing peer"
     );
@@ -844,7 +844,7 @@ pub(crate) async fn ensure_peer_connection(inner: &Arc<InnerShared>) -> Result<C
         .await
         .map_err(|e| {
             qb_warn!(
-                target: "quicbit::remote",
+                target: "peerbus::remote",
                 peer = %peer.id,
                 error = %e,
                 "dial failed"
@@ -852,7 +852,7 @@ pub(crate) async fn ensure_peer_connection(inner: &Arc<InnerShared>) -> Result<C
             Error::ConnectFailed(format!("{e}"))
         })?;
     qb_info!(
-        target: "quicbit::remote",
+        target: "peerbus::remote",
         peer = %peer.id,
         "connected to peer"
     );

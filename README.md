@@ -1,4 +1,4 @@
-# quicbit
+# peerbus
 
 Typed zero-copy messaging for robotics. One API, two transports:
 
@@ -49,7 +49,7 @@ shape above is identical on both.
 ## Install
 
 ```toml
-quicbit = { git = "https://codeberg.org/robolibs/quicbit" }
+peerbus = { git = "https://codeberg.org/robolibs/peerbus" }
 ```
 
 On Nix: `nix develop`. The local backend is pure Rust
@@ -59,7 +59,7 @@ dependency graph.
 ## Publish and subscribe
 
 ```rust
-use quicbit::Node;
+use peerbus::Node;
 
 #[datapod::datapod]
 struct Pose { x: f32, y: f32, yaw: f32 }
@@ -73,7 +73,7 @@ pubr.send(&Pose { x: 1.0, y: 2.0, yaw: 0.1 })?;
 if let Some(s) = sub.take()? {
     println!("{:?}", s.header());
 }
-# Ok::<_, quicbit::Error>(())
+# Ok::<_, peerbus::Error>(())
 ```
 
 Payload types implement `datapod::DataPod` — typically a one-line `#[datapod::datapod]` annotation. Fixed-size types ride entirely in the local SHM header / iroh frame prefix; heap-bearing types (one `#[dp(bytes)]` field) ride the variable-length payload too.
@@ -154,7 +154,7 @@ Without `allow_peer`, any peer that knows the ALPN can subscribe. Once one is se
 ## Req/res
 
 ```rust
-use quicbit::Node;
+use peerbus::Node;
 
 let server_node = Node::builder().identity("calc").bind()?;
 let client_node = Node::builder().bind()?;
@@ -169,7 +169,7 @@ while let Some((req, res)) = server.take()? {
 let mut client = client_node.req_client::<Ping, Pong>("calc", "calc/ping")?;
 let res = client.call(&Ping { /* … */ })?;
 let pong: Pong = *res.header();
-# Ok::<_, quicbit::Error>(())
+# Ok::<_, peerbus::Error>(())
 ```
 
 The high-level `Node` API chooses local SHM first and falls back to
@@ -197,7 +197,7 @@ let mut answers = client.send(&RangeQue { start: 10, count: 3 })?;
 while let Some(hit) = answers.next()? {
     println!("hit: {:?}", hit.header());
 }
-# Ok::<_, quicbit::Error>(())
+# Ok::<_, peerbus::Error>(())
 ```
 
 Like pub/sub and req/res, `que_client(peer, topic)` tries local SHM first
@@ -228,7 +228,7 @@ let mut put = client.open()?;
 put.send(&chunk_a)?;
 put.send(&chunk_b)?;
 let ack = put.finish()?;
-# Ok::<_, quicbit::Error>(())
+# Ok::<_, peerbus::Error>(())
 ```
 
 `put_client(peer, topic)` chooses local SHM first and then iroh. In
@@ -257,7 +257,7 @@ pip.send(&ClientMsg { /* … */ })?;
 while let Some(msg) = pip.next()? {
     handle_server_msg(msg.header());
 }
-# Ok::<_, quicbit::Error>(())
+# Ok::<_, peerbus::Error>(())
 ```
 
 `pip_client(peer, topic)` chooses local SHM first and then iroh. In
@@ -291,11 +291,11 @@ The local SHM backend and iroh are always on; there is no feature gate for eithe
 
 ## Foreign-language bindings
 
-quicbit follows the same robolibs binding layout as the sibling crates:
+peerbus follows the same robolibs binding layout as the sibling crates:
 
 ```text
 src/ffi.rs                  # C ABI implementation
-include/quicbit.h           # generated C header
+include/peerbus.h           # generated C header
 src/python/mod.rs           # Python pyo3 module
 examples/c_abi/             # C ABI demos + Makefile
 examples/python_binding/    # Python demo + Makefile
@@ -316,35 +316,44 @@ make -C examples/c_abi run
 Run the Python binding demo:
 
 ```sh
-make -C examples/python_binding demo
+python examples/python_binding/demo.py
 ```
 
 For language-independent datapod traffic, use the generic datapod API:
 Python passes any datapod object with `to_wire_message()` to
 `DatapodPublisher.send()`, and subscribers decode with the datapod type,
 for example `sub.take(datapod.Grid)`. This works for datapod containers
-such as `Grid` and `Matrix` without adding quicbit APIs per type.
+such as `Grid` and `Matrix` without adding peerbus APIs per type.
+For high-throughput subscribers, `Subscriber.take_view()` and
+`DatapodSubscriber.take_view()` return borrowed sample objects that expose
+read-only `memoryview` payload/wire bytes without copying.
+Python also exposes `node.peer_path_diagnostics(endpoint_addr)` for remote
+path checks; the C ABI mirrors it through `peerbus_node_peer_path_diagnostics`
+and the `peerbus_peer_path_diagnostics_*` accessors.
+Inbound peer allowlisting is also binding-visible: Python accepts
+`Node(allowed_peers=[did_key_or_name, ...])`, and C uses
+`PeerbusNodeConfig.allowed_peers` / `allowed_peers_len`.
 
 The video examples use `datapod.Grid` (`Encoding.Rgba8`) over that generic
 datapod path:
 
 ```sh
 # Python publisher -> Rust Wayland subscriber
-make -C examples/python_binding video-pub
+peerbus-video-pub
 cargo run --release --example video_sub -- <did printed by Python>
 
 # Rust publisher -> Python headless subscriber
 cargo run --release --example video_pub
-make -C examples/python_binding video-sub PEER=<did printed by Rust>
+peerbus-video-sub <did printed by Rust>
 ```
 
 ## Topic QoS
 
 High-rate topics can choose transport behavior without putting datatype logic
-inside quicbit:
+inside peerbus:
 
 ```rust
-use quicbit::{TopicQos, DeliveryPolicy};
+use peerbus::{TopicQos, DeliveryPolicy};
 
 let qos = TopicQos::latest()
     .with_subscriber_queue(8)
@@ -355,7 +364,7 @@ let mut pubr = node.publisher_with_qos::<DatapodMsg>("demo/video", qos)?;
 
 `DeliveryPolicy::Reliable` is the default. Its publisher-side remote fanout
 queue is bounded by `subscriber_queue`; if a reliable remote subscriber falls
-behind that queue, quicbit reports lag instead of silently dropping old data.
+behind that queue, peerbus reports lag instead of silently dropping old data.
 `Latest` lets slow remote subscribers skip stale queued samples and receive
 the newest sample instead.
 For local SHM subscribers, `Latest`/`BestEffort` drain immediately-available

@@ -78,7 +78,7 @@ pub(crate) fn recover_poison<T>(
         Ok(g) => g,
         Err(p) => {
             crate::qb_warn!(
-                target: "quicbit",
+                target: "peerbus",
                 lock = lock,
                 "recovering from poisoned mutex; a thread panicked while holding it"
             );

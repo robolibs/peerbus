@@ -3,7 +3,7 @@ SHELL := /bin/bash
 ROOT    := ../..
 BIN_DIR := $(ROOT)/target/debug/c_abi
 LIB_DIR := $(ROOT)/target/debug
-LIBS    := -lquicbit -Wl,-rpath,$(shell cd $(ROOT) && pwd)/target/debug -lm -lpthread -ldl
+LIBS    := -lpeerbus -Wl,-rpath,$(shell cd $(ROOT) && pwd)/target/debug -lm -lpthread -ldl
 CFLAGS  := -Wall -Wextra -O2 -g -I$(ROOT)/include
 
 DEMOS := pubsub req_res que_ans put_ack pip system_did datapod_bridge

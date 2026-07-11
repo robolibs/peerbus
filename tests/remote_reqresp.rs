@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use bytemuck::{Pod, Zeroable};
 use datapod::ZeroCopySend;
-use quicbit::RemoteTransport;
+use peerbus::RemoteTransport;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Debug, PartialEq, ZeroCopySend)]

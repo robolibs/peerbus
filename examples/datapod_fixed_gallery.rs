@@ -2,7 +2,7 @@
 //!
 //! This example uses several built-in datapod robotics/geometry types inside
 //! one user-defined datapod. There is no serialization step: the composite
-//! header is POD and rides directly through quicbit.
+//! header is POD and rides directly through peerbus.
 //!
 //! ```text
 //! cargo run --example datapod_fixed_gallery
@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use datapod::{
     Aabb, BoundingSphere, JointLimits, Point, Pose, Quaternion, Twist, Velocity, Wrench,
 };
-use quicbit::{Node, TopicQos};
+use peerbus::{Node, TopicQos};
 
 #[datapod::datapod]
 struct RobotSnapshot {
@@ -25,7 +25,7 @@ struct RobotSnapshot {
     lift_limits: JointLimits,
 }
 
-fn main() -> quicbit::Result<()> {
+fn main() -> peerbus::Result<()> {
     let pub_name = unique("gallery-pub");
     let pub_node = Node::builder().no_relay().identity(&pub_name).bind()?;
     let sub_node = Node::builder()
@@ -73,7 +73,7 @@ fn main() -> quicbit::Result<()> {
     })?;
 
     let sample = poll_for(Duration::from_secs(2), || sub.take().ok().flatten())
-        .ok_or_else(|| quicbit::Error::Timeout(Duration::from_secs(2)))?;
+        .ok_or_else(|| peerbus::Error::Timeout(Duration::from_secs(2)))?;
     let h = sample.header();
     println!(
         "pose=({:.2}, {:.2}, {:.2}) linear_vx={:.2} force_z={:.2}",

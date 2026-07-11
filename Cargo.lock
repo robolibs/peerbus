@@ -761,7 +761,8 @@ dependencies = [
 
 [[package]]
 name = "datapod"
-version = "0.4.0"
+version = "0.4.1"
+source = "git+https://codeberg.org/robolibs/datapod.git?tag=0.4.1#bcf4eb86033ee945d5b5f6a48f6d55a92026c837"
 dependencies = [
  "bytemuck",
  "datapod-macros",
@@ -770,6 +771,7 @@ dependencies = [
 [[package]]
 name = "datapod-macros"
 version = "0.0.1"
+source = "git+https://codeberg.org/robolibs/datapod.git?tag=0.4.1#bcf4eb86033ee945d5b5f6a48f6d55a92026c837"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3003,6 +3005,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "peerbus"
+version = "0.3.1"
+dependencies = [
+ "authbox",
+ "blake3",
+ "bon",
+ "bytemuck",
+ "bytes",
+ "datapod",
+ "iroh",
+ "libc",
+ "minifb",
+ "postcard",
+ "proptest",
+ "pyo3",
+ "raw_sync",
+ "serde",
+ "serde_json",
+ "shared_memory",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "wirebit",
+]
+
+[[package]]
 name = "pem-rfc7468"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3411,35 +3442,6 @@ dependencies = [
  "pyo3-build-config",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "quicbit"
-version = "0.3.0"
-dependencies = [
- "authbox",
- "blake3",
- "bon",
- "bytemuck",
- "bytes",
- "datapod",
- "iroh",
- "libc",
- "minifb",
- "postcard",
- "proptest",
- "pyo3",
- "raw_sync",
- "serde",
- "serde_json",
- "shared_memory",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
- "wirebit",
 ]
 
 [[package]]

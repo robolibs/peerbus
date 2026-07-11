@@ -1,6 +1,6 @@
 //! Byte-oriented payload for the foreign-language bindings.
 //!
-//! quicbit's native API is generic over `datapod::DataPod`, which can't
+//! peerbus's native API is generic over `datapod::DataPod`, which can't
 //! cross a C ABI or the Python boundary. The C and Python bindings
 //! therefore speak in opaque byte buffers carried by [`RawMsg`]: a
 //! `u64 kind` tag rides the fixed header, and the payload bytes ride the

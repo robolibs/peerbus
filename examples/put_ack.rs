@@ -1,4 +1,4 @@
-//! put/ack — zero-or-more uploads, then one acknowledgement — over
+//! put/ack — zero-or-more put items, then one acknowledgement — over
 //! **both** shared memory and iroh QUIC.
 //!
 //! ```text
@@ -7,7 +7,7 @@
 
 use std::time::{Duration, Instant};
 
-use quicbit::{Node, RemoteTransport};
+use peerbus::{Node, RemoteTransport};
 
 #[datapod::datapod]
 struct LogChunk {
@@ -20,14 +20,14 @@ struct UploadAck {
     sum: u32,
 }
 
-fn main() -> quicbit::Result<()> {
+fn main() -> peerbus::Result<()> {
     local_shm()?;
     over_iroh()?;
     Ok(())
 }
 
 /// Same-host: routing is SHM between two `Node`s.
-fn local_shm() -> quicbit::Result<()> {
+fn local_shm() -> peerbus::Result<()> {
     println!("== put/ack over shared memory ==");
     let server_node = Node::builder().no_relay().identity("sink").bind()?;
     let client_node = Node::builder().no_relay().identity("uploader").bind()?;
@@ -54,11 +54,11 @@ fn local_shm() -> quicbit::Result<()> {
     });
 
     let mut client = client_node.put_client::<LogChunk, UploadAck>("sink", "logs/upload")?;
-    let mut upload = client.open()?;
+    let mut put = client.open()?;
     for value in [3, 14, 15, 92] {
-        upload.send(&LogChunk { value })?;
+        put.send(&LogChunk { value })?;
     }
-    let ack = upload.finish()?;
+    let ack = put.finish()?;
     println!(
         "  server acked {} chunks summing to {}",
         ack.header().count,
@@ -69,7 +69,7 @@ fn local_shm() -> quicbit::Result<()> {
 }
 
 /// Cross-stack: standalone `RemoteTransport` put/ack server over iroh.
-fn over_iroh() -> quicbit::Result<()> {
+fn over_iroh() -> peerbus::Result<()> {
     println!("== put/ack over iroh ==");
     let server = RemoteTransport::builder("logs/upload")
         .no_relay()
@@ -83,11 +83,11 @@ fn over_iroh() -> quicbit::Result<()> {
     let client_node = Node::builder().no_relay().bind()?;
     let mut client =
         client_node.put_client::<LogChunk, UploadAck>(server.endpoint_addr(), "logs/upload")?;
-    let mut upload = client.open()?;
+    let mut put = client.open()?;
     for value in [1, 2, 3, 4, 5] {
-        upload.send(&LogChunk { value })?;
+        put.send(&LogChunk { value })?;
     }
-    let ack = upload.finish()?;
+    let ack = put.finish()?;
     println!(
         "  server acked {} chunks summing to {}",
         ack.header().count,

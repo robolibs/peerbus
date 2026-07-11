@@ -1,6 +1,6 @@
 //! Async adapter smoke test.
 
-use quicbit::{AsyncPublisher, AsyncSubscriber, LocalConfig, LocalService};
+use peerbus::{AsyncPublisher, AsyncSubscriber, LocalConfig, LocalService};
 
 #[datapod::datapod]
 struct Tick {
@@ -14,7 +14,7 @@ fn unique_name(stem: &str) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    format!("quicbit_aa_{stem}_{pid}_{nanos}")
+    format!("peerbus_aa_{stem}_{pid}_{nanos}")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

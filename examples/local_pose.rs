@@ -8,7 +8,7 @@
 use std::thread;
 use std::time::Duration;
 
-use quicbit::{Error, LocalConfig, LocalService};
+use peerbus::{Error, LocalConfig, LocalService};
 
 #[datapod::datapod]
 struct Pose {
@@ -18,7 +18,7 @@ struct Pose {
 }
 
 fn main() -> Result<(), Error> {
-    let name = format!("quicbit_example_pose_{}", std::process::id());
+    let name = format!("peerbus_example_pose_{}", std::process::id());
     let svc = LocalService::<Pose>::create(&name, LocalConfig::default())?;
 
     let mut pubr = svc.publisher()?;

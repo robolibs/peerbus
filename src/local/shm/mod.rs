@@ -19,7 +19,7 @@ use crate::error::{Error, Result};
 use crate::local::service::LocalConfig;
 use crate::transport::fnv1a64;
 
-const MAGIC: u64 = 0x5155_4943_4249_5431; // "QUICBIT1"
+const MAGIC: u64 = 0x5155_4943_4249_5431; // "PEERBUS1"
 const VERSION: u32 = 3;
 const MAX_SERVICE_NAME_BYTES: usize = 200;
 const MAX_TRACKED_PUBLISHERS: usize = 64;
@@ -973,7 +973,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        format!("quicbit_shm_{stem}_{pid}_{nanos}")
+        format!("peerbus_shm_{stem}_{pid}_{nanos}")
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! Each `LocalService<T>` maps to one named shared-memory ring. The
 //! ring stores a fixed `T::Header` plus variable-length payload bytes
 //! in every slot, preserving the existing loan → fill → publish → take
-//! API while removing the direct iceoryx2 dependency from quicbit.
+//! API while removing the direct iceoryx2 dependency from peerbus.
 
 use std::sync::Arc;
 

@@ -7,7 +7,7 @@
 
 use std::time::{Duration, Instant};
 
-use quicbit::{Node, RemoteTransport};
+use peerbus::{Node, RemoteTransport};
 
 #[datapod::datapod]
 struct RangeQue {
@@ -20,14 +20,14 @@ struct Hit {
     value: u32,
 }
 
-fn main() -> quicbit::Result<()> {
+fn main() -> peerbus::Result<()> {
     local_shm()?;
     over_iroh()?;
     Ok(())
 }
 
 /// Same-host: routing is SHM between two `Node`s.
-fn local_shm() -> quicbit::Result<()> {
+fn local_shm() -> peerbus::Result<()> {
     println!("== que/ans over shared memory ==");
     let server_node = Node::builder().no_relay().identity("search").bind()?;
     let client_node = Node::builder().no_relay().identity("seeker").bind()?;
@@ -67,7 +67,7 @@ fn local_shm() -> quicbit::Result<()> {
 }
 
 /// Cross-stack: standalone `RemoteTransport` que/ans server over iroh.
-fn over_iroh() -> quicbit::Result<()> {
+fn over_iroh() -> peerbus::Result<()> {
     println!("== que/ans over iroh ==");
     let server = RemoteTransport::builder("search/range")
         .no_relay()

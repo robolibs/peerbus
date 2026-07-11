@@ -5,9 +5,10 @@ This is intentionally headless/no-GUI so it works without pulling in
 Xorg/Qt/pygame dependencies. Use the Rust `video_sub` example when you
 want a Wayland window.
 
-Run from the repo root after `maturin develop --features python`, or use:
+Run from the repo root inside `nix develop`:
 
-    make -C examples/python_binding video-sub PEER=<did:key:z...>
+    peerbus-python-develop
+    peerbus-video-sub <did:key:z...>
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ import struct
 import time
 
 import datapod
-import quicbit
+import peerbus
 
 
 TOPIC = "demo/video"
@@ -27,15 +28,15 @@ TOPIC = "demo/video"
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("peer", nargs="?", default=os.environ.get("PEER"))
-    parser.add_argument("--topic", default=os.environ.get("QUICBIT_VIDEO_TOPIC", TOPIC))
+    parser.add_argument("--topic", default=os.environ.get("PEERBUS_VIDEO_TOPIC", TOPIC))
     parser.add_argument("--max-payload-bytes", type=int, default=64 * 1024 * 1024)
     args = parser.parse_args()
 
     if not args.peer:
         raise SystemExit("usage: video_sub.py <publisher did:key:z...>")
 
-    node = quicbit.Node(max_payload_bytes=args.max_payload_bytes, subscriber_buffer=4)
-    qos = quicbit.TopicQos.latest(max_message_bytes=args.max_payload_bytes)
+    node = peerbus.Node(max_payload_bytes=args.max_payload_bytes, subscriber_buffer=4)
+    qos = peerbus.TopicQos.latest(max_message_bytes=args.max_payload_bytes)
     sub = node.datapod_subscriber(args.peer, args.topic, qos)
     grid_type_hash = datapod.Grid.TYPE_HASH
     grid_header_size = datapod.header_size(grid_type_hash)

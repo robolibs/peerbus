@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.2] - 2026-07-11
+
+### <!-- 0 -->⛰️  Features
+
+- More on phase 2
+
 ## [0.3.0] - 2026-06-01
 
 ### <!-- 0 -->⛰️  Features
@@ -30,5 +36,5 @@
 - Add changelog generation and topic validation
 - Adopt datapod::DataPod for unified payloads
 - Introduce Node API for simplified usage
-- Move local SHM off iceoryx2 onto quicbit's pure-Rust shared-memory ring
-- Initial release of quicbit messaging library
+- Move local SHM off iceoryx2 onto peerbus's pure-Rust shared-memory ring
+- Initial release of peerbus messaging library

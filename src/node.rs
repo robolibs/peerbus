@@ -15,9 +15,9 @@
 //! User-facing API:
 //!
 //! ```no_run
-//! use quicbit::Node;
+//! use peerbus::Node;
 //!
-//! # fn run() -> quicbit::Result<()> {
+//! # fn run() -> peerbus::Result<()> {
 //! # #[datapod::datapod]
 //! # struct Pose { x: f32, y: f32, yaw: f32 }
 //! let node = Node::builder().no_relay().bind()?;
@@ -67,9 +67,9 @@ use crate::remote::{
 use crate::transport::{fnv1a64, wire_type_hash};
 use crate::{qb_debug, qb_info, qb_warn};
 
-const DEFAULT_ALPN: &[u8] = b"quicbit/1";
+const DEFAULT_ALPN: &[u8] = b"peerbus/1";
 const DEFAULT_BROADCAST_CAPACITY: usize = 256;
-const IDENTITY_DERIVATION_TAG: &[u8] = b"quicbit/v1/identity";
+const IDENTITY_DERIVATION_TAG: &[u8] = b"peerbus/v1/identity";
 const PUBSUB_DATAGRAM_MAGIC: &[u8; 4] = b"QBD1";
 const PUBSUB_DATAGRAM_HEADER_LEN: usize = 4 + 8;
 static NEXT_REMOTE_REQ_ID: AtomicU64 = AtomicU64::new(0);
@@ -326,7 +326,7 @@ impl NodeBuilder {
         };
 
         qb_info!(
-            target: "quicbit::node",
+            target: "peerbus::node",
             endpoint_id = %endpoint_id,
             identity = identity_name.as_deref().unwrap_or("<ephemeral>"),
             no_relay,
@@ -527,7 +527,7 @@ pub struct NodeStats {
 /// Snapshot of one iroh path for an already-cached peer connection.
 #[derive(Debug, Clone)]
 pub struct PathDiagnostic {
-    /// Debug-format iroh path id. Kept as a string so quicbit does
+    /// Debug-format iroh path id. Kept as a string so peerbus does
     /// not expose noq's internal path-id representation as API.
     pub path_id: String,
     /// Debug-format remote transport address for this path.
@@ -2045,7 +2045,7 @@ async fn run_subscriber_loop(
     loop {
         if tx.is_closed() {
             qb_debug!(
-                target: "quicbit::node",
+                target: "peerbus::node",
                 topic = %topic,
                 "subscriber receiver dropped, exiting reconnect loop"
             );
@@ -2057,7 +2057,7 @@ async fn run_subscriber_loop(
         match subscribe_once(&inner, peer_id, None, &topic, type_hash, payload_size, qos).await {
             Ok(open) => {
                 qb_info!(
-                    target: "quicbit::node",
+                    target: "peerbus::node",
                     topic = %topic,
                     peer = %peer_id,
                     "subscriber stream re-established"
@@ -2085,7 +2085,7 @@ async fn run_subscriber_loop(
                 )
                 .await;
                 qb_warn!(
-                    target: "quicbit::node",
+                    target: "peerbus::node",
                     topic = %topic,
                     peer = %peer_id,
                     "subscriber stream ended, will reconnect"
@@ -2093,7 +2093,7 @@ async fn run_subscriber_loop(
             }
             Err(e) => {
                 qb_debug!(
-                    target: "quicbit::node",
+                    target: "peerbus::node",
                     topic = %topic,
                     peer = %peer_id,
                     error = %e,
@@ -2252,7 +2252,7 @@ impl<T: datapod::DataPod + 'static> Publisher<T> {
             if let Err(e) = mirror_publish::<T>(alias, &header_bytes, &payload_bytes) {
                 let _ = &e;
                 qb_warn!(
-                    target: "quicbit::node",
+                    target: "peerbus::node",
                     error = %e,
                     "publisher hex-alias mirror failed; DID:KEY subscribers may fall back to iroh"
                 );
@@ -3431,6 +3431,12 @@ pub enum Answers<'a, Ans: datapod::DataPod + 'static> {
     Remote(RemoteAnswers<Ans>),
 }
 
+/// Preferred three-letter que/ans stream name.
+///
+/// `Answers` remains as a compatibility alias during the public naming
+/// transition.
+pub type AnsStream<'a, Ans> = Answers<'a, Ans>;
+
 impl<Ans: datapod::DataPod + 'static> Answers<'_, Ans>
 where
     <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
@@ -3845,6 +3851,11 @@ pub struct PutUploadToken {
     req_id: u64,
     source: PutUploadTokenSource,
 }
+
+/// Preferred three-letter put/ack explicit sender token name.
+///
+/// `PutUploadToken` remains as a compatibility alias for older binding code.
+pub type PutSenderToken = PutUploadToken;
 
 impl PutUploadToken {
     pub fn req_id(&self) -> u64 {
@@ -5123,28 +5134,28 @@ where
 
 #[cfg_attr(not(feature = "tracing"), allow(unused_variables))]
 async fn run_accept_loop(inner: Arc<NodeInner>) -> Result<()> {
-    qb_debug!(target: "quicbit::node", "accept loop started");
+    qb_debug!(target: "peerbus::node", "accept loop started");
     while let Some(incoming) = inner.endpoint.accept().await {
         let inner = inner.clone();
         tokio::spawn(async move {
             let mut accepting = match incoming.accept() {
                 Ok(a) => a,
                 Err(e) => {
-                    qb_warn!(target: "quicbit::node", error = %e, "incoming.accept failed");
+                    qb_warn!(target: "peerbus::node", error = %e, "incoming.accept failed");
                     return;
                 }
             };
             let _alpn = match accepting.alpn().await {
                 Ok(a) => a,
                 Err(e) => {
-                    qb_warn!(target: "quicbit::node", error = %e, "alpn negotiation failed");
+                    qb_warn!(target: "peerbus::node", error = %e, "alpn negotiation failed");
                     return;
                 }
             };
             let conn = match accepting.await {
                 Ok(c) => c,
                 Err(e) => {
-                    qb_warn!(target: "quicbit::node", error = %e, "connection handshake failed");
+                    qb_warn!(target: "peerbus::node", error = %e, "connection handshake failed");
                     return;
                 }
             };
@@ -5152,7 +5163,7 @@ async fn run_accept_loop(inner: Arc<NodeInner>) -> Result<()> {
             if let Some(allow) = inner.allowed_peers.as_ref() {
                 if !allow.contains(remote.as_bytes()) {
                     qb_warn!(
-                        target: "quicbit::node",
+                        target: "peerbus::node",
                         remote = %remote,
                         "rejecting connection: peer not in allowlist"
                     );
@@ -5161,14 +5172,14 @@ async fn run_accept_loop(inner: Arc<NodeInner>) -> Result<()> {
                 }
             }
             qb_debug!(
-                target: "quicbit::node",
+                target: "peerbus::node",
                 remote = %remote,
                 "accepted connection"
             );
             let _ = serve_incoming_connection(inner, conn).await;
         });
     }
-    qb_debug!(target: "quicbit::node", "accept loop exiting");
+    qb_debug!(target: "peerbus::node", "accept loop exiting");
     Ok(())
 }
 
@@ -5180,7 +5191,7 @@ async fn serve_incoming_connection(inner: Arc<NodeInner>, conn: Connection) -> R
                 let conn = conn.clone();
                 tokio::spawn(async move {
                     if let Err(e) = serve_bi(inner, conn, send, recv).await {
-                        qb_warn!(target: "quicbit::node", error = %e, "subscriber stream failed");
+                        qb_warn!(target: "peerbus::node", error = %e, "subscriber stream failed");
                     }
                 });
             }
@@ -5225,7 +5236,7 @@ async fn serve_pubsub_bi(
     let payload_size = handshake.payload_size;
     let subscriber_version = handshake.version;
     qb_debug!(
-        target: "quicbit::node",
+        target: "peerbus::node",
         topic = %topic,
         type_hash = format_args!("0x{type_hash:x}"),
         payload_size,
@@ -5247,7 +5258,7 @@ async fn serve_pubsub_bi(
             Some(state) => {
                 if state.type_hash != type_hash || state.payload_size != payload_size {
                     qb_warn!(
-                        target: "quicbit::node",
+                        target: "peerbus::node",
                         topic = %topic,
                         expected_hash = format_args!("0x{:x}", state.type_hash),
                         peer_hash = format_args!("0x{type_hash:x}"),
@@ -5270,7 +5281,7 @@ async fn serve_pubsub_bi(
             }
             None => {
                 qb_debug!(
-                    target: "quicbit::node",
+                    target: "peerbus::node",
                     topic = %topic,
                     "no local publisher for requested topic"
                 );
@@ -5308,7 +5319,7 @@ async fn serve_pubsub_bi(
                 if skipped > 0 {
                     stale_dropped.fetch_add(skipped, Ordering::Relaxed);
                     qb_warn!(
-                        target: "quicbit::node",
+                        target: "peerbus::node",
                         topic = %topic,
                         dropped = skipped,
                         "remote subscriber fell behind; sending newest sample"
@@ -5321,7 +5332,7 @@ async fn serve_pubsub_bi(
                     if let Err(e) = send_pubsub_datagrams(&conn, session_id, &bytes, qos) {
                         send_errors.fetch_add(1, Ordering::Relaxed);
                         qb_warn!(
-                            target: "quicbit::node",
+                            target: "peerbus::node",
                             topic = %topic,
                             error = %e,
                             "best-effort datagram send failed; dropping sample"
@@ -5347,7 +5358,7 @@ async fn serve_pubsub_bi(
                 if qos.delivery == DeliveryPolicy::Reliable {
                     send_errors.fetch_add(1, Ordering::Relaxed);
                     qb_warn!(
-                        target: "quicbit::node",
+                        target: "peerbus::node",
                         topic = %topic,
                         dropped = n,
                         "reliable subscriber exceeded publisher queue capacity"
@@ -5355,7 +5366,7 @@ async fn serve_pubsub_bi(
                     return Err(Error::Lagged { dropped: n });
                 }
                 qb_warn!(
-                    target: "quicbit::node",
+                    target: "peerbus::node",
                     topic = %topic,
                     dropped = n,
                     "broadcast lagged on serve path"
@@ -5378,7 +5389,7 @@ async fn serve_reqres_bi(
         let map = crate::trace::recover_poison(inner.request_topics.lock(), "Node::request_topics");
         let Some(state) = map.get(&topic) else {
             qb_debug!(
-                target: "quicbit::node",
+                target: "peerbus::node",
                 topic = %topic,
                 "no local req/res server for requested topic"
             );
@@ -5390,7 +5401,7 @@ async fn serve_reqres_bi(
             || state.res_header_size != res_header_size
         {
             qb_warn!(
-                target: "quicbit::node",
+                target: "peerbus::node",
                 topic = %topic,
                 expected_req_hash = format_args!("0x{:x}", state.req_type_hash),
                 peer_req_hash = format_args!("0x{req_hash:x}"),
@@ -5438,7 +5449,7 @@ async fn serve_queans_bi(
         let map = crate::trace::recover_poison(inner.que_topics.lock(), "Node::que_topics");
         let Some(state) = map.get(&topic) else {
             qb_debug!(
-                target: "quicbit::node",
+                target: "peerbus::node",
                 topic = %topic,
                 "no local que/ans server for requested topic"
             );
@@ -5450,7 +5461,7 @@ async fn serve_queans_bi(
             || state.ans_header_size != ans_header_size
         {
             qb_warn!(
-                target: "quicbit::node",
+                target: "peerbus::node",
                 topic = %topic,
                 expected_que_hash = format_args!("0x{:x}", state.que_type_hash),
                 peer_que_hash = format_args!("0x{que_hash:x}"),
@@ -5498,7 +5509,7 @@ async fn serve_putack_bi(
         let map = crate::trace::recover_poison(inner.put_topics.lock(), "Node::put_topics");
         let Some(state) = map.get(&topic) else {
             qb_debug!(
-                target: "quicbit::node",
+                target: "peerbus::node",
                 topic = %topic,
                 "no local put/ack server for requested topic"
             );
@@ -5510,7 +5521,7 @@ async fn serve_putack_bi(
             || state.ack_header_size != ack_header_size
         {
             qb_warn!(
-                target: "quicbit::node",
+                target: "peerbus::node",
                 topic = %topic,
                 expected_put_hash = format_args!("0x{:x}", state.put_type_hash),
                 peer_put_hash = format_args!("0x{put_hash:x}"),
@@ -5554,7 +5565,7 @@ async fn serve_pip_bi(
         let map = crate::trace::recover_poison(inner.pip_topics.lock(), "Node::pip_topics");
         let Some(state) = map.get(&topic) else {
             qb_debug!(
-                target: "quicbit::node",
+                target: "peerbus::node",
                 topic = %topic,
                 "no local pip server for requested topic"
             );
@@ -5566,7 +5577,7 @@ async fn serve_pip_bi(
             || state.server_header_size != server_header_size
         {
             qb_warn!(
-                target: "quicbit::node",
+                target: "peerbus::node",
                 topic = %topic,
                 expected_client_hash = format_args!("0x{:x}", state.client_type_hash),
                 peer_client_hash = format_args!("0x{client_hash:x}"),
@@ -5671,7 +5682,7 @@ async fn run_pubsub_datagram_reader(inner: Arc<NodeInner>, peer_id: EndpointId, 
             Ok(datagram) => datagram,
             Err(e) => {
                 qb_debug!(
-                    target: "quicbit::node",
+                    target: "peerbus::node",
                     peer = %peer_id,
                     error = %e,
                     "pub/sub datagram reader stopped"
@@ -5685,7 +5696,7 @@ async fn run_pubsub_datagram_reader(inner: Arc<NodeInner>, peer_id: EndpointId, 
             Ok(parsed) => parsed,
             Err(e) => {
                 qb_warn!(
-                    target: "quicbit::node",
+                    target: "peerbus::node",
                     peer = %peer_id,
                     error = %e,
                     "dropping malformed pub/sub datagram"
@@ -5725,7 +5736,7 @@ async fn run_pubsub_datagram_reader(inner: Arc<NodeInner>, peer_id: EndpointId, 
                 }
                 Err(e) => {
                     qb_warn!(
-                        target: "quicbit::node",
+                        target: "peerbus::node",
                         peer = %peer_id,
                         error = %e,
                         "dropping malformed pub/sub datagram chunk"
@@ -6129,7 +6140,7 @@ async fn read_item_handshake_tail(
     let parsed = parse_item_handshake_tail(&fixed)?;
     let hs = parsed.5;
     qb_debug!(
-        target: "quicbit::node",
+        target: "peerbus::node",
         peer_chunks = hs.peer_chunks,
         max_message_bytes = hs.max_message_bytes,
         max_inflight_bytes = hs.max_inflight_bytes,
@@ -6511,7 +6522,7 @@ async fn ensure_peer_connection(
             return Ok(conn.clone());
         }
         qb_warn!(
-            target: "quicbit::node",
+            target: "peerbus::node",
             peer = %peer,
             reason = ?conn.close_reason(),
             "cached connection is dead, re-dialing"
@@ -6524,7 +6535,7 @@ async fn ensure_peer_connection(
         .clone()
         .unwrap_or_else(|| EndpointAddr::new(peer));
     qb_info!(
-        target: "quicbit::node",
+        target: "peerbus::node",
         peer = %peer,
         "dialing peer"
     );
@@ -6534,7 +6545,7 @@ async fn ensure_peer_connection(
         .await
         .map_err(|e| {
             qb_warn!(
-                target: "quicbit::node",
+                target: "peerbus::node",
                 peer = %peer,
                 error = %e,
                 "dial failed"
@@ -6542,7 +6553,7 @@ async fn ensure_peer_connection(
             Error::ConnectFailed(format!("{e}"))
         })?;
     qb_info!(
-        target: "quicbit::node",
+        target: "peerbus::node",
         peer = %peer,
         "connected to peer"
     );
@@ -6621,7 +6632,7 @@ fn enforce_key_perms(path: &Path) {
         if let Err(e) = fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
             let _ = &e;
             qb_warn!(
-                target: "quicbit::node",
+                target: "peerbus::node",
                 path = %path.display(),
                 error = %e,
                 "could not enforce 0600 on identity key file; check permissions manually"

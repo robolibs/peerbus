@@ -3,11 +3,12 @@ requires = ["maturin>=1.7,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "quicbit"
-version = "0.3.0"
-description = "Python bindings for the quicbit messaging library"
+name = "peerbus"
+version = "0.3.2"
+description = "Python bindings for the peerbus messaging library"
 requires-python = ">=3.11"
 
 [tool.maturin]
 features = ["python"]
-module-name = "quicbit"
+module-name = "peerbus"
+profile = "python"

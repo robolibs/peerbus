@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Python publisher compatible with Rust `examples/video_sub.rs`.
 
-Run from the repo root after `maturin develop --features python`, or use:
+Run from the repo root inside `nix develop`:
 
-    make -C examples/python_binding video-pub
+    peerbus-python-develop
+    peerbus-video-pub
 
 Then point the Rust subscriber at the printed DID:
 
@@ -18,7 +19,7 @@ import os
 import time
 
 import datapod
-import quicbit
+import peerbus
 
 
 TOPIC = "demo/video"
@@ -138,15 +139,15 @@ def render_cube(buf: bytearray, width: int, height: int, t: float) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--identity", default=os.environ.get("QUICBIT_VIDEO_IDENTITY", "py-video-pub"))
-    parser.add_argument("--topic", default=os.environ.get("QUICBIT_VIDEO_TOPIC", TOPIC))
-    parser.add_argument("--width", type=int, default=env_int("QUICBIT_VIDEO_WIDTH", DEFAULT_WIDTH))
-    parser.add_argument("--height", type=int, default=env_int("QUICBIT_VIDEO_HEIGHT", DEFAULT_HEIGHT))
-    parser.add_argument("--fps", type=int, default=env_int("QUICBIT_VIDEO_FPS", DEFAULT_FPS))
+    parser.add_argument("--identity", default=os.environ.get("PEERBUS_VIDEO_IDENTITY", "py-video-pub"))
+    parser.add_argument("--topic", default=os.environ.get("PEERBUS_VIDEO_TOPIC", TOPIC))
+    parser.add_argument("--width", type=int, default=env_int("PEERBUS_VIDEO_WIDTH", DEFAULT_WIDTH))
+    parser.add_argument("--height", type=int, default=env_int("PEERBUS_VIDEO_HEIGHT", DEFAULT_HEIGHT))
+    parser.add_argument("--fps", type=int, default=env_int("PEERBUS_VIDEO_FPS", DEFAULT_FPS))
     parser.add_argument(
         "--shm-slots",
         type=int,
-        default=env_int("QUICBIT_VIDEO_SHM_SLOTS", DEFAULT_SHM_SLOTS),
+        default=env_int("PEERBUS_VIDEO_SHM_SLOTS", DEFAULT_SHM_SLOTS),
     )
     args = parser.parse_args()
 
@@ -154,13 +155,13 @@ def main() -> None:
         raise SystemExit("width, height, fps, and shm-slots must be positive")
 
     frame_bytes = args.width * args.height * 4
-    node = quicbit.Node(
+    node = peerbus.Node(
         identity=args.identity,
         max_payload_bytes=frame_bytes + 4096,
         subscriber_buffer=args.shm_slots,
         max_subscribers=8,
     )
-    qos = quicbit.TopicQos.latest(max_message_bytes=max(frame_bytes + 4096, 64 * 1024 * 1024))
+    qos = peerbus.TopicQos.latest(max_message_bytes=max(frame_bytes + 4096, 64 * 1024 * 1024))
     pub = node.datapod_publisher(args.topic, qos)
 
     print(f"python video publisher ready: {args.width}x{args.height} @ {args.fps} fps")
