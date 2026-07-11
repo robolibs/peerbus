@@ -12,7 +12,7 @@
 
 use std::time::{Duration, Instant};
 
-use quicbit::{Node, RemoteTransport};
+use peerbus::{Node, RemoteTransport};
 
 #[datapod::datapod]
 struct Add {
@@ -25,14 +25,14 @@ struct Sum {
     value: i32,
 }
 
-fn main() -> quicbit::Result<()> {
+fn main() -> peerbus::Result<()> {
     local_shm()?;
     over_iroh()?;
     Ok(())
 }
 
 /// Same-host: server + client are two `Node`s; routing is SHM.
-fn local_shm() -> quicbit::Result<()> {
+fn local_shm() -> peerbus::Result<()> {
     println!("== req/res over shared memory ==");
     let server_node = Node::builder().no_relay().identity("calc").bind()?;
     let client_node = Node::builder().no_relay().identity("caller").bind()?;
@@ -69,7 +69,7 @@ fn local_shm() -> quicbit::Result<()> {
 
 /// Cross-stack: a standalone `RemoteTransport` server (no SHM) answered
 /// by a `Node` client, so the exchange goes over iroh QUIC.
-fn over_iroh() -> quicbit::Result<()> {
+fn over_iroh() -> peerbus::Result<()> {
     println!("== req/res over iroh ==");
     let server = RemoteTransport::builder("calc/add")
         .no_relay()

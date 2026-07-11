@@ -7,8 +7,8 @@
 use std::thread;
 use std::time::Duration;
 
-use quicbit::transport::{PublisherOps, SubscriberOps};
-use quicbit::{RemoteTransport, Transport};
+use peerbus::transport::{PublisherOps, SubscriberOps};
+use peerbus::{RemoteTransport, Transport};
 
 #[datapod::datapod]
 struct Tick {

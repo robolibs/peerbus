@@ -1,5 +1,5 @@
 [package]
-name = "quicbit-fuzz"
+name = "peerbus-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-quicbit = { path = ".." }
+peerbus = { path = ".." }
 
 [[bin]]
 name = "pubsub_handshake"

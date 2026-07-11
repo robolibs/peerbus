@@ -1,11 +1,11 @@
 //! Transport abstractions.
 //!
-//! quicbit ships two transports today: [`crate::local::LocalTransport`]
+//! peerbus ships two transports today: [`crate::local::LocalTransport`]
 //! (local SHM) and [`crate::remote::RemoteTransport`] (iroh QUIC).
 //! Both implement the [`Transport`] trait so higher layers can be
 //! generic over them.
 //!
-//! Every payload `T` shipped over a quicbit transport implements
+//! Every payload `T` shipped over a peerbus transport implements
 //! [`datapod::DataPod`]. That trait provides:
 //!
 //! * A Pod **header** `T::Header` — fixed size, lives in the wire's

@@ -82,16 +82,16 @@
           pip
         ]);
 
-        quicbitPythonDevelop = pkgs.writeShellScriptBin "quicbit-python-develop" ''
+        peerbusPythonDevelop = pkgs.writeShellScriptBin "peerbus-python-develop" ''
           set -euo pipefail
 
           root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
           if [ ! -d "$root/examples/python_binding" ]; then
-            echo "quicbit-python-develop: run from the quicbit repository" >&2
+            echo "peerbus-python-develop: run from the peerbus repository" >&2
             exit 2
           fi
           if [ ! -d "$root/../datapod" ]; then
-            echo "quicbit-python-develop: expected ../datapod next to quicbit" >&2
+            echo "peerbus-python-develop: expected ../datapod next to peerbus" >&2
             exit 2
           fi
 
@@ -104,7 +104,7 @@
           (cd "$root" && maturin develop --features python)
         '';
 
-        quicbitVideoPub = pkgs.writeShellScriptBin "quicbit-video-pub" ''
+        peerbusVideoPub = pkgs.writeShellScriptBin "peerbus-video-pub" ''
           set -euo pipefail
 
           root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
@@ -112,7 +112,7 @@
           exec python examples/python_binding/video_pub.py "$@"
         '';
 
-        quicbitVideoSub = pkgs.writeShellScriptBin "quicbit-video-sub" ''
+        peerbusVideoSub = pkgs.writeShellScriptBin "peerbus-video-sub" ''
           set -euo pipefail
 
           root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
@@ -135,9 +135,9 @@
             pkgs.maturin
             pkgs.git
             pythonEnv
-            quicbitPythonDevelop
-            quicbitVideoPub
-            quicbitVideoSub
+            peerbusPythonDevelop
+            peerbusVideoPub
+            peerbusVideoSub
 
             nixGLAlias
             nixVulkanAlias
@@ -154,34 +154,34 @@
           WGPU_DEBUG = "0";
 
           shellHook = ''
-            export QUICBIT_PY_VENV="$PWD/.nix-python"
-            if [ ! -x "$QUICBIT_PY_VENV/bin/python" ]; then
-              ${pythonEnv}/bin/python -m venv --system-site-packages "$QUICBIT_PY_VENV"
+            export PEERBUS_PY_VENV="$PWD/.nix-python"
+            if [ ! -x "$PEERBUS_PY_VENV/bin/python" ]; then
+              ${pythonEnv}/bin/python -m venv --system-site-packages "$PEERBUS_PY_VENV"
             fi
-            export VIRTUAL_ENV="$QUICBIT_PY_VENV"
+            export VIRTUAL_ENV="$PEERBUS_PY_VENV"
             export PATH="$VIRTUAL_ENV/bin:$PATH"
             export PYO3_PYTHON="$VIRTUAL_ENV/bin/python"
             export PYTHON="$VIRTUAL_ENV/bin/python"
 
-            quicbit-python-ready() {
+            peerbus-python-ready() {
               python - <<'PY' >/dev/null 2>&1
 import inspect
 import datapod
-import quicbit
-sig = str(inspect.signature(quicbit.Node))
+import peerbus
+sig = str(inspect.signature(peerbus.Node))
 assert "max_publishers" in sig and "max_subscribers" in sig, sig
 PY
             }
 
-            if ! quicbit-python-ready; then
-              echo "Installing local datapod/quicbit Python bindings into $VIRTUAL_ENV ..."
-              quicbit-python-develop
+            if ! peerbus-python-ready; then
+              echo "Installing local datapod/peerbus Python bindings into $VIRTUAL_ENV ..."
+              peerbus-python-develop
             fi
 
             echo "Python: $(python --version) ($PYO3_PYTHON)"
-            echo "Refresh bindings after code changes: quicbit-python-develop"
-            echo "Python video pub: quicbit-video-pub"
-            echo "Python video sub: quicbit-video-sub <did:key:...>"
+            echo "Refresh bindings after code changes: peerbus-python-develop"
+            echo "Python video pub: peerbus-video-pub"
+            echo "Python video sub: peerbus-video-sub <did:key:...>"
           '';
         };
       }

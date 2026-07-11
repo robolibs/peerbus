@@ -18,14 +18,14 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use quicbit::{LocalConfig, LocalService};
+use peerbus::{LocalConfig, LocalService};
 
 #[datapod::datapod]
 struct Sample {
     sent_nanos: u64,
     seq: u64,
     // 48 bytes of padding. Nested as [[u8; 24]; 2] because arrays longer
-    // than 32 don't implement `Default`, which datapod 0.4.0's macro requires.
+    // than 32 don't implement `Default`, which datapod's macro requires.
     _pad: [[u8; 24]; 2],
 }
 
@@ -39,12 +39,12 @@ fn now_ns() -> u64 {
 }
 
 fn main() {
-    let total: u64 = std::env::var("QUICBIT_BENCH_MSGS")
+    let total: u64 = std::env::var("PEERBUS_BENCH_MSGS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(100_000);
 
-    let name = format!("quicbit_bench_{}_{}", std::process::id(), now_ns());
+    let name = format!("peerbus_bench_{}_{}", std::process::id(), now_ns());
     let svc = LocalService::<Sample>::create(
         &name,
         LocalConfig {
@@ -89,7 +89,7 @@ fn main() {
                     }
                     std::hint::spin_loop();
                 }
-                Err(quicbit::Error::Lagged { dropped: n }) => {
+                Err(peerbus::Error::Lagged { dropped: n }) => {
                     dropped += n;
                     last_progress = Instant::now();
                 }
@@ -152,7 +152,7 @@ fn main() {
         0
     };
 
-    println!("quicbit local bench (target {total} messages)");
+    println!("peerbus local bench (target {total} messages)");
     println!("  publisher elapsed      : {:?}", publisher_elapsed);
     println!("  publisher emitted      : {emitted}");
     println!("  consumer elapsed       : {:?}", consumer_elapsed);

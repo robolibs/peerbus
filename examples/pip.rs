@@ -13,7 +13,7 @@
 
 use std::time::{Duration, Instant};
 
-use quicbit::{Node, RemoteTransport};
+use peerbus::{Node, RemoteTransport};
 
 #[datapod::datapod]
 struct ClientMsg {
@@ -25,14 +25,14 @@ struct ServerMsg {
     value: u32,
 }
 
-fn main() -> quicbit::Result<()> {
+fn main() -> peerbus::Result<()> {
     local_shm()?;
     over_iroh()?;
     Ok(())
 }
 
 /// Same-host: routing is SHM between two `Node`s.
-fn local_shm() -> quicbit::Result<()> {
+fn local_shm() -> peerbus::Result<()> {
     println!("== pip over shared memory ==");
     let server_node = Node::builder().no_relay().identity("session-srv").bind()?;
     let client_node = Node::builder().no_relay().identity("session-cli").bind()?;
@@ -74,7 +74,7 @@ fn local_shm() -> quicbit::Result<()> {
 
 /// Cross-stack: standalone `RemoteTransport` pip server over iroh
 /// (collect-then-respond).
-fn over_iroh() -> quicbit::Result<()> {
+fn over_iroh() -> peerbus::Result<()> {
     println!("== pip over iroh ==");
     let server = RemoteTransport::builder("session/echo")
         .no_relay()

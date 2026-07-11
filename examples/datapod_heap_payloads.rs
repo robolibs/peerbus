@@ -1,7 +1,7 @@
 //! Heap-bearing datapods (`#[dp(bytes)]`) with QoS and payload inspection.
 //!
 //! `datapod::Bytes` stores raw bytes in the payload. `datapod::Linestring`
-//! stores `Vec<Point>` in the payload. quicbit keeps the payload opaque; the
+//! stores `Vec<Point>` in the payload. peerbus keeps the payload opaque; the
 //! example shows how callers pair the typed header with `sample.payload()`.
 //!
 //! ```text
@@ -11,9 +11,9 @@
 use std::time::{Duration, Instant};
 
 use datapod::{Bytes, Linestring, Point};
-use quicbit::{LocalConfig, Node, TopicQos};
+use peerbus::{LocalConfig, Node, TopicQos};
 
-fn main() -> quicbit::Result<()> {
+fn main() -> peerbus::Result<()> {
     let pub_name = unique("heap-pub");
     let local_cfg = LocalConfig {
         max_payload_bytes: 1024 * 1024,
@@ -47,7 +47,7 @@ fn bytes_case(
     sub_node: &Node,
     pub_name: &str,
     qos: TopicQos,
-) -> quicbit::Result<()> {
+) -> peerbus::Result<()> {
     let mut pubr = pub_node.publisher_with_qos::<Bytes>("blob/raw", qos)?;
     let mut sub = sub_node.subscriber_with_qos::<Bytes>(pub_name, "blob/raw", qos)?;
 
@@ -55,7 +55,7 @@ fn bytes_case(
     pubr.send(&Bytes::from_slice(&payload))?;
 
     let sample = poll_for(Duration::from_secs(2), || sub.take().ok().flatten())
-        .ok_or_else(|| quicbit::Error::Timeout(Duration::from_secs(2)))?;
+        .ok_or_else(|| peerbus::Error::Timeout(Duration::from_secs(2)))?;
     println!(
         "Bytes payload: {} bytes, first={}, last={}",
         sample.payload().len(),
@@ -71,7 +71,7 @@ fn linestring_case(
     sub_node: &Node,
     pub_name: &str,
     qos: TopicQos,
-) -> quicbit::Result<()> {
+) -> peerbus::Result<()> {
     let mut pubr = pub_node.publisher_with_qos::<Linestring>("path/local_plan", qos)?;
     let mut sub = sub_node.subscriber_with_qos::<Linestring>(pub_name, "path/local_plan", qos)?;
 
@@ -84,7 +84,7 @@ fn linestring_case(
     pubr.send(&Linestring::new(points.clone()))?;
 
     let sample = poll_for(Duration::from_secs(2), || sub.take().ok().flatten())
-        .ok_or_else(|| quicbit::Error::Timeout(Duration::from_secs(2)))?;
+        .ok_or_else(|| peerbus::Error::Timeout(Duration::from_secs(2)))?;
     let received_points: &[Point] = bytemuck::cast_slice(sample.payload());
     println!(
         "Linestring payload: {} points, byte_len={}",

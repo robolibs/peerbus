@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use quicbit::{LocalConfig, LocalReqResService, LocalReqRespService};
+use peerbus::{LocalConfig, LocalReqResService, LocalReqRespService};
 
 #[datapod::datapod]
 struct Add {
@@ -24,7 +24,7 @@ fn name(stem: &str) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("quicbit_rr_{stem}_{pid}_{nanos}")
+    format!("peerbus_rr_{stem}_{pid}_{nanos}")
 }
 
 #[test]
@@ -70,4 +70,14 @@ fn timeout_when_no_server() {
 fn old_reqresp_alias_still_compiles() {
     let _svc =
         LocalReqRespService::<Add, Sum>::create(&name("alias"), LocalConfig::default()).unwrap();
+}
+
+#[test]
+fn reqres_module_alias_is_public() {
+    let envelope = peerbus::reqres::Envelope::<Add> {
+        req_id: 7,
+        header: Add { a: 1, b: 2 },
+    };
+    assert_eq!(envelope.req_id, 7);
+    assert_eq!(envelope.header.a + envelope.header.b, 3);
 }

@@ -1,6 +1,6 @@
-//! Round-trip datapod types through quicbit's pub/sub.
+//! Round-trip datapod types through peerbus's pub/sub.
 //!
-//! Verifies that datapod's fixed-Pod types ride on quicbit's local
+//! Verifies that datapod's fixed-Pod types ride on peerbus's local
 //! SHM transport without a serializer in the middle.
 
 use std::time::Duration;
@@ -9,7 +9,7 @@ use datapod::{
     Aabb, Acceleration, BoundingSphere, DataPod, Encoding, Euler, GaussianPoint, Grid, Inertial,
     JointLimits, Odom, Point, Pose, Quaternion, Size, Triangle, Twist, Velocity, Wrench,
 };
-use quicbit::{DatapodMsg, LocalConfig, LocalService};
+use peerbus::{DatapodMsg, LocalConfig, LocalService, Node};
 
 fn poll_for<R>(timeout: Duration, mut f: impl FnMut() -> Option<R>) -> Option<R> {
     let deadline = std::time::Instant::now() + timeout;
@@ -116,7 +116,7 @@ fn datapod_compound_payload_works() {
 }
 
 /// Spot-check that a robot-domain type (Twist) round-trips through
-/// quicbit.
+/// peerbus.
 #[test]
 fn datapod_subfolder_types_round_trip() {
     let svc =
@@ -165,12 +165,132 @@ fn datapod_msg_uses_datapod_canonical_wire_message() {
     assert_eq!(decoded.payload_bytes(), &(0_u8..16).collect::<Vec<_>>());
 }
 
+#[test]
+fn node_datapod_msg_dynamic_view_reads_builtin_grid_without_callsite_type() {
+    let pub_identity = unique_name("datapod_msg_pub");
+    let topic = unique_name("datapod/msg/grid");
+    let pub_node = Node::builder()
+        .no_relay()
+        .identity(&pub_identity)
+        .bind()
+        .expect("publisher node");
+    let sub_node = Node::builder()
+        .no_relay()
+        .identity(unique_name("datapod_msg_sub"))
+        .bind()
+        .expect("subscriber node");
+
+    let mut pubr = pub_node.publisher::<DatapodMsg>(&topic).unwrap();
+    let mut sub = sub_node
+        .subscriber::<DatapodMsg>(pub_identity.as_str(), &topic)
+        .unwrap();
+
+    let grid = Grid::new(
+        2,
+        3,
+        Encoding::Rgba8,
+        0.25,
+        false,
+        Pose::default(),
+        (0_u8..24).collect(),
+    );
+    let canonical = datapod::to_wire_message(&grid);
+    pubr.send_datapod_wire(canonical.type_hash, canonical.bytes.clone())
+        .unwrap();
+
+    let sample = poll_for(Duration::from_secs(2), || sub.take_datapod_view().unwrap())
+        .expect("generic datapod sample");
+    assert_eq!(sample.type_hash(), canonical.type_hash);
+    assert_eq!(sample.wire(), canonical.bytes.as_slice());
+
+    let view = sample.dynamic().unwrap();
+    assert_eq!(view.schema().canonical_name, "datapod.grid.v1");
+    assert_eq!(view.get_u32("rows").unwrap(), 2);
+    assert_eq!(view.get_u32("cols").unwrap(), 3);
+    assert_eq!(view.get_f64("resolution").unwrap(), 0.25);
+    assert_eq!(view.payload(), &(0_u8..24).collect::<Vec<_>>());
+}
+
+#[test]
+fn node_req_res_can_exchange_generic_datapod_msg_and_dynamic_views() {
+    let server_identity = unique_name("datapod_req_server");
+    let client_identity = unique_name("datapod_req_client");
+    let topic = unique_name("datapod/req");
+    let server_node = Node::builder()
+        .no_relay()
+        .identity(&server_identity)
+        .bind()
+        .expect("server node");
+    let client_node = Node::builder()
+        .no_relay()
+        .identity(client_identity)
+        .bind()
+        .expect("client node");
+
+    let response_grid = Grid::new(
+        1,
+        2,
+        Encoding::Rgba8,
+        0.5,
+        false,
+        Pose::default(),
+        (100_u8..108).collect(),
+    );
+    let response_wire = datapod::to_wire_message(&response_grid);
+    let mut server = server_node
+        .req_server::<DatapodMsg, DatapodMsg>(&topic)
+        .unwrap();
+    let handle = std::thread::spawn(move || {
+        poll_for(Duration::from_secs(2), || {
+            let (req, reply) = server.take().unwrap()?;
+            let request_view = req.dynamic().unwrap();
+            assert_eq!(request_view.schema().canonical_name, "datapod.grid.v1");
+            assert_eq!(request_view.get_u32("rows").unwrap(), 2);
+            assert_eq!(request_view.get_u32("cols").unwrap(), 3);
+            reply
+                .respond(&DatapodMsg::new(
+                    response_wire.type_hash,
+                    response_wire.bytes.clone(),
+                ))
+                .unwrap();
+            Some(())
+        })
+        .expect("server should receive generic datapod req");
+    });
+
+    let request_grid = Grid::new(
+        2,
+        3,
+        Encoding::Rgba8,
+        0.25,
+        false,
+        Pose::default(),
+        (0_u8..24).collect(),
+    );
+    let request_wire = datapod::to_wire_message(&request_grid);
+    let mut client = client_node
+        .req_client::<DatapodMsg, DatapodMsg>(server_identity.as_str(), &topic)
+        .unwrap();
+    let res = client
+        .call(&DatapodMsg::new(
+            request_wire.type_hash,
+            request_wire.bytes.clone(),
+        ))
+        .unwrap();
+    let response_view = res.dynamic().unwrap();
+    assert_eq!(response_view.schema().canonical_name, "datapod.grid.v1");
+    assert_eq!(response_view.get_u32("rows").unwrap(), 1);
+    assert_eq!(response_view.get_u32("cols").unwrap(), 2);
+    assert_eq!(response_view.payload(), &(100_u8..108).collect::<Vec<_>>());
+    handle.join().unwrap();
+}
+
 /// Compile-only sanity: every newly-Pod type should be usable as
-/// a quicbit payload. We don't actually publish here — the test
+/// a peerbus payload. We don't actually publish here — the test
 /// passes if it builds.
 #[test]
 fn newly_pod_types_are_local_payload() {
-    fn assert_payload<T: quicbit::LocalPayload>() {}
+    fn assert_payload<T: peerbus::LocalPayload>() {}
     assert_payload::<Point>();
     assert_payload::<Pose>();
     assert_payload::<Quaternion>();

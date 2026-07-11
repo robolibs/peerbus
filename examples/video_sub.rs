@@ -7,17 +7,17 @@
 //! ```
 //!
 //! Same command works whether the publisher is on the same host
-//! (local SHM) or another machine (iroh). quicbit picks.
+//! (local SHM) or another machine (iroh). peerbus picks.
 
 use std::time::{Duration, Instant};
 
 use datapod::{Encoding, Grid};
 use minifb::{Key, Window, WindowOptions};
-use quicbit::{DatapodMsg, LocalConfig, Node};
+use peerbus::{DatapodMsg, LocalConfig, Node};
 
 const TOPIC: &str = "demo/video";
 
-fn main() -> quicbit::Result<()> {
+fn main() -> peerbus::Result<()> {
     init_tracing();
     ensure_wayland_session();
 
@@ -48,7 +48,7 @@ fn main() -> quicbit::Result<()> {
     println!("first frame {width}x{height}");
 
     let mut window = Window::new(
-        "quicbit video sub  (Esc to quit)",
+        "peerbus video sub  (Esc to quit)",
         width,
         height,
         WindowOptions {
@@ -106,22 +106,22 @@ fn ensure_wayland_session() {
 }
 
 fn init_tracing() {
-    // RUST_LOG=iroh=info,quicbit=debug … cargo run --example …
+    // RUST_LOG=iroh=info,peerbus=debug … cargo run --example …
     use tracing_subscriber::{EnvFilter, fmt};
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
     let _ = fmt().with_env_filter(filter).try_init();
 }
 
 fn decode_grid_message(
-    msg: &quicbit::datapod_msg::DatapodMsgHeader,
+    msg: &peerbus::datapod_msg::DatapodMsgHeader,
     wire: &[u8],
-) -> quicbit::Result<Option<Grid>> {
+) -> peerbus::Result<Option<Grid>> {
     let msg = DatapodMsg::new(msg.type_hash, wire.to_vec());
     let grid = match msg.to_datapod::<Grid>() {
         Ok(grid) => grid,
         Err(datapod::WireError::WrongTypeHash { .. }) => return Ok(None),
         Err(e) => {
-            return Err(quicbit::Error::invalid_argument(format!(
+            return Err(peerbus::Error::invalid_argument(format!(
                 "invalid datapod.Grid wire message: {e}"
             )));
         }
@@ -132,7 +132,7 @@ fn decode_grid_message(
     let expected = (grid.rows as usize)
         .checked_mul(grid.cols as usize)
         .and_then(|n| n.checked_mul(4))
-        .ok_or_else(|| quicbit::Error::invalid_argument("video dimensions overflow"))?;
+        .ok_or_else(|| peerbus::Error::invalid_argument("video dimensions overflow"))?;
     if grid.data.len() != expected {
         return Ok(None);
     }

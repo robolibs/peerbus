@@ -4,14 +4,14 @@
 //! topic / frame, version mismatch) so a regression in any of them
 //! shows up in CI even without running `cargo fuzz`.
 
-use quicbit::Error;
-use quicbit::chunk::{Reassembler, make_chunk_payload, parse_chunk_payload};
-use quicbit::remote::{
+use peerbus::Error;
+use peerbus::chunk::{Reassembler, make_chunk_payload, parse_chunk_payload};
+use peerbus::remote::{
     HANDSHAKE_VERSION, ITEM_HANDSHAKE_VERSION_CHUNKED, MAX_PAYLOAD_LEN,
     PUBSUB_HANDSHAKE_VERSION_QOS, parse_frame, parse_pubsub_handshake_tail,
     parse_pubsub_handshake_tail_qos, parse_request_handshake_tail,
 };
-use quicbit::{DeliveryPolicy, TopicQos};
+use peerbus::{DeliveryPolicy, TopicQos};
 
 #[test]
 fn pubsub_handshake_rejects_empty() {

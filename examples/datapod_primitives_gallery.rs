@@ -12,7 +12,7 @@
 use std::time::{Duration, Instant};
 
 use datapod::{Aabb, Bytes, Linestring, Odom, Point, Pose, Quaternion, Twist, Velocity, Wrench};
-use quicbit::{LocalConfig, Node, TopicQos, did_key::endpoint_id_to_did_key};
+use peerbus::{LocalConfig, Node, TopicQos, did_key::endpoint_id_to_did_key};
 
 #[datapod::datapod]
 struct UploadAck {
@@ -21,7 +21,7 @@ struct UploadAck {
     checksum: u64,
 }
 
-fn main() -> quicbit::Result<()> {
+fn main() -> peerbus::Result<()> {
     let system_did = endpoint_id_to_did_key(&iroh::SecretKey::generate().public());
     let cfg = LocalConfig {
         history_depth: 8,
@@ -46,7 +46,7 @@ fn main() -> quicbit::Result<()> {
     Ok(())
 }
 
-fn pub_sub_odom(server_node: &Node, client_node: &Node) -> quicbit::Result<()> {
+fn pub_sub_odom(server_node: &Node, client_node: &Node) -> peerbus::Result<()> {
     println!("== pub/sub: Odom state ==");
     let qos = TopicQos::latest().with_subscriber_queue(4);
     let mut pubr = server_node.publisher_with_qos::<Odom>("state/odom", qos)?;
@@ -58,7 +58,7 @@ fn pub_sub_odom(server_node: &Node, client_node: &Node) -> quicbit::Result<()> {
     })?;
 
     let odom = poll_for(Duration::from_secs(2), || sub.take().ok().flatten())
-        .ok_or_else(|| quicbit::Error::Timeout(Duration::from_secs(2)))?;
+        .ok_or_else(|| peerbus::Error::Timeout(Duration::from_secs(2)))?;
     let h = odom.header();
     println!(
         "  odom pose=({:.1}, {:.1}, {:.1}) vx={:.1}",
@@ -67,7 +67,7 @@ fn pub_sub_odom(server_node: &Node, client_node: &Node) -> quicbit::Result<()> {
     Ok(())
 }
 
-fn req_res_pose_to_wrench(server_node: &Node, client_node: &Node) -> quicbit::Result<()> {
+fn req_res_pose_to_wrench(server_node: &Node, client_node: &Node) -> peerbus::Result<()> {
     println!("== req/res: Pose -> Wrench ==");
     let mut server = server_node.req_server::<Pose, Wrench>("control/wrench")?;
     let handle = std::thread::spawn(move || {
@@ -101,7 +101,7 @@ fn req_res_pose_to_wrench(server_node: &Node, client_node: &Node) -> quicbit::Re
     Ok(())
 }
 
-fn que_ans_bbox_to_path(server_node: &Node, client_node: &Node) -> quicbit::Result<()> {
+fn que_ans_bbox_to_path(server_node: &Node, client_node: &Node) -> peerbus::Result<()> {
     println!("== que/ans: Aabb -> Linestring answers ==");
     let qos = TopicQos::reliable()
         .with_chunk_bytes(4096)
@@ -138,8 +138,8 @@ fn que_ans_bbox_to_path(server_node: &Node, client_node: &Node) -> quicbit::Resu
     Ok(())
 }
 
-fn put_ack_byte_chunks(server_node: &Node, client_node: &Node) -> quicbit::Result<()> {
-    println!("== put/ack: Bytes chunks -> UploadAck ==");
+fn put_ack_byte_chunks(server_node: &Node, client_node: &Node) -> peerbus::Result<()> {
+    println!("== put/ack: Bytes put items -> UploadAck ==");
     let qos = TopicQos::reliable()
         .with_chunk_bytes(4096)
         .with_max_message_bytes(1024 * 1024);
@@ -163,7 +163,7 @@ fn put_ack_byte_chunks(server_node: &Node, client_node: &Node) -> quicbit::Resul
             .unwrap();
             Some(())
         })
-        .expect("put/ack server should receive upload");
+        .expect("put/ack server should receive put items");
     });
 
     let chunk_a: Vec<u8> = (0..32 * 1024).map(|i| (i % 251) as u8).collect();
@@ -185,7 +185,7 @@ fn put_ack_byte_chunks(server_node: &Node, client_node: &Node) -> quicbit::Resul
     Ok(())
 }
 
-fn pip_twist_to_pose(server_node: &Node, client_node: &Node) -> quicbit::Result<()> {
+fn pip_twist_to_pose(server_node: &Node, client_node: &Node) -> peerbus::Result<()> {
     println!("== pip: Twist commands <-> Pose updates ==");
     let mut server = server_node.pip_server::<Twist, Pose>("session/integrate")?;
     let handle = std::thread::spawn(move || {

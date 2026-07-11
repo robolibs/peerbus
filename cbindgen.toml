@@ -1,5 +1,5 @@
 language = "C"
-include_guard = "QUICBIT_H"
+include_guard = "PEERBUS_H"
 cpp_compat = true
 documentation = true
 style = "type"
@@ -10,7 +10,7 @@ sys_includes = ["stdbool.h", "stddef.h", "stdint.h"]
 parse_deps = false
 
 [enum]
-rename_variants = "QualifiedScreamingSnakeCase"
-prefix_with_name = true
+rename_variants = "ScreamingSnakeCase"
+prefix_with_name = false
 
 [export]

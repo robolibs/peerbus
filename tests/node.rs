@@ -9,9 +9,9 @@
 
 use std::time::{Duration, Instant};
 
-use quicbit::did_key::endpoint_id_to_did_key;
-use quicbit::transport::{PublisherOps, SubscriberOps};
-use quicbit::{LocalConfig, Node, RemoteTransport, TopicQos, Transport};
+use peerbus::did_key::endpoint_id_to_did_key;
+use peerbus::transport::{PublisherOps, SubscriberOps};
+use peerbus::{LocalConfig, Node, RemoteTransport, TopicQos, Transport};
 
 static NODE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -306,7 +306,7 @@ fn local_reliable_qos_reports_lag_when_capacity_exceeded() {
 
     assert!(matches!(
         sub.take(),
-        Err(quicbit::Error::Lagged { dropped: 2 })
+        Err(peerbus::Error::Lagged { dropped: 2 })
     ));
     assert_eq!(sub.stats().stale_dropped, 2);
     assert_eq!(sub.take().unwrap().unwrap().header().seq, 3);
@@ -1445,7 +1445,7 @@ fn identity_string_yields_deterministic_endpoint_id() {
 #[test]
 fn identity_env_round_trip() {
     let _guard = node_test_guard();
-    let var = format!("QUICBIT_TEST_ID_{}", std::process::id());
+    let var = format!("PEERBUS_TEST_ID_{}", std::process::id());
     // SAFETY: tests modify process env, single-threaded read here.
     unsafe { std::env::set_var(&var, "rover-c") };
 
@@ -1807,7 +1807,7 @@ fn different_system_dids_isolate_the_same_topic_key() {
         Err(err) => err,
     };
     assert!(
-        matches!(err, quicbit::Error::ServiceNotFound(_)),
+        matches!(err, peerbus::Error::ServiceNotFound(_)),
         "got {err:?}"
     );
 }
@@ -1918,7 +1918,7 @@ fn system_did_requires_did_key() {
         Err(err) => err,
     };
     assert!(
-        matches!(err, quicbit::Error::InvalidArgument(_)),
+        matches!(err, peerbus::Error::InvalidArgument(_)),
         "got {err:?}"
     );
 }
@@ -1938,7 +1938,7 @@ fn system_topic_helpers_require_system_did() {
         Err(err) => err,
     };
     assert!(
-        matches!(sub_err, quicbit::Error::InvalidArgument(_)),
+        matches!(sub_err, peerbus::Error::InvalidArgument(_)),
         "got {sub_err:?}"
     );
 
@@ -1946,7 +1946,7 @@ fn system_topic_helpers_require_system_did() {
         .add_topic_route(&topic, node.endpoint_addr())
         .expect_err("topic routes require system DID mode");
     assert!(
-        matches!(route_err, quicbit::Error::InvalidArgument(_)),
+        matches!(route_err, peerbus::Error::InvalidArgument(_)),
         "got {route_err:?}"
     );
 
@@ -1954,7 +1954,7 @@ fn system_topic_helpers_require_system_did() {
         .add_system_peer(node.endpoint_addr())
         .expect_err("system peers require system DID mode");
     assert!(
-        matches!(peer_err, quicbit::Error::InvalidArgument(_)),
+        matches!(peer_err, peerbus::Error::InvalidArgument(_)),
         "got {peer_err:?}"
     );
 }
@@ -1970,7 +1970,7 @@ fn ephemeral_key_changes_each_bind() {
 #[test]
 fn topic_validation_rejects_bad_chars() {
     let _guard = node_test_guard();
-    use quicbit::Error;
+    use peerbus::Error;
     let node = Node::builder().no_relay().identity("v").bind().unwrap();
 
     // Empty topic.
@@ -2001,7 +2001,7 @@ fn topic_validation_rejects_bad_chars() {
 #[test]
 fn rejects_unallowlisted_peer() {
     let _guard = node_test_guard();
-    use quicbit::Error;
+    use peerbus::Error;
 
     // An "intended" peer whose key won't actually dial us — we
     // just need *some* allowlisted id so the publisher is in
@@ -2027,7 +2027,7 @@ fn rejects_unallowlisted_peer() {
 
     let _pubr = pub_node.publisher::<Tick>("blocked/topic").unwrap();
 
-    // The dial succeeds at the QUIC layer; quicbit then closes the
+    // The dial succeeds at the QUIC layer; peerbus then closes the
     // connection because the subscriber's endpoint id is not in
     // the allowlist. Subsequent take() observes the disconnect.
     let mut sub = sub_node

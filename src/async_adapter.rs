@@ -5,7 +5,7 @@
 //! a tokio runtime without blocking its worker threads. The local
 //! SHM path is genuinely blocking-friendly (atomic ops + an
 //! occasional yield), so this isn't a contortion — it just lets
-//! quicbit fit into an async surrounding.
+//! peerbus fit into an async surrounding.
 //!
 //! For the remote transport, the sync core *already* drives an
 //! internal tokio runtime via `block_on`. The async wrapper here is

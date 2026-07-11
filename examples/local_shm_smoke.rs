@@ -2,7 +2,7 @@
 
 use core::time::Duration;
 
-use quicbit::{LocalConfig, LocalService};
+use peerbus::{LocalConfig, LocalService};
 
 #[datapod::datapod]
 struct Tick {
@@ -10,7 +10,7 @@ struct Tick {
 }
 
 fn main() -> Result<(), Box<dyn core::error::Error>> {
-    let name = format!("quicbit_smoke_{}", std::process::id());
+    let name = format!("peerbus_smoke_{}", std::process::id());
     let service = LocalService::<Tick>::create(&name, LocalConfig::default())?;
     let mut publisher = service.publisher()?;
     let mut subscriber = service.subscriber()?;

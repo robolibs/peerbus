@@ -2,11 +2,11 @@
 
 use std::time::Duration;
 
-use quicbit::did_key::{
+use peerbus::did_key::{
     DID_KEY_PREFIX, did_key_to_endpoint_id, endpoint_id_to_did_key, looks_like_did_key,
 };
-use quicbit::node::service_name;
-use quicbit::{LocalConfig, LocalService};
+use peerbus::node::service_name;
+use peerbus::{LocalConfig, LocalService};
 
 #[datapod::datapod]
 struct Tick {
