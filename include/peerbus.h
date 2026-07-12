@@ -9,6 +9,25 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/*
+ * Handle lifetime and threading contract
+ * ---------------------------------------
+ * A parent client/server handle and the child handles derived from it
+ * (pending/upload/pip/puts/batch) share ownership of the parent's transport
+ * state, so they may be freed in any order. Each child keeps the shared state
+ * alive; it is released only when the last of them (parent or child) is freed.
+ * Freeing the parent before its children is safe and is never a
+ * use-after-free.
+ *
+ * Each handle is single-threaded: one handle must not be used from two threads
+ * concurrently; the caller synchronizes. Do not call back into peerbus on the
+ * same parent handle from within a serve_one handler callback (the parent's
+ * lock is held for the duration of the callback, so a re-entrant call would
+ * deadlock).
+ *
+ * Free each handle exactly once; never use a handle after freeing it.
+ */
+
 #define CHUNK_FRAME_FLAG 2147483648
 
 #define CHUNK_FRAME_LEN_MASK 2147483647
@@ -52,9 +71,16 @@
  * History:
  * * `1` — type identity hashed from `std::any::type_name::<T>()`.
  *   Unstable across rustc versions; retired.
- * * `2` — type identity hashed from `(size_of::<T>(), align_of::<T>())`
- *   via [`crate::transport::wire_type_hash`]. Stable across
- *   toolchains; coarser (size+align collisions possible).
+ * * `2` — current. The frame shape is unchanged, but type identity is
+ *   now hashed from `(size, align, type_name)` via
+ *   [`crate::transport::wire_type_hash`], not size+align alone.
+ *   Size+align alone was toolchain-stable but collision-prone: two
+ *   unrelated types with the same size and alignment hashed
+ *   identically and could be interchanged silently. Distinct types now
+ *   produce distinct hashes, so a mismatch fails loudly with
+ *   `TypeMismatch`. Peers must be built from the same type definitions
+ *   (and ideally the same toolchain). The version is not bumped: the
+ *   layout is byte-identical and an old peer already fails loudly.
  */
 #define HANDSHAKE_VERSION 2
 
@@ -89,13 +115,19 @@
 #define MAX_PAYLOAD_LEN ((64 * 1024) * 1024)
 
 /**
- * Delivery behavior for C QoS.
+ * Delivery behavior for C QoS: reliable, in-order delivery.
  */
-typedef enum {
-  PEERBUS_DELIVERY_RELIABLE = 0,
-  PEERBUS_DELIVERY_LATEST = 1,
-  PEERBUS_DELIVERY_BEST_EFFORT = 2,
-} PeerbusDeliveryPolicy;
+#define PEERBUS_DELIVERY_RELIABLE 0
+
+/**
+ * Delivery behavior for C QoS: keep only the latest value.
+ */
+#define PEERBUS_DELIVERY_LATEST 1
+
+/**
+ * Delivery behavior for C QoS: best-effort, may drop.
+ */
+#define PEERBUS_DELIVERY_BEST_EFFORT 2
 
 typedef struct PeerbusAckServer PeerbusAckServer;
 
@@ -201,6 +233,10 @@ typedef struct PeerbusSubscriber PeerbusSubscriber;
 /**
  * Optional node construction settings. NULL string pointers mean "unset";
  * zero numeric limits mean "use the Rust default".
+ *
+ * Inbound connections are denied by default: unless `allowed_peers` is
+ * non-empty or `allow_any_peer` is true, every incoming connection is
+ * refused right after the QUIC handshake.
  */
 typedef struct {
   const char *identity;
@@ -208,6 +244,11 @@ typedef struct {
   const char *system_did;
   const char *const *allowed_peers;
   uintptr_t allowed_peers_len;
+  /**
+   * Accept connections from ANY peer that knows the ALPN. Insecure;
+   * only appropriate on a trusted network. Logs a WARN at bind.
+   */
+  bool allow_any_peer;
   uintptr_t max_payload_bytes;
   uint32_t history_depth;
   uint32_t subscriber_buffer;
@@ -224,9 +265,14 @@ typedef struct {
  * C mirror of [`TopicQos`]. Zero fields are allowed; use
  * [`peerbus_topic_qos_reliable`], [`peerbus_topic_qos_latest`], or
  * [`peerbus_topic_qos_best_effort`] for canonical defaults.
+ *
+ * `delivery` is a plain integer (not a Rust enum) so that an out-of-range
+ * value from C is never undefined behavior: it is validated at every use
+ * (`0..=2`, see [`PEERBUS_DELIVERY_RELIABLE`] and friends) and an invalid
+ * value fails the call via [`peerbus_last_error_message`].
  */
 typedef struct {
-  PeerbusDeliveryPolicy delivery;
+  uint32_t delivery;
   uintptr_t max_message_bytes;
   uintptr_t max_inflight_bytes;
   uintptr_t chunk_bytes;
@@ -350,6 +396,11 @@ const char *peerbus_last_error_message(void);
 /**
  * Create a node. `identity` may be NULL for an ephemeral key. Returns
  * NULL on failure (see [`peerbus_last_error_message`]).
+ *
+ * The node this creates denies every inbound connection (no allowlist, no
+ * `allow_any_peer`). To serve remote peers, use
+ * `peerbus_node_new_with_config` and set `allowed_peers` (preferred) or
+ * `allow_any_peer`.
  */
 PeerbusNode *peerbus_node_new(const char *identity, bool no_relay);
 
@@ -1080,6 +1131,66 @@ bool peerbus_pending_pip_finish_send(PeerbusPendingPip *pip);
 void peerbus_pending_pip_close(PeerbusPendingPip *pip);
 
 void peerbus_pending_pip_free(PeerbusPendingPip *pip);
+
+/**
+ * No-QoS datapod publisher, mirroring [`peerbus_publisher_new`].
+ */
+PeerbusDatapodPublisher *peerbus_datapod_publisher_new(const PeerbusNode *node, const char *topic);
+
+PeerbusPublisherStats peerbus_datapod_publisher_stats(const PeerbusDatapodPublisher *publisher);
+
+PeerbusSubscriberStats peerbus_datapod_subscriber_stats(const PeerbusDatapodSubscriber *subscriber);
+
+/**
+ * Poll for the next datapod sample as an owned message, mirroring the raw
+ * [`peerbus_subscriber_take`]. Returns `1` and writes an owned message to
+ * `*out_message` when one is available, `0` when none is ready, and `-1`
+ * on error. Free the message with [`peerbus_datapod_message_free`].
+ */
+int32_t peerbus_datapod_subscriber_take(PeerbusDatapodSubscriber *subscriber,
+                                        PeerbusDatapodMessage **out_message);
+
+/**
+ * Datapod req/res `serve_one`, mirroring [`peerbus_req_server_serve_one`].
+ * The handler's `kind` argument carries the request `type_hash`, and the
+ * responder's `kind` becomes the response `type_hash`.
+ */
+int32_t peerbus_datapod_req_server_serve_one(PeerbusDatapodReqServer *server,
+                                             uint64_t timeout_ms,
+                                             PeerbusReqHandler handler,
+                                             void *ctx);
+
+/**
+ * Datapod que/ans `serve_one`, mirroring [`peerbus_ans_server_serve_one`].
+ * Answer items pushed via [`peerbus_ans_responder_send`] use their `kind`
+ * argument as the answer `type_hash`.
+ */
+int32_t peerbus_datapod_ans_server_serve_one(PeerbusDatapodAnsServer *server,
+                                             uint64_t timeout_ms,
+                                             PeerbusAnsHandler handler,
+                                             void *ctx);
+
+/**
+ * Datapod put/ack `serve_one`, mirroring [`peerbus_ack_server_serve_one`].
+ * Uploaded items are exposed via `items` with each element's `kind`
+ * carrying the `type_hash`; the responder's `kind` becomes the ack
+ * `type_hash`.
+ */
+int32_t peerbus_datapod_ack_server_serve_one(PeerbusDatapodAckServer *server,
+                                             uint64_t timeout_ms,
+                                             PeerbusAckHandler handler,
+                                             void *ctx);
+
+/**
+ * Datapod pip `serve_one`, mirroring [`peerbus_pip_server_serve_one`].
+ * Incoming items are exposed via `items` with each element's `kind`
+ * carrying the `type_hash`; reply items pushed via
+ * [`peerbus_message_responder_send`] use their `kind` as the `type_hash`.
+ */
+int32_t peerbus_datapod_pip_server_serve_one(PeerbusDatapodPipServer *server,
+                                             uint64_t timeout_ms,
+                                             PeerbusPipHandler handler,
+                                             void *ctx);
 
 #ifdef __cplusplus
 }  // extern "C"

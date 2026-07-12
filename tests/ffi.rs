@@ -111,24 +111,32 @@ fn assert_grid_message(type_hash: u64, wire: &[u8], rows: u32, cols: u32, payloa
 #[test]
 fn c_header_exposes_plan_qos_delivery_constants() {
     let header = include_str!("../include/peerbus.h");
-    assert!(header.contains("PEERBUS_DELIVERY_RELIABLE = 0"));
-    assert!(header.contains("PEERBUS_DELIVERY_LATEST = 1"));
-    assert!(header.contains("PEERBUS_DELIVERY_BEST_EFFORT = 2"));
-    assert!(!header.contains("PEERBUS_DELIVERY_POLICY_PEERBUS_DELIVERY_POLICY"));
+    assert!(header.contains("#define PEERBUS_DELIVERY_RELIABLE 0"));
+    assert!(header.contains("#define PEERBUS_DELIVERY_LATEST 1"));
+    assert!(header.contains("#define PEERBUS_DELIVERY_BEST_EFFORT 2"));
+    // The QoS delivery field is a plain integer, not a repr(C) enum: an
+    // out-of-range value from C must be validated rather than materialized as
+    // an invalid enum discriminant (UB). Guard against regressing to the enum.
+    assert!(!header.contains("PeerbusDeliveryPolicy"));
+    assert!(header.contains("uint32_t delivery;"));
     assert!(header.contains("uint32_t max_publishers;"));
     assert!(header.contains("uint32_t max_subscribers;"));
 }
 
 #[test]
 fn c_qos_zero_numeric_fields_keep_policy_defaults() {
-    let qos = peerbus::TopicQos::from(PeerbusTopicQos {
-        delivery: PeerbusDeliveryPolicy::PEERBUS_DELIVERY_LATEST,
+    // Zero numeric fields mean "use the policy default"; only `delivery` and
+    // `priority` are carried through. Exercises the new fallible u32-based
+    // conversion (`topic_qos_from_c`) via its `#[doc(hidden)]` test shim.
+    let qos = __peerbus_topic_qos_from_c(PeerbusTopicQos {
+        delivery: PEERBUS_DELIVERY_LATEST,
         max_message_bytes: 0,
         max_inflight_bytes: 0,
         chunk_bytes: 0,
         subscriber_queue: 0,
         priority: 7,
-    });
+    })
+    .expect("a valid delivery policy converts");
 
     assert_eq!(qos.delivery, peerbus::DeliveryPolicy::Latest);
     assert_eq!(
@@ -145,6 +153,20 @@ fn c_qos_zero_numeric_fields_keep_policy_defaults() {
         peerbus::TopicQos::latest().subscriber_queue
     );
     assert_eq!(qos.priority, 7);
+
+    // An out-of-range delivery discriminant is rejected instead of being
+    // materialized as an invalid enum (which would be UB).
+    assert!(
+        __peerbus_topic_qos_from_c(PeerbusTopicQos {
+            delivery: 7,
+            max_message_bytes: 0,
+            max_inflight_bytes: 0,
+            chunk_bytes: 0,
+            subscriber_queue: 0,
+            priority: 0,
+        })
+        .is_none()
+    );
 }
 
 #[test]
@@ -388,6 +410,7 @@ fn c_abi_system_did_pubsub_with_qos_round_trip() {
         system_did: system.as_ptr(),
         allowed_peers: ptr::null(),
         allowed_peers_len: 0,
+        allow_any_peer: false,
         max_payload_bytes: 0,
         history_depth: 8,
         subscriber_buffer: 8,
@@ -457,6 +480,7 @@ fn c_abi_system_did_all_client_modes_round_trip() {
         system_did: system.as_ptr(),
         allowed_peers: ptr::null(),
         allowed_peers_len: 0,
+        allow_any_peer: false,
         max_payload_bytes: 0,
         history_depth: 8,
         subscriber_buffer: 8,
@@ -1550,6 +1574,7 @@ fn c_abi_datapod_system_did_all_client_modes_round_trip() {
         system_did: system.as_ptr(),
         allowed_peers: ptr::null(),
         allowed_peers_len: 0,
+        allow_any_peer: false,
         max_payload_bytes: 0,
         history_depth: 8,
         subscriber_buffer: 8,
@@ -1943,6 +1968,7 @@ fn c_abi_endpoint_addr_peer_and_stats_round_trip() {
         system_did: ptr::null(),
         allowed_peers: allowed_peers.as_ptr(),
         allowed_peers_len: allowed_peers.len(),
+        allow_any_peer: false,
         max_payload_bytes: 0,
         history_depth: 0,
         subscriber_buffer: 0,
