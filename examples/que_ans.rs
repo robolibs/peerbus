@@ -32,7 +32,7 @@ fn local_shm() -> peerbus::Result<()> {
     let server_node = Node::builder().no_relay().identity("search").bind()?;
     let client_node = Node::builder().no_relay().identity("seeker").bind()?;
 
-    let mut server = server_node.ans::<RangeQue, Hit>("search/range")?;
+    let mut server = server_node.que_server::<RangeQue, Hit>("search/range")?;
     let handle = std::thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(3);
         while Instant::now() < deadline {

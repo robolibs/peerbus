@@ -15,7 +15,7 @@ use crate::error::{Error, Result};
 use crate::local::service::LocalConfig;
 use crate::local::shm::{Consumer, Producer, Segment};
 use crate::queans::{ANS_KIND_DONE, ANS_KIND_ITEM, AnsEnvelope};
-use crate::reqresp::Envelope;
+use crate::reqres::Envelope;
 use crate::transport::wire_type_hash;
 
 const QUE_SUFFIX: &str = "__que";

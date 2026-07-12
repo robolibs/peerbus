@@ -32,7 +32,7 @@ fn local_shm() -> peerbus::Result<()> {
     let server_node = Node::builder().no_relay().identity("sink").bind()?;
     let client_node = Node::builder().no_relay().identity("uploader").bind()?;
 
-    let mut server = server_node.ack::<LogChunk, UploadAck>("logs/upload")?;
+    let mut server = server_node.put_server::<LogChunk, UploadAck>("logs/upload")?;
     let handle = std::thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(3);
         while Instant::now() < deadline {

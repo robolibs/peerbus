@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use crate::error::{Error, Result};
 use crate::local::service::LocalConfig;
 use crate::local::shm::{Consumer, Producer, Segment};
-use crate::reqresp::{DEFAULT_CALL_TIMEOUT, Envelope};
+use crate::reqres::{DEFAULT_CALL_TIMEOUT, Envelope};
 use crate::transport::wire_type_hash;
 
 const REQ_SUFFIX: &str = "__req";
@@ -269,9 +269,9 @@ where
                 None => std::thread::sleep(Duration::from_micros(50)),
             }
         }
-        Err(Error::Other(format!(
-            "call timed out after {timeout:?} (req_id={req_id})"
-        )))
+        // Parity with que/put/pip local modes: signal timeouts with the
+        // dedicated `Error::Timeout(Duration)` variant, not `Error::Other`.
+        Err(Error::Timeout(timeout))
     }
 }
 

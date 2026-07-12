@@ -15,7 +15,7 @@ use crate::error::{Error, Result};
 use crate::local::service::LocalConfig;
 use crate::local::shm::{Consumer, Producer, Segment};
 use crate::putack::{PUT_KIND_DONE, PUT_KIND_ITEM, PutEnvelope};
-use crate::reqresp::Envelope;
+use crate::reqres::Envelope;
 use crate::transport::wire_type_hash;
 
 const PUT_SUFFIX: &str = "__put";
