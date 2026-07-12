@@ -736,15 +736,20 @@ fn standalone_queans_server_serves_node_client() {
 fn node_queans_server_serves_standalone_client() {
     let _guard = node_test_guard();
     let topic = unique_name("search/standalone_cli");
+    // `allow_any_peer` rather than a real allowlist: the inbound peer is a
+    // `RemoteTransport`, whose endpoint key is ephemeral — its id does not
+    // exist until it is built, and building it needs this node's address.
+    // There is nothing to allowlist at builder time.
     let server_node = Node::builder()
         .no_relay()
         .identity(unique_name("ans_srv"))
+        .allow_any_peer()
         .bind()
         .unwrap();
     server_node
         .wait_for_direct_addresses(Duration::from_secs(5))
         .unwrap();
-    let mut server = server_node.ans::<RangeQue, Hit>(&topic).unwrap();
+    let mut server = server_node.que_server::<RangeQue, Hit>(&topic).unwrap();
     let handle = std::thread::spawn(move || {
         poll_for(Duration::from_secs(5), || {
             let (que, mut ans) = server.take().unwrap()?;
@@ -807,15 +812,18 @@ fn standalone_putack_server_serves_node_client() {
 fn node_putack_server_serves_standalone_client() {
     let _guard = node_test_guard();
     let topic = unique_name("logs/standalone_cli");
+    // See `node_queans_server_serves_standalone_client`: the RemoteTransport
+    // client's ephemeral id is unknowable before this node binds.
     let server_node = Node::builder()
         .no_relay()
         .identity(unique_name("ack_srv"))
+        .allow_any_peer()
         .bind()
         .unwrap();
     server_node
         .wait_for_direct_addresses(Duration::from_secs(5))
         .unwrap();
-    let mut server = server_node.ack::<LogChunk, UploadAck>(&topic).unwrap();
+    let mut server = server_node.put_server::<LogChunk, UploadAck>(&topic).unwrap();
     let handle = std::thread::spawn(move || {
         poll_for(Duration::from_secs(5), || {
             let mut puts = server.take().unwrap()?;
@@ -884,9 +892,12 @@ fn standalone_pip_server_serves_node_client() {
 fn node_pip_server_serves_standalone_client() {
     let _guard = node_test_guard();
     let topic = unique_name("session/standalone_cli");
+    // See `node_queans_server_serves_standalone_client`: the RemoteTransport
+    // client's ephemeral id is unknowable before this node binds.
     let server_node = Node::builder()
         .no_relay()
         .identity(unique_name("pip_srv"))
+        .allow_any_peer()
         .bind()
         .unwrap();
     server_node
@@ -944,7 +955,7 @@ fn node_que_ans_routes_locally_by_name() {
         .bind()
         .expect("client node");
 
-    let mut server = server_node.ans::<RangeQue, Hit>(&topic).unwrap();
+    let mut server = server_node.que_server::<RangeQue, Hit>(&topic).unwrap();
     let handle = std::thread::spawn(move || {
         poll_for(Duration::from_secs(2), || {
             let (que, mut ans) = server.take().unwrap()?;
@@ -997,7 +1008,7 @@ fn node_que_ans_routes_remotely_by_endpoint_addr() {
         .bind()
         .expect("client node");
 
-    let mut server = server_node.ans::<RangeQue, Hit>(&topic).unwrap();
+    let mut server = server_node.que_server::<RangeQue, Hit>(&topic).unwrap();
     let handle = std::thread::spawn(move || {
         poll_for(Duration::from_secs(5), || {
             let (que, mut ans) = server.take().unwrap()?;
@@ -1047,7 +1058,7 @@ fn system_did_que_ans_routes_locally_without_peer_argument() {
         .bind()
         .expect("system client node");
 
-    let mut server = server_node.ans::<RangeQue, Hit>(&topic).unwrap();
+    let mut server = server_node.que_server::<RangeQue, Hit>(&topic).unwrap();
     let handle = std::thread::spawn(move || {
         poll_for(Duration::from_secs(2), || {
             let (que, mut ans) = server.take().unwrap()?;
@@ -1096,7 +1107,7 @@ fn node_put_ack_routes_locally_by_name() {
         .bind()
         .expect("client node");
 
-    let mut server = server_node.ack::<LogChunk, UploadAck>(&topic).unwrap();
+    let mut server = server_node.put_server::<LogChunk, UploadAck>(&topic).unwrap();
     let handle = std::thread::spawn(move || {
         poll_for(Duration::from_secs(2), || {
             let mut puts = server.take().unwrap()?;
@@ -1151,7 +1162,7 @@ fn node_put_ack_routes_remotely_by_endpoint_addr() {
         .bind()
         .expect("client node");
 
-    let mut server = server_node.ack::<LogChunk, UploadAck>(&topic).unwrap();
+    let mut server = server_node.put_server::<LogChunk, UploadAck>(&topic).unwrap();
     let handle = std::thread::spawn(move || {
         poll_for(Duration::from_secs(5), || {
             let mut puts = server.take().unwrap()?;
@@ -1202,7 +1213,7 @@ fn system_did_put_ack_routes_locally_without_peer_argument() {
         .bind()
         .expect("system client node");
 
-    let mut server = server_node.ack::<LogChunk, UploadAck>(&topic).unwrap();
+    let mut server = server_node.put_server::<LogChunk, UploadAck>(&topic).unwrap();
     let handle = std::thread::spawn(move || {
         poll_for(Duration::from_secs(2), || {
             let mut puts = server.take().unwrap()?;
@@ -1508,9 +1519,13 @@ fn node_publisher_feeds_remote_transport_subscriber() {
     let identity = unique_name("node_pub_remote_sub");
     let topic = unique_name("interop/node_to_remote");
 
+    // The inbound peer is a RemoteTransport with an ephemeral key that only
+    // exists once it is built — and building it needs this node's address —
+    // so there is no id to allowlist. Opt out explicitly instead.
     let pub_node = Node::builder()
         .no_relay()
         .identity(&identity)
+        .allow_any_peer()
         .bind()
         .expect("publisher node");
     pub_node
@@ -1597,9 +1612,15 @@ fn node_best_effort_pubsub_uses_datagram_path_when_available() {
         .with_chunk_bytes(4)
         .with_max_inflight_bytes(1024);
 
+    // Both sides are Nodes with string identities, so the publisher can
+    // allowlist the subscriber by name: `identity(name)` and `allow_peer(name)`
+    // derive the same EndpointId. This is the secure path.
+    let sub_identity = unique_name("best_effort_sub");
+
     let pub_node = Node::builder()
         .no_relay()
         .identity(unique_name("best_effort_pub"))
+        .allow_peer(sub_identity.as_str())
         .bind()
         .expect("publisher node");
     pub_node
@@ -1608,7 +1629,7 @@ fn node_best_effort_pubsub_uses_datagram_path_when_available() {
 
     let sub_node = Node::builder()
         .no_relay()
-        .identity(unique_name("best_effort_sub"))
+        .identity(&sub_identity)
         .bind()
         .expect("subscriber node");
 
@@ -1658,9 +1679,12 @@ fn node_publisher_fans_out_to_local_shm_and_remote_iroh() {
     let local_sub_identity = unique_name("node_local_sub_dual");
     let topic = unique_name("interop/dual");
 
+    // The remote leg of the fan-out is a RemoteTransport (ephemeral id,
+    // built after this node), so there is nothing to allowlist.
     let pub_node = Node::builder()
         .no_relay()
         .identity(&identity)
+        .allow_any_peer()
         .bind()
         .expect("publisher node");
     pub_node
@@ -1993,58 +2017,140 @@ fn topic_validation_rejects_bad_chars() {
 }
 
 /// Connection from an un-allowlisted peer must be rejected by the
-/// accept loop before any data flows. We exercise this by binding a
-/// publisher with an empty allowlist (`.allow_peer(<unrelated>)`)
-/// and then subscribing from a node whose endpoint id is NOT in
-/// the list. The subscriber's `take()` should never see a sample
-/// because no stream is served.
+/// accept loop before any data flows.
+///
+/// All three ACL tests below share one shape, and the ordering in them
+/// is load-bearing: the client's `req_client` is built *before* the
+/// server registers its req/res service, so the client cannot attach to
+/// the server's same-host SHM service and is forced onto the iroh path —
+/// which is where the peer ACL lives. The server is then wired up to
+/// answer, so the only thing that can make the call fail is the ACL.
+///
+/// Runs an `Add` call against `server_node` from `client_node` over
+/// iroh and returns whether the call succeeded. Asserts the server never
+/// observes the request when the connection was refused.
+fn remote_call_is_served(server_node: &Node, client_node: &Node, topic: &str) -> bool {
+    server_node
+        .wait_for_direct_addresses(Duration::from_secs(5))
+        .expect("server addresses");
+
+    // Built before `req_server` below exists → no local SHM service to
+    // attach to → genuine iroh path.
+    let mut client = client_node
+        .req_client::<Add, Sum>(server_node.endpoint_addr(), topic)
+        .expect("remote req client");
+
+    let mut server = server_node.req_server::<Add, Sum>(topic).unwrap();
+    let handle = std::thread::spawn(move || {
+        poll_for(Duration::from_secs(3), || {
+            let (req, reply) = server.take().unwrap()?;
+            reply
+                .respond(&Sum {
+                    value: req.header().a + req.header().b,
+                })
+                .unwrap();
+            Some(())
+        })
+        .is_some()
+    });
+
+    let call = client.call(&Add { a: 2, b: 40 });
+    let served = handle.join().unwrap();
+    match call {
+        Ok(res) => {
+            assert_eq!(res.header().value, 42);
+            assert!(served, "a served call must have reached the server");
+            true
+        }
+        Err(_) => {
+            assert!(
+                !served,
+                "a rejected connection must never reach the req/res server"
+            );
+            false
+        }
+    }
+}
+
+/// Regression test for the deny-by-default flip: a node that configures
+/// neither `.allow_peer(...)` nor `.allow_any_peer()` must REJECT every
+/// inbound peer. Before the fix, this call succeeded.
+#[test]
+fn deny_by_default_rejects_inbound_peer_without_allowlist() {
+    let _guard = node_test_guard();
+    let topic = unique_name("acl/deny_by_default");
+
+    // No allowlist, no `allow_any_peer` → deny all inbound.
+    let server_node = Node::builder()
+        .no_relay()
+        .identity(unique_name("acl_denyall_srv"))
+        .bind()
+        .expect("server node");
+    let client_node = Node::builder()
+        .no_relay()
+        .identity(unique_name("acl_denyall_cli"))
+        .bind()
+        .expect("client node");
+
+    assert!(
+        !remote_call_is_served(&server_node, &client_node, &topic),
+        "deny-by-default: an un-allowlisted peer must be refused, not served"
+    );
+}
+
+/// A node WITH an allowlist rejects peers that are not on it.
 #[test]
 fn rejects_unallowlisted_peer() {
     let _guard = node_test_guard();
-    use peerbus::Error;
+    let topic = unique_name("acl/not_on_list");
 
-    // An "intended" peer whose key won't actually dial us — we
-    // just need *some* allowlisted id so the publisher is in
-    // closed-not-open mode.
+    // Some unrelated peer is allowlisted; the client below is not.
     let stranger_id = Node::builder().no_relay().bind().unwrap().endpoint_id();
 
-    let pub_node = Node::builder()
+    let server_node = Node::builder()
         .no_relay()
-        .identity("rejector")
+        .identity(unique_name("acl_rejector"))
         .allow_peer(stranger_id)
         .bind()
-        .expect("publisher node");
-
-    pub_node
-        .wait_for_direct_addresses(Duration::from_secs(5))
-        .expect("publisher addresses");
-
-    let sub_node = Node::builder()
+        .expect("server node");
+    let client_node = Node::builder()
         .no_relay()
-        .identity("attacker")
+        .identity(unique_name("acl_attacker"))
         .bind()
-        .expect("subscriber node");
+        .expect("client node");
 
-    let _pubr = pub_node.publisher::<Tick>("blocked/topic").unwrap();
+    assert!(
+        !remote_call_is_served(&server_node, &client_node, &topic),
+        "a peer missing from the allowlist must be refused"
+    );
+}
 
-    // The dial succeeds at the QUIC layer; peerbus then closes the
-    // connection because the subscriber's endpoint id is not in
-    // the allowlist. Subsequent take() observes the disconnect.
-    let mut sub = sub_node
-        .subscriber::<Tick>(pub_node.endpoint_addr(), "blocked/topic")
-        .expect("subscribe handshake (over wire)");
+/// Positive control for the two rejection tests: the very same wire path
+/// succeeds once the client's endpoint id IS on the allowlist. Without
+/// this, the rejections above could be passing for the wrong reason.
+#[test]
+fn allowlisted_peer_is_accepted_over_iroh() {
+    let _guard = node_test_guard();
+    let topic = unique_name("acl/on_list");
 
-    // Spin a little to give the publisher time to send/close.
-    let _ = poll_for(Duration::from_millis(300), || match sub.take() {
-        Err(Error::Disconnected) => Some(()),
-        Ok(Some(_)) => panic!("attacker should not receive any sample"),
-        _ => None,
-    });
-    // Either Disconnected or no sample is acceptable; the
-    // contract is that no Tick samples reach the attacker.
-    if let Ok(Some(_)) = sub.take() {
-        panic!("attacker received a Tick despite ACL");
-    }
+    // Bind the client first so the server can allowlist its real id.
+    let client_node = Node::builder()
+        .no_relay()
+        .identity(unique_name("acl_friend"))
+        .bind()
+        .expect("client node");
+
+    let server_node = Node::builder()
+        .no_relay()
+        .identity(unique_name("acl_host"))
+        .allow_peer(client_node.endpoint_id())
+        .bind()
+        .expect("server node");
+
+    assert!(
+        remote_call_is_served(&server_node, &client_node, &topic),
+        "an allowlisted peer must be served over iroh"
+    );
 }
 
 // ---- system-DID routing parity for the streaming modes ----
@@ -2265,7 +2371,7 @@ fn que_ans_empty_answer_stream() {
         .unwrap();
     let topic = unique_name("empty/que");
 
-    let mut server = server_node.ans::<RangeQue, Hit>(&topic).unwrap();
+    let mut server = server_node.que_server::<RangeQue, Hit>(&topic).unwrap();
     let handle = std::thread::spawn(move || {
         poll_for(Duration::from_secs(3), || {
             let (_que, ans) = server.take().unwrap()?;
@@ -2298,7 +2404,7 @@ fn put_ack_empty_upload() {
         .unwrap();
     let topic = unique_name("empty/put");
 
-    let mut server = server_node.ack::<LogChunk, UploadAck>(&topic).unwrap();
+    let mut server = server_node.put_server::<LogChunk, UploadAck>(&topic).unwrap();
     let handle = std::thread::spawn(move || {
         poll_for(Duration::from_secs(3), || {
             let mut puts = server.take().unwrap()?;

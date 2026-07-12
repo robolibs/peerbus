@@ -52,12 +52,25 @@ pub mod qos;
 pub mod queans;
 pub mod raw;
 pub mod remote;
+/// Canonical **req/res** API. Prefer this module and the `ReqRes*`
+/// type names in new code and docs.
 pub mod reqres;
+/// Pre-1.0 `req/resp` compatibility alias for [`reqres`]. Retained so
+/// existing callers keep compiling; will be removed on a breaking
+/// release. New code should use [`reqres`].
+#[deprecated(
+    since = "0.3.3",
+    note = "renamed to `reqres` for naming parity; this compat alias will be removed pre-1.0"
+)]
 pub mod reqresp;
 mod trace;
 pub mod transport;
 
-pub use async_adapter::{AsyncPublisher, AsyncSubscriber};
+pub use async_adapter::{
+    AsyncAckServer, AsyncAnsServer, AsyncPipClient, AsyncPipServer, AsyncPublisher, AsyncPutClient,
+    AsyncQueClient, AsyncRemotePipClient, AsyncRemotePutClient, AsyncRemoteQueClient,
+    AsyncRemoteReqClient, AsyncReqClient, AsyncReqServer, AsyncSubscriber,
+};
 pub use datapod_msg::{DatapodMsg, DatapodSample};
 pub use error::{Error, Result};
 pub use local::{

@@ -32,7 +32,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -70,6 +70,12 @@ use crate::{qb_debug, qb_info, qb_warn};
 const DEFAULT_ALPN: &[u8] = b"peerbus/1";
 const DEFAULT_BROADCAST_CAPACITY: usize = 256;
 const IDENTITY_DERIVATION_TAG: &[u8] = b"peerbus/v1/identity";
+/// QUIC application close code used when an inbound connection is
+/// refused by the peer ACL. Distinct from 0 (graceful close) so the
+/// dialing side can tell "rejected" from "went away".
+const ACL_REJECT_CODE: u32 = 1;
+/// Close reason sent to a peer refused by the ACL.
+const ACL_REJECT_REASON: &[u8] = b"peerbus: inbound peer not allowed";
 const PUBSUB_DATAGRAM_MAGIC: &[u8; 4] = b"QBD1";
 const PUBSUB_DATAGRAM_HEADER_LEN: usize = 4 + 8;
 static NEXT_REMOTE_REQ_ID: AtomicU64 = AtomicU64::new(0);
@@ -88,6 +94,58 @@ enum IdentitySource {
     Name(String),
     File(PathBuf),
     Env(String),
+}
+
+impl IdentitySource {
+    /// True when the ed25519 secret key is derived from a
+    /// human-readable string (`identity` / `identity_env`), i.e. the
+    /// string *is* the key material and the peer is impersonable by
+    /// anyone who knows it.
+    fn is_derived_from_string(&self) -> bool {
+        matches!(self, IdentitySource::Name(_) | IdentitySource::Env(_))
+    }
+}
+
+// ---- inbound peer policy ----
+
+/// Who is allowed to open an inbound connection to this node.
+///
+/// The default is [`InboundPolicy::DenyAll`]: a node that configures
+/// neither [`NodeBuilder::allow_peer`] nor
+/// [`NodeBuilder::allow_any_peer`] refuses every incoming connection.
+#[derive(Debug, Clone)]
+enum InboundPolicy {
+    /// Deny every inbound peer. The secure default.
+    DenyAll,
+    /// Accept only these endpoint ids.
+    Allowlist(HashSet<[u8; 32]>),
+    /// Accept anybody who speaks the ALPN. Explicit opt-in via
+    /// [`NodeBuilder::allow_any_peer`].
+    AnyPeer,
+}
+
+impl InboundPolicy {
+    fn allows(&self, remote: &EndpointId) -> bool {
+        match self {
+            InboundPolicy::DenyAll => false,
+            InboundPolicy::Allowlist(set) => set.contains(remote.as_bytes()),
+            InboundPolicy::AnyPeer => true,
+        }
+    }
+
+    /// Human-readable reason for a rejection, used in the warn log and
+    /// in the error surfaced to the accept loop.
+    fn reject_reason(&self) -> &'static str {
+        match self {
+            InboundPolicy::DenyAll => {
+                "no inbound peers configured (deny-by-default): call \
+                 .allow_peer(<id>) or .allow_any_peer() on Node::builder()"
+            }
+            InboundPolicy::Allowlist(_) => "peer not in allowlist",
+            // Unreachable in practice: `AnyPeer` never rejects.
+            InboundPolicy::AnyPeer => "peer rejected",
+        }
+    }
 }
 
 // ---- peer addressing ----
@@ -191,11 +249,14 @@ pub struct NodeBuilder {
     alpn: Vec<u8>,
     no_relay: bool,
     local_cfg: LocalConfig,
-    /// Allowlist of peers permitted to open inbound streams. `None`
-    /// means "accept any peer" (back-compat default). `Some(set)`
-    /// rejects every connection whose remote endpoint id is not in
-    /// the set.
+    /// Allowlist of peers permitted to open inbound connections.
+    /// `None` means "no allowlist configured", which — unless
+    /// [`NodeBuilder::allow_any_peer`] is set — denies every inbound
+    /// peer.
     allowed_peers: Option<HashSet<[u8; 32]>>,
+    /// Explicit opt-out of the deny-by-default inbound policy. See
+    /// [`NodeBuilder::allow_any_peer`].
+    allow_any_peer: bool,
 }
 
 impl NodeBuilder {
@@ -209,16 +270,33 @@ impl NodeBuilder {
     }
 
     /// Literal name → deterministic `SecretKey` via blake3.
-    /// Same name on two machines → same `EndpointId`. Anyone with
-    /// the string can impersonate — use only in trusted contexts.
+    /// Same name on two machines → same `EndpointId`.
+    ///
+    /// # Security: this identity is impersonable
+    ///
+    /// **The identity string *is* the private key material.** The
+    /// 32-byte ed25519 secret key is a domain-separated blake3 hash of
+    /// `name` and nothing else — no salt, no local entropy. Anyone who
+    /// learns the string (from a config file, a log line, a `ps`
+    /// listing, a screenshot, a git history) can recompute this node's
+    /// secret key and impersonate it to every peer that allowlists it.
+    ///
+    /// Use this only on a trusted network, for local development, or
+    /// in tests. On production / untrusted networks use
+    /// [`identity_file`](Self::identity_file), which stores 32 random
+    /// bytes on disk with `0600` and is *not* derivable from any
+    /// human-readable name.
+    ///
+    /// [`bind`](Self::bind) emits a `WARN` whenever this path is used.
     pub fn identity(mut self, name: impl Into<String>) -> Self {
         self.identity = IdentitySource::Name(name.into());
         self
     }
 
     /// Read 32 raw bytes as the `SecretKey`; generate + write on
-    /// first run. Cryptographically meaningful; this is the
-    /// production knob.
+    /// first run (mode `0600`). Cryptographically meaningful; this is
+    /// the production knob, and the only identity source that is not
+    /// derivable from a guessable string.
     pub fn identity_file(mut self, path: impl Into<PathBuf>) -> Self {
         self.identity = IdentitySource::File(path.into());
         self
@@ -226,6 +304,17 @@ impl NodeBuilder {
 
     /// Read the env var `var` and feed its value through
     /// [`Self::identity`].
+    ///
+    /// # Security: this identity is impersonable
+    ///
+    /// Inherits every weakness of [`identity`](Self::identity): the
+    /// env var's *value* is hashed straight into the ed25519 secret
+    /// key, so anyone who knows the value can impersonate this peer.
+    /// An env var is not a secret store — it leaks through `ps`,
+    /// `/proc/<pid>/environ`, CI logs and crash dumps. Prefer
+    /// [`identity_file`](Self::identity_file) in production.
+    ///
+    /// [`bind`](Self::bind) emits a `WARN` whenever this path is used.
     pub fn identity_env(mut self, var: impl Into<String>) -> Self {
         self.identity = IdentitySource::Env(var.into());
         self
@@ -236,11 +325,16 @@ impl NodeBuilder {
         self
     }
 
-    /// Add `peer` to the inbound allowlist. The first call switches
-    /// the node from "accept any peer" (default) to "accept only
-    /// allowlisted peers"; subsequent calls extend the list. Peers
-    /// dial-out *from* this node (`subscriber(...)`) are not
-    /// affected — only inbound accepts.
+    /// Add `peer` to the inbound allowlist.
+    ///
+    /// Inbound connections are **denied by default**: a node that
+    /// calls neither `allow_peer` / [`allow_peers`](Self::allow_peers)
+    /// nor [`allow_any_peer`](Self::allow_any_peer) refuses every
+    /// incoming connection. Each call extends the allowlist.
+    ///
+    /// Only inbound accepts are affected. Connections this node dials
+    /// *out* (`subscriber(...)`, `req_client(...)`, …) are not
+    /// filtered — the peer we dial decides whether to accept us.
     pub fn allow_peer(mut self, peer: impl IntoPeer) -> Self {
         let p = peer.into_peer();
         self.allowed_peers
@@ -249,7 +343,8 @@ impl NodeBuilder {
         self
     }
 
-    /// Add many peers to the inbound allowlist at once.
+    /// Add many peers to the inbound allowlist at once. See
+    /// [`allow_peer`](Self::allow_peer).
     pub fn allow_peers<I, P>(mut self, peers: I) -> Self
     where
         I: IntoIterator<Item = P>,
@@ -261,6 +356,32 @@ impl NodeBuilder {
         for p in peers {
             set.insert(*p.into_peer().endpoint_id.as_bytes());
         }
+        self
+    }
+
+    /// Disable the peer allowlist entirely: **accept connections from
+    /// any peer that knows the ALPN.**
+    ///
+    /// # Security
+    ///
+    /// This is an explicit opt-out of peerbus' deny-by-default inbound
+    /// policy. With it set, *any* process that can reach this node's
+    /// UDP socket and speaks the ALPN (`peerbus/1` unless changed via
+    /// [`alpn`](Self::alpn)) may connect, subscribe to every topic this
+    /// node publishes, and call every req/res, que/ans, put/ack and pip
+    /// server it hosts. The ALPN is not a secret — it is sent in the
+    /// clear in the TLS ClientHello.
+    ///
+    /// Only appropriate on a trusted network (an isolated robot LAN, a
+    /// loopback-only test, a container network with no external
+    /// ingress). On anything else, enumerate the peers with
+    /// [`allow_peer`](Self::allow_peer) instead.
+    ///
+    /// [`bind`](Self::bind) emits a `WARN` whenever this is in effect.
+    /// It takes precedence over any allowlist configured with
+    /// [`allow_peer`](Self::allow_peer).
+    pub fn allow_any_peer(mut self) -> Self {
+        self.allow_any_peer = true;
         self
     }
 
@@ -277,8 +398,15 @@ impl NodeBuilder {
         self
     }
 
+    /// Bind the node's endpoint and start the inbound accept loop.
+    ///
+    /// Warns loudly on the two insecure-but-supported postures:
+    /// [`allow_any_peer`](Self::allow_any_peer) (no peer ACL) and a
+    /// string-derived, impersonable identity
+    /// ([`identity`](Self::identity) / [`identity_env`](Self::identity_env)).
     pub fn bind(self) -> Result<Node> {
         let rt = runtime::shared()?;
+        let identity_is_derived = self.identity.is_derived_from_string();
         let (secret, identity_name) = resolve_identity(&self.identity)?;
         let system_did = self
             .system_did
@@ -325,6 +453,16 @@ impl NodeBuilder {
             bound.ok_or_else(|| last_bind_err.expect("bind loop always records an error"))?
         };
 
+        // Deny-by-default. An explicit `.allow_any_peer()` wins over a
+        // configured allowlist (it is the louder, more explicit knob);
+        // an allowlist alone restricts to those peers; neither means
+        // "refuse everyone".
+        let inbound_policy = match (self.allow_any_peer, self.allowed_peers) {
+            (true, _) => InboundPolicy::AnyPeer,
+            (false, Some(set)) => InboundPolicy::Allowlist(set),
+            (false, None) => InboundPolicy::DenyAll,
+        };
+
         qb_info!(
             target: "peerbus::node",
             endpoint_id = %endpoint_id,
@@ -332,6 +470,31 @@ impl NodeBuilder {
             no_relay,
             "node bound"
         );
+
+        if matches!(inbound_policy, InboundPolicy::AnyPeer) {
+            qb_warn!(
+                target: "peerbus::node",
+                endpoint_id = %endpoint_id,
+                "INSECURE: allow_any_peer() is in effect — this node accepts \
+                 connections from ANY peer that knows the ALPN, which can then \
+                 subscribe to every topic and call every server it hosts. The \
+                 ALPN is not a secret. Only appropriate on a trusted network; \
+                 use Node::builder().allow_peer(<endpoint id>) otherwise"
+            );
+        }
+
+        if identity_is_derived {
+            qb_warn!(
+                target: "peerbus::node",
+                endpoint_id = %endpoint_id,
+                identity = identity_name.as_deref().unwrap_or("<unknown>"),
+                "INSECURE identity: this node's ed25519 secret key is derived \
+                 from the identity string, so the string IS the key material. \
+                 Anyone who learns it can derive this key and impersonate this \
+                 peer. Use Node::builder().identity_file(<path>) on production \
+                 or untrusted networks"
+            );
+        }
 
         let inner = Arc::new(NodeInner {
             endpoint,
@@ -350,9 +513,10 @@ impl NodeBuilder {
             peer_connections: Mutex::new(HashMap::new()),
             pubsub_datagram_routes: Mutex::new(HashMap::new()),
             pubsub_datagram_readers: Mutex::new(HashMap::new()),
-            allowed_peers: self.allowed_peers,
+            inbound_policy,
             rt: rt.clone(),
             accept_handle: Mutex::new(None),
+            closed: AtomicBool::new(false),
         });
 
         let accept_handle = {
@@ -380,6 +544,12 @@ impl Drop for NodeInner {
         // future; we cannot await it from a sync `Drop`, so we
         // spawn-detach onto the runtime. The runtime is shared
         // across all `Node`s — it outlives this drop.
+        //
+        // If the endpoint was already closed deterministically via
+        // `Node::close`, skip re-closing so we never double-close.
+        if self.closed.load(Ordering::Acquire) {
+            return;
+        }
         let endpoint = self.endpoint.clone();
         self.rt.spawn(async move {
             endpoint.close().await;
@@ -424,10 +594,12 @@ struct NodeInner {
     /// task. QUIC datagrams are connection scoped, so one reader
     /// demultiplexes all best-effort topic sessions for that peer.
     pubsub_datagram_readers: Mutex<HashMap<[u8; 32], usize>>,
-    /// If `Some`, only inbound connections from these peers are
-    /// served; everything else is dropped immediately after the
-    /// QUIC handshake completes.
-    allowed_peers: Option<HashSet<[u8; 32]>>,
+    /// Who may open an inbound connection. Enforced in
+    /// [`run_accept_loop`] right after the QUIC handshake completes,
+    /// before a single bi stream is served — so it covers pub/sub and
+    /// all five request modes at once. Defaults to
+    /// [`InboundPolicy::DenyAll`].
+    inbound_policy: InboundPolicy,
     /// Tokio runtime that drives the accept loop and per-subscriber
     /// tasks. Held so `Drop` can spawn `endpoint.close()` without
     /// reaching for the global singleton.
@@ -435,6 +607,10 @@ struct NodeInner {
     /// Accept loop handle; aborted on Drop to stop the inbound
     /// listener cleanly.
     accept_handle: Mutex<Option<JoinHandle<()>>>,
+    /// Set once the endpoint has been closed deterministically via
+    /// [`Node::close`]. `Drop` checks this so it never issues a second
+    /// close on an already-closed endpoint.
+    closed: AtomicBool,
 }
 
 struct PublisherTopicState {
@@ -568,6 +744,7 @@ impl Node {
             no_relay: false,
             local_cfg: LocalConfig::default(),
             allowed_peers: None,
+            allow_any_peer: false,
         }
     }
 
@@ -704,6 +881,39 @@ impl Node {
             }
             Err(Error::Timeout(timeout))
         })
+    }
+
+    /// Deterministically close this node's iroh endpoint and wait for
+    /// the close to complete.
+    ///
+    /// Unlike dropping a `Node` — which spawn-detaches
+    /// `endpoint.close()` and returns immediately, so in-flight remote
+    /// sends may be lost — `close` blocks the calling thread until the
+    /// endpoint has fully shut down. Use it for a graceful shutdown
+    /// where outstanding sends must be flushed.
+    ///
+    /// This consumes the node. Because `Node` is `Clone`, any surviving
+    /// clones keep the underlying endpoint alive; the close is still
+    /// issued once and is idempotent, so a subsequent `Drop` of the
+    /// last clone will not close a second time.
+    pub fn close(self) -> Result<()> {
+        // Stop accepting new inbound connections first.
+        if let Some(handle) = crate::trace::recover_poison(
+            self.inner.accept_handle.lock(),
+            "Node::accept_handle",
+        )
+        .take()
+        {
+            handle.abort();
+        }
+        // Mark closed before issuing the close so a concurrent/late
+        // `Drop` observes the flag and skips its own close.
+        self.inner.closed.store(true, Ordering::Release);
+        let endpoint = self.inner.endpoint.clone();
+        self.rt.block_on(async move {
+            endpoint.close().await;
+        });
+        Ok(())
     }
 
     /// Build a publisher for `topic`. Writes go to both:
@@ -1177,6 +1387,27 @@ impl Node {
     /// A que/ans server receives one query and may send zero or more
     /// answer items before calling `finish()`. In system-DID mode the
     /// service and remote route are keyed by `(system_did, topic)`.
+    ///
+    /// This is the naming-parity counterpart to [`Node::req_server`] and
+    /// [`Node::pip_server`]; it is an exact alias of the older
+    /// [`Node::ans`].
+    #[allow(deprecated)]
+    pub fn que_server<Que, Ans>(&self, topic: &str) -> Result<AnsServer<Que, Ans>>
+    where
+        Que: datapod::DataPod + 'static,
+        <Que as datapod::DataPod>::Header: datapod::LeWireHeader,
+        Ans: datapod::DataPod + 'static,
+        <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
+    {
+        self.ans(topic)
+    }
+
+    /// Serve que/ans queries for `topic`.
+    ///
+    /// A que/ans server receives one query and may send zero or more
+    /// answer items before calling `finish()`. In system-DID mode the
+    /// service and remote route are keyed by `(system_did, topic)`.
+    #[deprecated(note = "renamed to que_server/put_server for naming parity; will be removed pre-1.0")]
     pub fn ans<Que, Ans>(&self, topic: &str) -> Result<AnsServer<Que, Ans>>
     where
         Que: datapod::DataPod + 'static,
@@ -1401,6 +1632,27 @@ impl Node {
     /// A put/ack server receives zero or more put items, then sends
     /// one final ack. In system-DID mode the service and remote route
     /// are keyed by `(system_did, topic)`.
+    ///
+    /// This is the naming-parity counterpart to [`Node::req_server`] and
+    /// [`Node::pip_server`]; it is an exact alias of the older
+    /// [`Node::ack`].
+    #[allow(deprecated)]
+    pub fn put_server<Put, Ack>(&self, topic: &str) -> Result<AckServer<Put, Ack>>
+    where
+        Put: datapod::DataPod + 'static,
+        <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
+        Ack: datapod::DataPod + 'static,
+        <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
+    {
+        self.ack(topic)
+    }
+
+    /// Serve put/ack uploads for `topic`.
+    ///
+    /// A put/ack server receives zero or more put items, then sends
+    /// one final ack. In system-DID mode the service and remote route
+    /// are keyed by `(system_did, topic)`.
+    #[deprecated(note = "renamed to que_server/put_server for naming parity; will be removed pre-1.0")]
     pub fn ack<Put, Ack>(&self, topic: &str) -> Result<AckServer<Put, Ack>>
     where
         Put: datapod::DataPod + 'static,
@@ -2374,6 +2626,27 @@ impl<T: datapod::DataPod + 'static> Subscriber<T> {
         result
     }
 
+    /// Block until a sample is available or `timeout` elapses.
+    ///
+    /// Unlike [`Subscriber::take`], which returns `Ok(None)` the instant
+    /// the channel is empty, this polls the non-blocking `take` on a
+    /// short interval (50 µs, matching the local req/res call loop)
+    /// until a sample arrives or the deadline passes, then returns
+    /// `Ok(None)`. A disconnected remote source still surfaces as
+    /// `Err(Error::Disconnected)`. `take` semantics are unchanged.
+    pub fn recv_timeout(&mut self, timeout: Duration) -> Result<Option<NodeSample<T>>> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if let Some(sample) = self.take()? {
+                return Ok(Some(sample));
+            }
+            if std::time::Instant::now() >= deadline {
+                return Ok(None);
+            }
+            std::thread::sleep(Duration::from_micros(50));
+        }
+    }
+
     /// Snapshot the subscriber's lifetime counters.
     pub fn stats(&self) -> SubscriberStats {
         SubscriberStats {
@@ -2576,6 +2849,38 @@ where
             }
             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Ok(None),
             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => Ok(None),
+        }
+    }
+
+    /// Block until a request is pending or `timeout` elapses.
+    ///
+    /// Unlike [`ReqServer::take`], which returns `Ok(None)` the instant
+    /// there is no pending request, this polls the non-blocking `take`
+    /// on a short interval (50 µs, matching the local req/res call loop)
+    /// until a request arrives or the deadline passes, then returns
+    /// `Ok(None)`. `take` semantics are unchanged.
+    pub fn recv_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<PendingReq<'_, Req, Res>>> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            // SAFETY: reborrow through a raw pointer to return a borrow
+            // of `self` from inside a poll loop. This sidesteps the
+            // current borrow checker's inability to express that the
+            // borrow taken on the returning iteration outlives the
+            // borrows from earlier, discarded iterations (NLL problem
+            // case #3). Only one borrow is ever live at a time: each
+            // non-returning iteration drops `this` before the next, and
+            // the returned value is produced on the final iteration.
+            let this: &mut Self = unsafe { &mut *(self as *mut Self) };
+            if let Some(pending) = this.take()? {
+                return Ok(Some(pending));
+            }
+            if std::time::Instant::now() >= deadline {
+                return Ok(None);
+            }
+            std::thread::sleep(Duration::from_micros(50));
         }
     }
 
@@ -3097,6 +3402,35 @@ where
             }
             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Ok(None),
             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => Ok(None),
+        }
+    }
+
+    /// Block until a query is pending or `timeout` elapses.
+    ///
+    /// Unlike [`AnsServer::take`], which returns `Ok(None)` the instant
+    /// there is no pending query, this polls the non-blocking `take` on
+    /// a short interval (50 µs, matching the local req/res call loop)
+    /// until a query arrives or the deadline passes, then returns
+    /// `Ok(None)`. `take` semantics are unchanged.
+    pub fn recv_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<PendingQue<'_, Que, Ans>>> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            // SAFETY: reborrow through a raw pointer to return a borrow
+            // of `self` from inside a poll loop (NLL problem case #3).
+            // Only one borrow is live at a time: each non-returning
+            // iteration drops `this` before the next, and the returned
+            // value is produced on the final iteration.
+            let this: &mut Self = unsafe { &mut *(self as *mut Self) };
+            if let Some(pending) = this.take()? {
+                return Ok(Some(pending));
+            }
+            if std::time::Instant::now() >= deadline {
+                return Ok(None);
+            }
+            std::thread::sleep(Duration::from_micros(50));
         }
     }
 
@@ -3726,6 +4060,32 @@ where
             }))),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Ok(None),
             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => Ok(None),
+        }
+    }
+
+    /// Block until an upload is pending or `timeout` elapses.
+    ///
+    /// Unlike [`AckServer::take`], which returns `Ok(None)` the instant
+    /// there is no pending upload, this polls the non-blocking `take` on
+    /// a short interval (50 µs, matching the local req/res call loop)
+    /// until an upload arrives or the deadline passes, then returns
+    /// `Ok(None)`. `take` semantics are unchanged.
+    pub fn recv_timeout(&mut self, timeout: Duration) -> Result<Option<Puts<'_, Put, Ack>>> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            // SAFETY: reborrow through a raw pointer to return a borrow
+            // of `self` from inside a poll loop (NLL problem case #3).
+            // Only one borrow is live at a time: each non-returning
+            // iteration drops `this` before the next, and the returned
+            // value is produced on the final iteration.
+            let this: &mut Self = unsafe { &mut *(self as *mut Self) };
+            if let Some(puts) = this.take()? {
+                return Ok(Some(puts));
+            }
+            if std::time::Instant::now() >= deadline {
+                return Ok(None);
+            }
+            std::thread::sleep(Duration::from_micros(50));
         }
     }
 
@@ -4533,6 +4893,35 @@ where
         }
     }
 
+    /// Block until a session is pending or `timeout` elapses.
+    ///
+    /// Unlike [`PipServer::take`], which returns `Ok(None)` the instant
+    /// there is no pending session, this polls the non-blocking `take`
+    /// on a short interval (50 µs, matching the local req/res call loop)
+    /// until a session arrives or the deadline passes, then returns
+    /// `Ok(None)`. `take` semantics are unchanged.
+    pub fn recv_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<Pip<'_, ServerMsg, ClientMsg>>> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            // SAFETY: reborrow through a raw pointer to return a borrow
+            // of `self` from inside a poll loop (NLL problem case #3).
+            // Only one borrow is live at a time: each non-returning
+            // iteration drops `this` before the next, and the returned
+            // value is produced on the final iteration.
+            let this: &mut Self = unsafe { &mut *(self as *mut Self) };
+            if let Some(pip) = this.take()? {
+                return Ok(Some(pip));
+            }
+            if std::time::Instant::now() >= deadline {
+                return Ok(None);
+            }
+            std::thread::sleep(Duration::from_micros(50));
+        }
+    }
+
     pub fn take_message(&mut self) -> Result<Option<PendingPipMessage<ClientMsg>>> {
         for (server_index, local) in self.local_servers.iter_mut().enumerate() {
             if let Some((session_id, first, incoming_done)) = local.server.take_message()? {
@@ -5159,17 +5548,25 @@ async fn run_accept_loop(inner: Arc<NodeInner>) -> Result<()> {
                     return;
                 }
             };
+            // Peer ACL. Enforced here — once, on the connection, right
+            // after the QUIC handshake and before any bi stream is
+            // accepted — so pub/sub and all five request modes
+            // (req/res, que/ans, put/ack, pip) plus best-effort
+            // datagrams are covered by this single gate. Rejection
+            // closes the connection with a distinct application code;
+            // the dialing side sees a clean ConnectFailed rather than a
+            // hang.
             let remote = conn.remote_id();
-            if let Some(allow) = inner.allowed_peers.as_ref() {
-                if !allow.contains(remote.as_bytes()) {
-                    qb_warn!(
-                        target: "peerbus::node",
-                        remote = %remote,
-                        "rejecting connection: peer not in allowlist"
-                    );
-                    conn.close(0u32.into(), b"peer not allowed");
-                    return;
-                }
+            if !inner.inbound_policy.allows(&remote) {
+                let reason = inner.inbound_policy.reject_reason();
+                qb_warn!(
+                    target: "peerbus::node",
+                    remote = %remote,
+                    reason,
+                    "rejecting inbound connection from peer"
+                );
+                conn.close(ACL_REJECT_CODE.into(), ACL_REJECT_REASON);
+                return;
             }
             qb_debug!(
                 target: "peerbus::node",
@@ -5183,6 +5580,9 @@ async fn run_accept_loop(inner: Arc<NodeInner>) -> Result<()> {
     Ok(())
 }
 
+// `e` below is consumed only by `qb_warn!`, which compiles to nothing
+// without the `tracing` feature, so the binding reads as unused there.
+#[cfg_attr(not(feature = "tracing"), allow(unused_variables))]
 async fn serve_incoming_connection(inner: Arc<NodeInner>, conn: Connection) -> Result<()> {
     loop {
         match conn.accept_bi().await {
@@ -6047,7 +6447,11 @@ const ITEM_TOPIC_LEN_LIMIT: usize = 1024;
 
 /// Byte limits negotiated (or defaulted) for an item stream, plus
 /// whether the peer advertised chunk support (handshake v3).
+///
+/// Several fields are only read inside `tracing` diagnostics, so they
+/// read as dead code when the `tracing` feature is disabled.
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(not(feature = "tracing"), allow(dead_code))]
 pub(crate) struct ItemHsQos {
     peer_chunks: bool,
     max_message_bytes: usize,
