@@ -37,7 +37,9 @@ use tokio::runtime::Runtime;
 use tokio::sync::{Mutex as AsyncMutex, broadcast};
 use tokio::task::JoinHandle;
 
-use crate::chunk::{CHUNK_FRAME_FLAG, CHUNK_FRAME_LEN_MASK, Reassembler, parse_chunk_payload};
+use crate::chunk::{
+    CHUNK_FRAME_FLAG, CHUNK_FRAME_LEN_MASK, CHUNK_HEADER_LEN, Reassembler, parse_chunk_payload,
+};
 use crate::error::{Error, Result};
 use crate::qos::{DeliveryPolicy, TopicQos};
 use crate::remote::handshake::{
@@ -68,6 +70,18 @@ pub const DEFAULT_ALPN: &[u8] = b"peerbus/1";
 
 /// Channel depth for outgoing broadcast and incoming mpsc.
 const CHANNEL_CAPACITY: usize = 256;
+
+/// Bounded timeout for dialing a peer. A stalled dial would otherwise
+/// hang a subscriber dispatcher (and any `call`) forever.
+pub(crate) const DIAL_TIMEOUT: Duration = Duration::from_secs(30);
+/// Bounded timeout for opening a stream and reading the first
+/// bytes/handshake off it. A peer that connects but never speaks would
+/// otherwise park the accepting server task forever.
+pub(crate) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Bounded timeout for awaiting a request/response reply from a peer.
+/// A server that accepts the stream but never answers would otherwise
+/// hang the calling thread forever.
+pub(crate) const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 // --- builder ---
 
@@ -620,20 +634,33 @@ async fn run_accept_loop(inner: Arc<InnerShared>) -> Result<()> {
                 remote = %conn.remote_id(),
                 "accepted connection"
             );
-            let _ = serve_incoming_connection(inner, conn).await;
+            if let Err(e) = serve_incoming_connection(inner, conn).await {
+                qb_warn!(
+                    target: "peerbus::remote",
+                    error = %e,
+                    "serve_incoming_connection ended with error"
+                );
+            }
         });
     }
     qb_debug!(target: "peerbus::remote", "accept loop exiting");
     Ok(())
 }
 
+#[cfg_attr(not(feature = "tracing"), allow(unused_variables))]
 async fn serve_incoming_connection(inner: Arc<InnerShared>, conn: Connection) -> Result<()> {
     loop {
         match conn.accept_bi().await {
             Ok((send, recv)) => {
                 let inner = inner.clone();
                 tokio::spawn(async move {
-                    let _ = serve_bi(inner, send, recv).await;
+                    if let Err(e) = serve_bi(inner, send, recv).await {
+                        qb_warn!(
+                            target: "peerbus::remote",
+                            error = %e,
+                            "serve_bi ended with error"
+                        );
+                    }
                 });
             }
             Err(_) => return Ok(()),
@@ -642,10 +669,12 @@ async fn serve_incoming_connection(inner: Arc<InnerShared>, conn: Connection) ->
 }
 
 async fn serve_bi(inner: Arc<InnerShared>, send: SendStream, mut recv: RecvStream) -> Result<()> {
-    // Peek the magic so we can dispatch pub/sub vs req/res.
+    // Peek the magic so we can dispatch pub/sub vs req/res. Bounded so a
+    // peer that opens a stream but never writes can't park this task.
     let mut magic_buf = [0u8; 4];
-    recv.read_exact(&mut magic_buf)
+    tokio::time::timeout(HANDSHAKE_TIMEOUT, recv.read_exact(&mut magic_buf))
         .await
+        .map_err(|_| Error::Timeout(HANDSHAKE_TIMEOUT))?
         .map_err(|e| Error::Remote(format!("magic: {e}")))?;
     let magic = u32::from_le_bytes(magic_buf);
     match magic {
@@ -751,14 +780,34 @@ async fn run_subscriber(inner: Arc<InnerShared>, topic: String, type_hash: u64, 
         };
         // Bail out if every subscriber has dropped — no point
         // re-establishing the wire just to feed nobody. A new
-        // `subscriber()` call will spawn a fresh dispatcher.
+        // `subscriber()` call will spawn a fresh dispatcher, but only
+        // if `dispatcher_started` has been reset; do that under the same
+        // lock that guards the flag. Re-check `receiver_count()` while
+        // holding the lock so we can't race with a `subscriber()` that
+        // added a receiver (and saw `dispatcher_started == true`, so did
+        // not spawn) between the unlocked check and the reset.
         if sender.receiver_count() == 0 {
-            qb_debug!(
-                target: "peerbus::remote",
-                topic = %topic,
-                "dispatcher exiting: no remaining receivers"
+            let mut map = crate::trace::recover_poison(
+                inner.subscriber_topics.lock(),
+                "RemoteTransport::subscriber_topics",
             );
-            return;
+            match map.get_mut(&topic) {
+                Some(entry) => {
+                    if entry.tx.receiver_count() == 0 {
+                        entry.dispatcher_started = false;
+                        drop(map);
+                        qb_debug!(
+                            target: "peerbus::remote",
+                            topic = %topic,
+                            "dispatcher exiting: no remaining receivers"
+                        );
+                        return;
+                    }
+                    // A new receiver appeared under the lock; keep serving.
+                }
+                // Topic state is gone — the transport is being torn down.
+                None => return,
+            }
         }
 
         match subscribe_pump_once(&inner, &topic, type_hash, payload_size, &sender).await {
@@ -768,6 +817,11 @@ async fn run_subscriber(inner: Arc<InnerShared>, topic: String, type_hash: u64, 
                     topic = %topic,
                     "subscriber stream ended, will reconnect"
                 );
+                // A subscriber started before its publisher exists sees a
+                // clean EOF immediately; without a floor delay this loop
+                // spins at 100% CPU. Sleep the minimum backoff before
+                // retrying — still prompt, but bounded.
+                tokio::time::sleep(RECONNECT_BACKOFF_MIN).await;
                 backoff = RECONNECT_BACKOFF_MIN;
             }
             Err(e) => {
@@ -793,9 +847,9 @@ async fn subscribe_pump_once(
     sender: &broadcast::Sender<Arc<[u8]>>,
 ) -> Result<()> {
     let conn = ensure_peer_connection(inner).await?;
-    let (mut send, mut recv) = conn
-        .open_bi()
+    let (mut send, mut recv) = tokio::time::timeout(HANDSHAKE_TIMEOUT, conn.open_bi())
         .await
+        .map_err(|_| Error::Timeout(HANDSHAKE_TIMEOUT))?
         .map_err(|e| Error::Remote(format!("open_bi: {e}")))?;
 
     write_handshake(&mut send, topic, type_hash, payload_size).await?;
@@ -838,19 +892,29 @@ pub(crate) async fn ensure_peer_connection(inner: &Arc<InnerShared>) -> Result<C
         peer = %peer.id,
         "dialing peer"
     );
-    let conn = inner
-        .endpoint
-        .connect(peer.clone(), &inner.alpn)
-        .await
-        .map_err(|e| {
-            qb_warn!(
-                target: "peerbus::remote",
-                peer = %peer.id,
-                error = %e,
-                "dial failed"
-            );
-            Error::ConnectFailed(format!("{e}"))
-        })?;
+    let conn = tokio::time::timeout(
+        DIAL_TIMEOUT,
+        inner.endpoint.connect(peer.clone(), &inner.alpn),
+    )
+    .await
+    .map_err(|_| {
+        qb_warn!(
+            target: "peerbus::remote",
+            peer = %peer.id,
+            timeout_s = DIAL_TIMEOUT.as_secs(),
+            "dial timed out"
+        );
+        Error::Timeout(DIAL_TIMEOUT)
+    })?
+    .map_err(|e| {
+        qb_warn!(
+            target: "peerbus::remote",
+            peer = %peer.id,
+            error = %e,
+            "dial failed"
+        );
+        Error::ConnectFailed(format!("{e}"))
+    })?;
     qb_info!(
         target: "peerbus::remote",
         peer = %peer.id,
@@ -1113,8 +1177,14 @@ pub(crate) async fn read_item_reassembled(
         let raw_len = u32::from_le_bytes(len_buf);
         let chunked = (raw_len & CHUNK_FRAME_FLAG) != 0;
         let len = (raw_len & CHUNK_FRAME_LEN_MASK) as usize;
+        // A chunked frame is `[chunk header][chunk body]`; the body is at
+        // most one message's worth of bytes, so the whole frame can't
+        // exceed the inflight budget plus the fixed header. Clamp before
+        // the `vec![0u8; len]` below so the ~2 GiB `CHUNK_FRAME_LEN_MASK`
+        // ceiling can't be used to force a huge allocation ahead of any
+        // reassembler-level inflight check.
         let limit = if chunked {
-            CHUNK_FRAME_LEN_MASK as usize
+            (CHUNK_FRAME_LEN_MASK as usize).min(max_inflight_bytes.saturating_add(CHUNK_HEADER_LEN))
         } else {
             MAX_PAYLOAD_LEN as usize
         };

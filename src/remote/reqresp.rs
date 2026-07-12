@@ -88,12 +88,24 @@ impl RemoteTransport {
 
     /// Build a client handle for the remote request server on this
     /// topic. Requires `peer(...)` to have been set on the builder.
+    ///
+    /// Canonical name, matching `que_client`/`put_client`/`pip_client`.
+    #[allow(deprecated)]
+    pub fn req_client<Req: Pod + Send + 'static, Resp: Pod + Send + 'static>(
+        &self,
+    ) -> Result<RemoteClient<Req, Resp>> {
+        self.client::<Req, Resp>()
+    }
+
+    /// Build a client handle for the remote request server on this
+    /// topic. Requires `peer(...)` to have been set on the builder.
+    #[deprecated(note = "use req_client; client is a pre-1.0 compatibility alias")]
     pub fn client<Req: Pod + Send + 'static, Resp: Pod + Send + 'static>(
         &self,
     ) -> Result<RemoteClient<Req, Resp>> {
         if self.shared().peer.is_none() {
             return Err(Error::invalid_argument(
-                "RemoteTransport::client requires a peer; set one with .peer(addr) on the builder",
+                "RemoteTransport::req_client requires a peer; set one with .peer(addr) on the builder",
             ));
         }
         Ok(RemoteClient {
@@ -133,10 +145,13 @@ where
 
         self.runtime.block_on(async move {
             let conn = ensure_peer_connection(&shared).await?;
-            let (mut send, mut recv) = conn
-                .open_bi()
-                .await
-                .map_err(|e| Error::Remote(format!("open_bi: {e}")))?;
+            let (mut send, mut recv) = tokio::time::timeout(
+                crate::remote::transport::HANDSHAKE_TIMEOUT,
+                conn.open_bi(),
+            )
+            .await
+            .map_err(|_| Error::Timeout(crate::remote::transport::HANDSHAKE_TIMEOUT))?
+            .map_err(|e| Error::Remote(format!("open_bi: {e}")))?;
 
             write_request_handshake(&mut send, &topic, req_hash, resp_hash, req_size, resp_size)
                 .await?;
@@ -144,7 +159,13 @@ where
             send.finish()
                 .map_err(|e| Error::Remote(format!("finish: {e}")))?;
 
-            let resp_bytes = read_frame(&mut recv).await?.ok_or_else(|| {
+            let resp_bytes = tokio::time::timeout(
+                crate::remote::transport::RESPONSE_TIMEOUT,
+                read_frame(&mut recv),
+            )
+            .await
+            .map_err(|_| Error::Timeout(crate::remote::transport::RESPONSE_TIMEOUT))??
+            .ok_or_else(|| {
                 Error::Remote("server closed without writing a response".to_string())
             })?;
             if resp_bytes.len() != resp_size as usize {

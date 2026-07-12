@@ -67,6 +67,31 @@ impl Reassembler {
             });
         }
 
+        // `chunk_count` arrives as an unbounded u32 straight off the wire
+        // and directly sizes the `Vec<Option<Vec<u8>>>` index below. It
+        // must be bounded independently of `message_len`, or a tiny frame
+        // (e.g. message_len=0, chunk_count=0xFFFF_FFFF) forces a multi-GiB
+        // allocation. A message cannot have more chunks than it has bytes —
+        // every chunk carries at least one byte — except a zero-length
+        // message, which is a single empty chunk.
+        let max_chunks = (message_len as u64).max(1);
+        if frame.chunk_count as u64 > max_chunks {
+            return Err(Error::FrameTooLarge {
+                actual: frame.chunk_count as u64,
+                limit: max_chunks,
+            });
+        }
+        // Cap the index-vector allocation itself against the inflight
+        // budget: each slot costs `size_of::<Option<Vec<u8>>>()` regardless
+        // of how much chunk body has actually arrived.
+        let slot = std::mem::size_of::<Option<Vec<u8>>>() as u64;
+        if (frame.chunk_count as u64).saturating_mul(slot) > self.max_inflight_bytes as u64 {
+            return Err(Error::FrameTooLarge {
+                actual: (frame.chunk_count as u64).saturating_mul(slot),
+                limit: self.max_inflight_bytes as u64,
+            });
+        }
+
         if matches!(
             self.policy,
             DeliveryPolicy::Latest | DeliveryPolicy::BestEffort
