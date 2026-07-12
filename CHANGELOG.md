@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.4.0] - 2026-07-12
+
+### <!-- 0 -->⛰️  Features
+
+- Async, deny-by-default ACL, recv, close
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Release GIL, put/ack poll surface
+- Panic guards, handle safety, parity
+- Chunk DoS, net timeouts, type-hash
+- SIGBUS guard and self-healing reclaim
+
+### <!-- 2 -->🚜 Refactor
+
+- Promote reqres over reqresp
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Drop dead config feature, CI, docs, versions
+
 ## [0.3.2] - 2026-07-11
 
 ### <!-- 0 -->⛰️  Features
