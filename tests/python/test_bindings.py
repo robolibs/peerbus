@@ -2,6 +2,8 @@ import threading
 import time
 import uuid
 
+import pytest
+
 import datapod
 import peerbus
 
@@ -120,8 +122,15 @@ def test_python_pubsub_qos_latest_stats_and_large_endpoint_payload():
     assert latest_sub.stats()["received"] == 1
     assert latest_sub.stats()["stale_dropped"] >= 9
 
-    pub_node = peerbus.Node(identity=unique("remote-pubsub"), no_relay=True)
+    # This subscriber is created before the publisher registers its SHM
+    # service, so it goes over iroh — where the peer ACL applies. Bind the
+    # subscriber first so the publisher can allowlist its real key.
     sub_node = peerbus.Node(identity=unique("remote-sub"), no_relay=True)
+    pub_node = peerbus.Node(
+        identity=unique("remote-pubsub"),
+        no_relay=True,
+        allowed_peers=[sub_node.did_key()],
+    )
     peer = pub_node.endpoint_addr()
     remote_qos = peerbus.TopicQos.reliable(
         max_message_bytes=512 * 1024,
@@ -825,8 +834,12 @@ def test_python_generic_datapod_system_did_topic_only_all_primitives():
 
 def test_python_remote_large_raw_chunking_all_item_primitives():
     server_id = unique("large-raw-server")
-    server_node = peerbus.Node(identity=server_id, no_relay=True)
     client_node = peerbus.Node(no_relay=True)
+    server_node = peerbus.Node(
+        identity=server_id,
+        no_relay=True,
+        allowed_peers=[client_node.did_key()],
+    )
     peer = server_node.endpoint_addr()
     qos = peerbus.TopicQos.reliable(
         max_message_bytes=512 * 1024,
@@ -915,3 +928,100 @@ def test_python_remote_large_raw_chunking_all_item_primitives():
     join_checked(th, errors)
     assert first.kind == 403 and bytes(first.data) == large_b
     assert second.kind == 404 and bytes(second.data) == large_a
+
+
+def test_python_raw_put_ack_take_polling_surface():
+    identity = unique("put-take")
+    node = peerbus.Node(identity=identity, no_relay=True)
+
+    ack_server = node.ack_server("py/test/put/take")
+    put_client = node.put_client(identity, "py/test/put/take")
+
+    def serve_ack():
+        pending = wait_for(lambda: ack_server.take(10))
+        assert isinstance(pending, peerbus.PendingPut)
+        assert isinstance(pending.req_id, int)
+        assert len(pending) == 2
+        assert [(m.kind, bytes(m.data)) for m in pending] == [
+            (1, b"\x01\x02"),
+            (1, b"\x03"),
+        ]
+        assert pending.items[0].kind == 1
+        assert bytes(pending.messages[1].data) == b"\x03"
+        # error path: index out of range raises IndexError
+        with pytest.raises(IndexError):
+            _ = pending[5]
+        total = sum(sum(bytes(m.data)) for m in pending)
+        pending.ack(total.to_bytes(2, "little"), kind=9)
+        # error path: only one ack per upload
+        with pytest.raises(RuntimeError):
+            pending.ack(b"again", kind=9)
+
+    th, errors = checked_thread(serve_ack)
+    ack = put_client.put([(1, b"\x01\x02"), (1, b"\x03")])
+    join_checked(th, errors)
+    assert (ack[0], bytes(ack[1])) == (9, b"\x06\x00")
+
+
+def test_python_raw_put_ack_take_ack_message_and_pod():
+    identity = unique("put-take-msg")
+    node = peerbus.Node(identity=identity, no_relay=True)
+
+    ack_server = node.ack_server("py/test/put/take/msg")
+    put_client = node.put_client(identity, "py/test/put/take/msg")
+
+    def serve_ack():
+        pending = wait_for(lambda: ack_server.take(10))
+        pending.ack_message(peerbus.Message(b"ok", kind=9))
+
+    th, errors = checked_thread(serve_ack)
+    ack = put_client.put([(1, b"a")])
+    join_checked(th, errors)
+    assert (ack[0], bytes(ack[1])) == (9, b"ok")
+
+
+def test_python_datapod_put_ack_take_polling_surface():
+    identity = unique("dput-take")
+    node = peerbus.Node(identity=identity, no_relay=True)
+
+    ack_server = node.datapod_ack_server("py/test/datapod/put/take")
+    put_client = node.datapod_put_client(identity, "py/test/datapod/put/take")
+
+    def serve_ack():
+        pending = wait_for(lambda: ack_server.take(10))
+        assert isinstance(pending, peerbus.PendingDatapodPut)
+        assert len(pending) == 2
+        assert [view(item)["cols"] for item in pending] == [1, 2]
+        pending.ack(grid(1, 1, 7))
+        # error path: only one ack per upload
+        with pytest.raises(RuntimeError):
+            pending.ack(grid(1, 1, 7))
+
+    th, errors = checked_thread(serve_ack)
+    ack = put_client.put([grid(1, 1, 1), grid(1, 2, 2)])
+    join_checked(th, errors)
+    assert view(ack)["cols"] == 1
+    assert bytes(view(ack).payload) == bytes([7] * 4)
+
+
+def test_python_datapod_put_ack_batch_handler_surface():
+    identity = unique("dput-batch")
+    node = peerbus.Node(identity=identity, no_relay=True)
+
+    ack_server = node.datapod_ack_server("py/test/datapod/put/batch")
+    put_client = node.datapod_put_client(identity, "py/test/datapod/put/batch")
+
+    def serve_ack():
+        def handler(batch):
+            assert isinstance(batch, peerbus.DatapodPutBatch)
+            assert len(batch) == 2
+            assert [view(item)["cols"] for item in batch.items] == [1, 2]
+            # choose ack via the batch object and return None
+            batch.ack(grid(1, 1, 8))
+
+        assert ack_server.serve_one(handler, 3000)
+
+    th, errors = checked_thread(serve_ack)
+    ack = put_client.put([grid(1, 1, 1), grid(1, 2, 2)])
+    join_checked(th, errors)
+    assert bytes(view(ack).payload) == bytes([8] * 4)

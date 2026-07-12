@@ -12,15 +12,15 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use pyo3::IntoPyObjectExt;
-use pyo3::exceptions::{PyBufferError, PyIndexError, PyRuntimeError, PyTypeError};
+use pyo3::exceptions::{PyBufferError, PyIndexError, PyRuntimeError};
 use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList, PyMemoryView, PyModule, PyTuple};
 
 use crate::{
     AckServer, AnsReplyToken, AnsServer, DatapodMsg, DeliveryPolicy, LocalConfig, Node, NodeSample,
-    PipClient, PipServer, PipServerToken, PipSessionToken, Publisher, PutClient, PutUploadToken,
-    QueClient, RawMsg, ReqClient, ReqReplyToken, ReqServer, Subscriber, TopicQos,
+    PipClient, PipServer, PipServerToken, PipSessionToken, Publisher, PutAckToken, PutClient,
+    PutUploadToken, QueClient, RawMsg, ReqClient, ReqReplyToken, ReqServer, Subscriber, TopicQos,
 };
 
 fn py_err(err: crate::Error) -> PyErr {
@@ -156,6 +156,42 @@ fn raw_from_pod(value: &Bound<'_, PyAny>) -> PyResult<RawMsg> {
     })?;
     let (kind, data) = wire.extract::<(u64, Vec<u8>)>()?;
     Ok(RawMsg::new(kind, &data))
+}
+
+/// Best-effort count of the positional parameters a handler accepts, via
+/// `inspect.signature`. Used to dispatch server handlers to the correct calling
+/// convention up front, instead of calling one convention and retrying on
+/// `TypeError` (which would re-run a correctly-shaped handler body that happened
+/// to raise `TypeError` internally, invoking user side effects twice).
+///
+/// Returns `None` when the signature cannot be introspected (some builtins) or
+/// when the handler accepts `*args`; callers then fall back to the canonical
+/// (preferred) convention.
+fn handler_positional_arity(
+    py: Python<'_>,
+    handler: &Bound<'_, PyAny>,
+) -> PyResult<Option<usize>> {
+    let inspect = py.import("inspect")?;
+    let signature = match inspect.call_method1("signature", (handler,)) {
+        Ok(sig) => sig,
+        Err(_) => return Ok(None),
+    };
+    let parameters = signature.getattr("parameters")?;
+    let values = parameters.call_method0("values")?;
+    let mut count = 0usize;
+    for param in values.try_iter()? {
+        let param = param?;
+        let kind = param.getattr("kind")?;
+        match kind.str()?.to_string_lossy().as_ref() {
+            "POSITIONAL_ONLY" | "POSITIONAL_OR_KEYWORD" => count += 1,
+            // `*args` means the handler accepts an arbitrary number of
+            // positional args; we cannot reason about arity, so defer to the
+            // canonical convention.
+            "VAR_POSITIONAL" => return Ok(None),
+            _ => {}
+        }
+    }
+    Ok(Some(count))
 }
 
 fn datapod_msg_from_py(value: &Bound<'_, PyAny>) -> PyResult<DatapodMsg> {
@@ -680,7 +716,8 @@ impl PyNode {
         subscriber_buffer=None,
         max_publishers=None,
         max_subscribers=None,
-        allowed_peers=None
+        allowed_peers=None,
+        allow_any_peer=false
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -693,6 +730,7 @@ impl PyNode {
         max_publishers: Option<u32>,
         max_subscribers: Option<u32>,
         allowed_peers: Option<Vec<String>>,
+        allow_any_peer: bool,
     ) -> PyResult<Self> {
         let mut builder = Node::builder();
         if let Some(id) = identity {
@@ -708,6 +746,9 @@ impl PyNode {
             for peer in peers {
                 builder = builder.allow_peer(peer);
             }
+        }
+        if allow_any_peer {
+            builder = builder.allow_any_peer();
         }
         if max_payload_bytes.is_some()
             || history_depth.is_some()
@@ -1108,7 +1149,9 @@ impl PyNode {
             .node
             .ack_with_qos::<RawMsg, RawMsg>(topic, qos_value(qos))
             .map_err(py_err)?;
-        Ok(PyAckServer { server })
+        Ok(PyAckServer {
+            server: Arc::new(Mutex::new(server)),
+        })
     }
 
     #[pyo3(signature = (peer, topic, qos=None))]
@@ -1157,7 +1200,9 @@ impl PyNode {
             .node
             .ack_with_qos::<DatapodMsg, DatapodMsg>(topic, qos_value(qos))
             .map_err(py_err)?;
-        Ok(PyDatapodAckServer { server })
+        Ok(PyDatapodAckServer {
+            server: Arc::new(Mutex::new(server)),
+        })
     }
 
     #[pyo3(signature = (peer, topic, qos=None))]
@@ -1722,19 +1767,24 @@ impl PyReqServer {
                         let payload = req.payload().to_vec();
                         let response = Python::with_gil(|py| -> PyResult<RawMsg> {
                             let handler = handler.bind(py);
-                            let message = Py::new(
-                                py,
-                                PyMessage {
-                                    kind,
-                                    data: payload.clone(),
-                                },
-                            )?;
-                            let ret = match handler.call1((message,)) {
-                                Ok(ret) => ret,
-                                Err(err) if err.is_instance_of::<PyTypeError>(py) => {
-                                    handler.call1((kind, PyBytes::new(py, &payload)))?
-                                }
-                                Err(err) => return Err(err),
+                            // Dispatch by arity up front: a 2-parameter handler
+                            // uses the compatibility `(kind, data)` convention,
+                            // anything else uses the canonical `(message)` one.
+                            // We never catch `TypeError` as a signature signal,
+                            // so a handler body that raises `TypeError` is not
+                            // silently re-invoked with a different shape.
+                            let arity = handler_positional_arity(py, handler)?;
+                            let ret = if arity == Some(2) {
+                                handler.call1((kind, PyBytes::new(py, &payload)))?
+                            } else {
+                                let message = Py::new(
+                                    py,
+                                    PyMessage {
+                                        kind,
+                                        data: payload.clone(),
+                                    },
+                                )?;
+                                handler.call1((message,))?
                             };
                             raw_from_py(&ret)
                         })?;
@@ -1772,26 +1822,28 @@ impl PyPendingReq {
     }
 
     #[pyo3(signature = (data, kind=0))]
-    fn reply(&mut self, data: &[u8], kind: u64) -> PyResult<()> {
+    fn reply(&mut self, py: Python<'_>, data: &[u8], kind: u64) -> PyResult<()> {
         let reply = self
             .reply
             .take()
             .ok_or_else(|| PyRuntimeError::new_err("request already replied"))?;
-        let mut server = lock_py(&self.server, "ReqServer")?;
-        server
-            .respond_pending(reply, &RawMsg::new(kind, data))
-            .map_err(py_err)
+        let msg = RawMsg::new(kind, data);
+        py.allow_threads(|| {
+            let mut server = lock_py(&self.server, "ReqServer")?;
+            server.respond_pending(reply, &msg).map_err(py_err)
+        })
     }
 
-    fn reply_message(&mut self, message: &PyMessage) -> PyResult<()> {
+    fn reply_message(&mut self, py: Python<'_>, message: &PyMessage) -> PyResult<()> {
         let reply = self
             .reply
             .take()
             .ok_or_else(|| PyRuntimeError::new_err("request already replied"))?;
-        let mut server = lock_py(&self.server, "ReqServer")?;
-        server
-            .respond_pending(reply, &RawMsg::new(message.kind, &message.data))
-            .map_err(py_err)
+        let msg = RawMsg::new(message.kind, &message.data);
+        py.allow_threads(|| {
+            let mut server = lock_py(&self.server, "ReqServer")?;
+            server.respond_pending(reply, &msg).map_err(py_err)
+        })
     }
 
     fn reply_pod(&mut self, py: Python<'_>, value: Py<PyAny>) -> PyResult<()> {
@@ -1800,8 +1852,10 @@ impl PyPendingReq {
             .reply
             .take()
             .ok_or_else(|| PyRuntimeError::new_err("request already replied"))?;
-        let mut server = lock_py(&self.server, "ReqServer")?;
-        server.respond_pending(reply, &raw).map_err(py_err)
+        py.allow_threads(|| {
+            let mut server = lock_py(&self.server, "ReqServer")?;
+            server.respond_pending(reply, &raw).map_err(py_err)
+        })
     }
 }
 
@@ -1958,26 +2012,28 @@ impl PyPendingDatapodReq {
 
     fn reply(&mut self, py: Python<'_>, value: Py<PyAny>) -> PyResult<()> {
         let msg = datapod_msg_from_py(value.bind(py))?;
-        self.reply_datapod_msg(msg)
+        self.reply_datapod_msg(py, msg)
     }
 
-    fn reply_wire(&mut self, type_hash: u64, wire: Vec<u8>) -> PyResult<()> {
-        self.reply_datapod_msg(DatapodMsg::new(type_hash, wire))
+    fn reply_wire(&mut self, py: Python<'_>, type_hash: u64, wire: Vec<u8>) -> PyResult<()> {
+        self.reply_datapod_msg(py, DatapodMsg::new(type_hash, wire))
     }
 
-    fn reply_message(&mut self, message: &PyDatapodMessage) -> PyResult<()> {
-        self.reply_datapod_msg(DatapodMsg::new(message.type_hash, message.wire.clone()))
+    fn reply_message(&mut self, py: Python<'_>, message: &PyDatapodMessage) -> PyResult<()> {
+        self.reply_datapod_msg(py, DatapodMsg::new(message.type_hash, message.wire.clone()))
     }
 }
 
 impl PyPendingDatapodReq {
-    fn reply_datapod_msg(&mut self, msg: DatapodMsg) -> PyResult<()> {
+    fn reply_datapod_msg(&mut self, py: Python<'_>, msg: DatapodMsg) -> PyResult<()> {
         let reply = self
             .reply
             .take()
             .ok_or_else(|| PyRuntimeError::new_err("datapod request already replied"))?;
-        let mut server = lock_py(&self.server, "DatapodReqServer")?;
-        server.respond_pending(reply, &msg).map_err(py_err)
+        py.allow_threads(|| {
+            let mut server = lock_py(&self.server, "DatapodReqServer")?;
+            server.respond_pending(reply, &msg).map_err(py_err)
+        })
     }
 }
 
@@ -2181,18 +2237,18 @@ impl PyPendingDatapodAnswers {
 
     fn send(&mut self, py: Python<'_>, value: Py<PyAny>) -> PyResult<()> {
         let msg = datapod_msg_from_py(value.bind(py))?;
-        self.send_datapod_msg(msg)
+        self.send_datapod_msg(py, msg)
     }
 
-    fn send_wire(&mut self, type_hash: u64, wire: Vec<u8>) -> PyResult<()> {
-        self.send_datapod_msg(DatapodMsg::new(type_hash, wire))
+    fn send_wire(&mut self, py: Python<'_>, type_hash: u64, wire: Vec<u8>) -> PyResult<()> {
+        self.send_datapod_msg(py, DatapodMsg::new(type_hash, wire))
     }
 
-    fn send_message(&mut self, message: &PyDatapodMessage) -> PyResult<()> {
-        self.send_datapod_msg(DatapodMsg::new(message.type_hash, message.wire.clone()))
+    fn send_message(&mut self, py: Python<'_>, message: &PyDatapodMessage) -> PyResult<()> {
+        self.send_datapod_msg(py, DatapodMsg::new(message.type_hash, message.wire.clone()))
     }
 
-    fn finish(&mut self) -> PyResult<()> {
+    fn finish(&mut self, py: Python<'_>) -> PyResult<()> {
         let (server, token) = {
             let mut state = lock_py(&self.state, "PendingDatapodAnswers")?;
             let token = state
@@ -2201,13 +2257,15 @@ impl PyPendingDatapodAnswers {
                 .ok_or_else(|| PyRuntimeError::new_err("datapod answer stream already finished"))?;
             (state.server.clone(), token)
         };
-        let mut server = lock_py(server.as_ref(), "DatapodAnsServer")?;
-        server.finish_pending(token).map_err(py_err)
+        py.allow_threads(|| {
+            let mut server = lock_py(server.as_ref(), "DatapodAnsServer")?;
+            server.finish_pending(token).map_err(py_err)
+        })
     }
 }
 
 impl PyPendingDatapodAnswers {
-    fn send_datapod_msg(&mut self, msg: DatapodMsg) -> PyResult<()> {
+    fn send_datapod_msg(&mut self, py: Python<'_>, msg: DatapodMsg) -> PyResult<()> {
         let (server, token) = {
             let state = lock_py(&self.state, "PendingDatapodAnswers")?;
             let token = state
@@ -2215,8 +2273,10 @@ impl PyPendingDatapodAnswers {
                 .ok_or_else(|| PyRuntimeError::new_err("datapod answer stream already finished"))?;
             (state.server.clone(), token)
         };
-        let mut server = lock_py(server.as_ref(), "DatapodAnsServer")?;
-        server.send_pending(token, &msg).map_err(py_err)
+        py.allow_threads(|| {
+            let mut server = lock_py(server.as_ref(), "DatapodAnsServer")?;
+            server.send_pending(token, &msg).map_err(py_err)
+        })
     }
 }
 
@@ -2404,14 +2464,23 @@ impl PyAnsServer {
                                     data: payload.clone(),
                                 },
                             )?;
-                            match handler.call1((message, answers)) {
-                                Ok(ret) => raw_vec_from_py(&ret).map(Some),
-                                Err(err) if err.is_instance_of::<PyTypeError>(py) => {
-                                    let ret = handler.call1((kind, PyBytes::new(py, &payload)))?;
-                                    raw_vec_from_py(&ret).map(Some)
-                                }
-                                Err(err) => Err(err),
-                            }
+                            // Dispatch by arity up front, never catching
+                            // `TypeError` as a signature signal (which would
+                            // silently re-invoke a correctly-shaped handler body
+                            // that raised `TypeError` internally). The canonical
+                            // que/ans handler is `(request_message, answers)`.
+                            // A 1-arg handler cannot drive the streaming
+                            // `answers` object, so it is treated as a
+                            // compatibility handler that receives only the
+                            // request and returns the full answer set. Builtins
+                            // and `*args` default to the canonical convention.
+                            let arity = handler_positional_arity(py, handler)?;
+                            let ret = if arity == Some(1) {
+                                handler.call1((message,))?
+                            } else {
+                                handler.call1((message, answers))?
+                            };
+                            raw_vec_from_py(&ret).map(Some)
                         })?;
                         if let Some(replies) = fallback {
                             let maybe_token = {
@@ -2479,7 +2548,7 @@ impl PyPendingAnswers {
     }
 
     #[pyo3(signature = (data, kind=0))]
-    fn send(&mut self, data: &[u8], kind: u64) -> PyResult<()> {
+    fn send(&mut self, py: Python<'_>, data: &[u8], kind: u64) -> PyResult<()> {
         let (server, token) = {
             let state = lock_py(&self.state, "PendingAnswers")?;
             let token = state
@@ -2487,13 +2556,14 @@ impl PyPendingAnswers {
                 .ok_or_else(|| PyRuntimeError::new_err("answer stream already finished"))?;
             (state.server.clone(), token)
         };
-        let mut server = lock_py(server.as_ref(), "AnsServer")?;
-        server
-            .send_pending(token, &RawMsg::new(kind, data))
-            .map_err(py_err)
+        let msg = RawMsg::new(kind, data);
+        py.allow_threads(|| {
+            let mut server = lock_py(server.as_ref(), "AnsServer")?;
+            server.send_pending(token, &msg).map_err(py_err)
+        })
     }
 
-    fn send_message(&mut self, message: &PyMessage) -> PyResult<()> {
+    fn send_message(&mut self, py: Python<'_>, message: &PyMessage) -> PyResult<()> {
         let (server, token) = {
             let state = lock_py(&self.state, "PendingAnswers")?;
             let token = state
@@ -2501,10 +2571,11 @@ impl PyPendingAnswers {
                 .ok_or_else(|| PyRuntimeError::new_err("answer stream already finished"))?;
             (state.server.clone(), token)
         };
-        let mut server = lock_py(server.as_ref(), "AnsServer")?;
-        server
-            .send_pending(token, &RawMsg::new(message.kind, &message.data))
-            .map_err(py_err)
+        let msg = RawMsg::new(message.kind, &message.data);
+        py.allow_threads(|| {
+            let mut server = lock_py(server.as_ref(), "AnsServer")?;
+            server.send_pending(token, &msg).map_err(py_err)
+        })
     }
 
     fn send_pod(&mut self, py: Python<'_>, value: Py<PyAny>) -> PyResult<()> {
@@ -2516,11 +2587,13 @@ impl PyPendingAnswers {
                 .ok_or_else(|| PyRuntimeError::new_err("answer stream already finished"))?;
             (state.server.clone(), token)
         };
-        let mut server = lock_py(server.as_ref(), "AnsServer")?;
-        server.send_pending(token, &raw).map_err(py_err)
+        py.allow_threads(|| {
+            let mut server = lock_py(server.as_ref(), "AnsServer")?;
+            server.send_pending(token, &raw).map_err(py_err)
+        })
     }
 
-    fn finish(&mut self) -> PyResult<()> {
+    fn finish(&mut self, py: Python<'_>) -> PyResult<()> {
         let (server, token) = {
             let mut state = lock_py(&self.state, "PendingAnswers")?;
             let token = state
@@ -2529,8 +2602,10 @@ impl PyPendingAnswers {
                 .ok_or_else(|| PyRuntimeError::new_err("answer stream already finished"))?;
             (state.server.clone(), token)
         };
-        let mut server = lock_py(server.as_ref(), "AnsServer")?;
-        server.finish_pending(token).map_err(py_err)
+        py.allow_threads(|| {
+            let mut server = lock_py(server.as_ref(), "AnsServer")?;
+            server.finish_pending(token).map_err(py_err)
+        })
     }
 }
 
@@ -2647,15 +2722,15 @@ impl PyDatapodPutUpload {
 
     fn send(&mut self, py: Python<'_>, value: Py<PyAny>) -> PyResult<()> {
         let msg = datapod_msg_from_py(value.bind(py))?;
-        self.send_datapod_msg(msg)
+        self.send_datapod_msg(py, msg)
     }
 
-    fn send_wire(&mut self, type_hash: u64, wire: Vec<u8>) -> PyResult<()> {
-        self.send_datapod_msg(DatapodMsg::new(type_hash, wire))
+    fn send_wire(&mut self, py: Python<'_>, type_hash: u64, wire: Vec<u8>) -> PyResult<()> {
+        self.send_datapod_msg(py, DatapodMsg::new(type_hash, wire))
     }
 
-    fn send_message(&mut self, message: &PyDatapodMessage) -> PyResult<()> {
-        self.send_datapod_msg(DatapodMsg::new(message.type_hash, message.wire.clone()))
+    fn send_message(&mut self, py: Python<'_>, message: &PyDatapodMessage) -> PyResult<()> {
+        self.send_datapod_msg(py, DatapodMsg::new(message.type_hash, message.wire.clone()))
     }
 
     fn finish(&mut self, py: Python<'_>) -> PyResult<PyDatapodMessage> {
@@ -2680,43 +2755,162 @@ impl PyDatapodPutUpload {
 }
 
 impl PyDatapodPutUpload {
-    fn send_datapod_msg(&mut self, msg: DatapodMsg) -> PyResult<()> {
+    fn send_datapod_msg(&mut self, py: Python<'_>, msg: DatapodMsg) -> PyResult<()> {
         let token = self
             .token
             .ok_or_else(|| PyRuntimeError::new_err("datapod put upload already finished"))?;
-        let mut client = lock_py(&self.client, "DatapodPutClient")?;
-        client.send_pending(token, &msg).map_err(py_err)
+        py.allow_threads(|| {
+            let mut client = lock_py(&self.client, "DatapodPutClient")?;
+            client.send_pending(token, &msg).map_err(py_err)
+        })
     }
 }
 
 #[pyclass(name = "DatapodAckServer")]
 pub struct PyDatapodAckServer {
-    server: AckServer<DatapodMsg, DatapodMsg>,
+    server: Arc<Mutex<AckServer<DatapodMsg, DatapodMsg>>>,
+}
+
+struct PendingDatapodPutState {
+    server: Arc<Mutex<AckServer<DatapodMsg, DatapodMsg>>>,
+    token: Option<PutAckToken>,
+}
+
+/// Batch of datapod puts handed to a `DatapodAckServer` handler. Mirrors the
+/// raw `PutBatch`: it is list-like over the received `DatapodMessage` items and
+/// exposes `ack(...)` / `ack_wire(...)` / `ack_message(...)` to choose the ack.
+#[pyclass(name = "DatapodPutBatch")]
+#[derive(Clone)]
+pub struct PyDatapodPutBatch {
+    items: Vec<PyDatapodMessage>,
+    ack: Arc<Mutex<Option<PyDatapodMessage>>>,
+}
+
+/// Poll-driven pending datapod upload returned by `DatapodAckServer.take()`.
+/// Mirrors `PendingPut`: the received puts are drained into `items` and a single
+/// ack is sent with `ack(...)` / `ack_wire(...)` / `ack_message(...)`.
+#[pyclass(name = "PendingDatapodPut")]
+#[derive(Clone)]
+pub struct PyPendingDatapodPut {
+    items: Vec<PyDatapodMessage>,
+    req_id: u64,
+    state: Arc<Mutex<PendingDatapodPutState>>,
 }
 
 #[pymethods]
 impl PyDatapodAckServer {
-    /// Serve one datapod upload. Handler receives `[DatapodMessage, ...]`
-    /// and returns any datapod object/message for the final ack.
+    /// Poll for one pending datapod upload. Returns `PendingDatapodPut` or `None`.
+    #[pyo3(signature = (timeout_ms=0))]
+    fn take(&self, py: Python<'_>, timeout_ms: u64) -> PyResult<Option<PyPendingDatapodPut>> {
+        py.allow_threads(|| {
+            let deadline = Instant::now() + timeout(timeout_ms);
+            loop {
+                let pending = {
+                    let mut server = lock_py(&self.server, "DatapodAckServer")?;
+                    server.take_message().map_err(py_err)?
+                };
+                if let Some(pending) = pending {
+                    let (req_id, first, mut incoming_done, token) = pending.into_parts();
+                    let mut items = Vec::new();
+                    if let Some(sample) = first {
+                        items.push(PyDatapodMessage {
+                            type_hash: sample.header().type_hash,
+                            wire: sample.payload().to_vec(),
+                        });
+                    }
+                    while !incoming_done {
+                        let next = {
+                            let mut server = lock_py(&self.server, "DatapodAckServer")?;
+                            server.next_pending(token).map_err(py_err)?
+                        };
+                        match next {
+                            Some(sample) => items.push(PyDatapodMessage {
+                                type_hash: sample.header().type_hash,
+                                wire: sample.payload().to_vec(),
+                            }),
+                            None => incoming_done = true,
+                        }
+                    }
+                    return Ok(Some(PyPendingDatapodPut {
+                        items,
+                        req_id,
+                        state: Arc::new(Mutex::new(PendingDatapodPutState {
+                            server: self.server.clone(),
+                            token: Some(token),
+                        })),
+                    }));
+                }
+                if Instant::now() >= deadline {
+                    return Ok(None);
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        })
+    }
+
+    /// Serve one datapod upload.
+    ///
+    /// Preferred shape: `handler(batch)`, where `batch.items` is a list of
+    /// `DatapodMessage` objects and `batch.ack(...)` / `batch.ack_message(...)`
+    /// chooses the ack. Returning any datapod object/message is also accepted.
+    /// Compatibility handlers that iterate the batch as a list still work
+    /// because `DatapodPutBatch` is list-like.
     #[pyo3(signature = (handler, timeout_ms=1000))]
     fn serve_one(&mut self, py: Python<'_>, handler: Py<PyAny>, timeout_ms: u64) -> PyResult<bool> {
         py.allow_threads(|| {
             let deadline = Instant::now() + timeout(timeout_ms);
             loop {
-                match self.server.take().map_err(py_err)? {
-                    Some(mut puts) => {
+                let pending = {
+                    let mut server = lock_py(&self.server, "DatapodAckServer")?;
+                    server.take_message().map_err(py_err)?
+                };
+                match pending {
+                    Some(pending) => {
+                        let (_req_id, first, mut incoming_done, token) = pending.into_parts();
                         let mut items = Vec::new();
-                        while let Some(put) = puts.next().map_err(py_err)? {
+                        if let Some(sample) = first {
                             items.push(PyDatapodMessage {
-                                type_hash: put.header().type_hash,
-                                wire: put.payload().to_vec(),
+                                type_hash: sample.header().type_hash,
+                                wire: sample.payload().to_vec(),
                             });
                         }
+                        while !incoming_done {
+                            let next = {
+                                let mut server = lock_py(&self.server, "DatapodAckServer")?;
+                                server.next_pending(token).map_err(py_err)?
+                            };
+                            match next {
+                                Some(sample) => items.push(PyDatapodMessage {
+                                    type_hash: sample.header().type_hash,
+                                    wire: sample.payload().to_vec(),
+                                }),
+                                None => incoming_done = true,
+                            }
+                        }
+                        let ack_slot = Arc::new(Mutex::new(None));
+                        let batch = PyDatapodPutBatch {
+                            items: items.clone(),
+                            ack: ack_slot.clone(),
+                        };
                         let ack = Python::with_gil(|py| -> PyResult<DatapodMsg> {
-                            let ret = handler.bind(py).call1((items,))?;
-                            datapod_msg_from_py(&ret)
+                            let ret = handler.bind(py).call1((batch,))?;
+                            if ret.is_none() {
+                                let ack = lock_py(ack_slot.as_ref(), "DatapodPutBatch")?
+                                    .clone()
+                                    .ok_or_else(|| {
+                                        PyRuntimeError::new_err(
+                                            "datapod put/ack handler returned None without calling batch.ack()",
+                                        )
+                                    })?;
+                                Ok(DatapodMsg::new(ack.type_hash, ack.wire))
+                            } else {
+                                datapod_msg_from_py(&ret)
+                            }
                         })?;
-                        puts.ack(&ack).map_err(py_err)?;
+                        {
+                            let mut server = lock_py(&self.server, "DatapodAckServer")?;
+                            server.ack_pending(token, &ack).map_err(py_err)?;
+                        }
                         return Ok(true);
                     }
                     None => {
@@ -2731,7 +2925,127 @@ impl PyDatapodAckServer {
     }
 
     fn stats(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
-        item_stats_dict(py, self.server.stats())
+        let server = lock_py(&self.server, "DatapodAckServer")?;
+        item_stats_dict(py, server.stats())
+    }
+}
+
+#[pymethods]
+impl PyDatapodPutBatch {
+    #[getter]
+    fn items(&self) -> Vec<PyDatapodMessage> {
+        self.items.clone()
+    }
+
+    #[getter]
+    fn messages(&self) -> Vec<PyDatapodMessage> {
+        self.items.clone()
+    }
+
+    fn __len__(&self) -> usize {
+        self.items.len()
+    }
+
+    fn __iter__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let list = PyList::new(py, self.items.clone())?;
+        Ok(list.call_method0("__iter__")?.unbind())
+    }
+
+    fn __getitem__(&self, index: isize) -> PyResult<PyDatapodMessage> {
+        let len = self.items.len() as isize;
+        let index = if index < 0 { len + index } else { index };
+        if index < 0 || index >= len {
+            return Err(PyIndexError::new_err("DatapodPutBatch index out of range"));
+        }
+        Ok(self.items[index as usize].clone())
+    }
+
+    fn ack(&mut self, py: Python<'_>, value: Py<PyAny>) -> PyResult<()> {
+        let msg = datapod_msg_from_py(value.bind(py))?;
+        let mut ack = lock_py(&self.ack, "DatapodPutBatch")?;
+        *ack = Some(PyDatapodMessage {
+            type_hash: msg.type_hash,
+            wire: msg.wire,
+        });
+        Ok(())
+    }
+
+    fn ack_wire(&mut self, type_hash: u64, wire: Vec<u8>) -> PyResult<()> {
+        let mut ack = lock_py(&self.ack, "DatapodPutBatch")?;
+        *ack = Some(PyDatapodMessage { type_hash, wire });
+        Ok(())
+    }
+
+    fn ack_message(&mut self, message: &PyDatapodMessage) -> PyResult<()> {
+        let mut ack = lock_py(&self.ack, "DatapodPutBatch")?;
+        *ack = Some(message.clone());
+        Ok(())
+    }
+}
+
+#[pymethods]
+impl PyPendingDatapodPut {
+    #[getter]
+    fn req_id(&self) -> u64 {
+        self.req_id
+    }
+
+    #[getter]
+    fn items(&self) -> Vec<PyDatapodMessage> {
+        self.items.clone()
+    }
+
+    #[getter]
+    fn messages(&self) -> Vec<PyDatapodMessage> {
+        self.items.clone()
+    }
+
+    fn __len__(&self) -> usize {
+        self.items.len()
+    }
+
+    fn __iter__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let list = PyList::new(py, self.items.clone())?;
+        Ok(list.call_method0("__iter__")?.unbind())
+    }
+
+    fn __getitem__(&self, index: isize) -> PyResult<PyDatapodMessage> {
+        let len = self.items.len() as isize;
+        let index = if index < 0 { len + index } else { index };
+        if index < 0 || index >= len {
+            return Err(PyIndexError::new_err("PendingDatapodPut index out of range"));
+        }
+        Ok(self.items[index as usize].clone())
+    }
+
+    fn ack(&mut self, py: Python<'_>, value: Py<PyAny>) -> PyResult<()> {
+        let msg = datapod_msg_from_py(value.bind(py))?;
+        self.ack_datapod_msg(py, msg)
+    }
+
+    fn ack_wire(&mut self, py: Python<'_>, type_hash: u64, wire: Vec<u8>) -> PyResult<()> {
+        self.ack_datapod_msg(py, DatapodMsg::new(type_hash, wire))
+    }
+
+    fn ack_message(&mut self, py: Python<'_>, message: &PyDatapodMessage) -> PyResult<()> {
+        self.ack_datapod_msg(py, DatapodMsg::new(message.type_hash, message.wire.clone()))
+    }
+}
+
+impl PyPendingDatapodPut {
+    fn ack_datapod_msg(&mut self, py: Python<'_>, msg: DatapodMsg) -> PyResult<()> {
+        let (server, token) = {
+            let mut state = lock_py(&self.state, "PendingDatapodPut")?;
+            let token = state
+                .token
+                .take()
+                .ok_or_else(|| PyRuntimeError::new_err("datapod upload already acked"))?;
+            (state.server.clone(), token)
+        };
+        py.allow_threads(|| {
+            let mut server = lock_py(server.as_ref(), "DatapodAckServer")?;
+            server.ack_pending(token, &msg).map_err(py_err)
+        })
     }
 }
 
@@ -2847,26 +3161,28 @@ impl PyDatapodPipSession {
 
     fn send(&mut self, py: Python<'_>, value: Py<PyAny>) -> PyResult<()> {
         let msg = datapod_msg_from_py(value.bind(py))?;
-        self.send_datapod_msg(msg)
+        self.send_datapod_msg(py, msg)
     }
 
-    fn send_wire(&mut self, type_hash: u64, wire: Vec<u8>) -> PyResult<()> {
-        self.send_datapod_msg(DatapodMsg::new(type_hash, wire))
+    fn send_wire(&mut self, py: Python<'_>, type_hash: u64, wire: Vec<u8>) -> PyResult<()> {
+        self.send_datapod_msg(py, DatapodMsg::new(type_hash, wire))
     }
 
-    fn send_message(&mut self, message: &PyDatapodMessage) -> PyResult<()> {
-        self.send_datapod_msg(DatapodMsg::new(message.type_hash, message.wire.clone()))
+    fn send_message(&mut self, py: Python<'_>, message: &PyDatapodMessage) -> PyResult<()> {
+        self.send_datapod_msg(py, DatapodMsg::new(message.type_hash, message.wire.clone()))
     }
 
-    fn finish_send(&mut self) -> PyResult<()> {
+    fn finish_send(&mut self, py: Python<'_>) -> PyResult<()> {
         if self.outgoing_done {
             return Ok(());
         }
         let token = self
             .token
             .ok_or_else(|| PyRuntimeError::new_err("datapod pip session is closed"))?;
-        let mut client = lock_py(&self.client, "DatapodPipClient")?;
-        client.finish_send_pending(token).map_err(py_err)?;
+        py.allow_threads(|| {
+            let mut client = lock_py(&self.client, "DatapodPipClient")?;
+            client.finish_send_pending(token).map_err(py_err)
+        })?;
         self.outgoing_done = true;
         Ok(())
     }
@@ -2923,7 +3239,7 @@ impl PyDatapodPipSession {
 }
 
 impl PyDatapodPipSession {
-    fn send_datapod_msg(&mut self, msg: DatapodMsg) -> PyResult<()> {
+    fn send_datapod_msg(&mut self, py: Python<'_>, msg: DatapodMsg) -> PyResult<()> {
         if self.outgoing_done {
             return Err(PyRuntimeError::new_err(
                 "datapod pip outgoing direction is done",
@@ -2932,8 +3248,10 @@ impl PyDatapodPipSession {
         let token = self
             .token
             .ok_or_else(|| PyRuntimeError::new_err("datapod pip session is closed"))?;
-        let mut client = lock_py(&self.client, "DatapodPipClient")?;
-        client.send_pending(token, &msg).map_err(py_err)
+        py.allow_threads(|| {
+            let mut client = lock_py(&self.client, "DatapodPipClient")?;
+            client.send_pending(token, &msg).map_err(py_err)
+        })
     }
 }
 
@@ -3104,18 +3422,18 @@ impl PyPendingDatapodPip {
 
     fn send(&mut self, py: Python<'_>, value: Py<PyAny>) -> PyResult<()> {
         let msg = datapod_msg_from_py(value.bind(py))?;
-        self.send_datapod_msg(msg)
+        self.send_datapod_msg(py, msg)
     }
 
-    fn send_wire(&mut self, type_hash: u64, wire: Vec<u8>) -> PyResult<()> {
-        self.send_datapod_msg(DatapodMsg::new(type_hash, wire))
+    fn send_wire(&mut self, py: Python<'_>, type_hash: u64, wire: Vec<u8>) -> PyResult<()> {
+        self.send_datapod_msg(py, DatapodMsg::new(type_hash, wire))
     }
 
-    fn send_message(&mut self, message: &PyDatapodMessage) -> PyResult<()> {
-        self.send_datapod_msg(DatapodMsg::new(message.type_hash, message.wire.clone()))
+    fn send_message(&mut self, py: Python<'_>, message: &PyDatapodMessage) -> PyResult<()> {
+        self.send_datapod_msg(py, DatapodMsg::new(message.type_hash, message.wire.clone()))
     }
 
-    fn finish_send(&mut self) -> PyResult<()> {
+    fn finish_send(&mut self, py: Python<'_>) -> PyResult<()> {
         let (server, token) = {
             let mut state = lock_py(&self.state, "PendingDatapodPip")?;
             if state.outgoing_done {
@@ -3127,8 +3445,10 @@ impl PyPendingDatapodPip {
             state.outgoing_done = true;
             (state.server.clone(), token)
         };
-        let mut server = lock_py(server.as_ref(), "DatapodPipServer")?;
-        server.finish_send_pending(token).map_err(py_err)
+        py.allow_threads(|| {
+            let mut server = lock_py(server.as_ref(), "DatapodPipServer")?;
+            server.finish_send_pending(token).map_err(py_err)
+        })
     }
 
     fn close(&mut self) -> PyResult<()> {
@@ -3149,7 +3469,7 @@ impl PyPendingDatapodPip {
 }
 
 impl PyPendingDatapodPip {
-    fn send_datapod_msg(&mut self, msg: DatapodMsg) -> PyResult<()> {
+    fn send_datapod_msg(&mut self, py: Python<'_>, msg: DatapodMsg) -> PyResult<()> {
         let (server, token) = {
             let state = lock_py(&self.state, "PendingDatapodPip")?;
             if state.outgoing_done {
@@ -3162,8 +3482,10 @@ impl PyPendingDatapodPip {
                 .ok_or_else(|| PyRuntimeError::new_err("datapod pip session is closed"))?;
             (state.server.clone(), token)
         };
-        let mut server = lock_py(server.as_ref(), "DatapodPipServer")?;
-        server.send_pending(token, &msg).map_err(py_err)
+        py.allow_threads(|| {
+            let mut server = lock_py(server.as_ref(), "DatapodPipServer")?;
+            server.send_pending(token, &msg).map_err(py_err)
+        })
     }
 }
 
@@ -3283,24 +3605,26 @@ impl PyPutUpload {
     }
 
     #[pyo3(signature = (data, kind=0))]
-    fn send(&mut self, data: &[u8], kind: u64) -> PyResult<()> {
+    fn send(&mut self, py: Python<'_>, data: &[u8], kind: u64) -> PyResult<()> {
         let token = self
             .token
             .ok_or_else(|| PyRuntimeError::new_err("put upload already finished"))?;
-        let mut client = lock_py(&self.client, "PutClient")?;
-        client
-            .send_pending(token, &RawMsg::new(kind, data))
-            .map_err(py_err)
+        let msg = RawMsg::new(kind, data);
+        py.allow_threads(|| {
+            let mut client = lock_py(&self.client, "PutClient")?;
+            client.send_pending(token, &msg).map_err(py_err)
+        })
     }
 
-    fn send_message(&mut self, message: &PyMessage) -> PyResult<()> {
+    fn send_message(&mut self, py: Python<'_>, message: &PyMessage) -> PyResult<()> {
         let token = self
             .token
             .ok_or_else(|| PyRuntimeError::new_err("put upload already finished"))?;
-        let mut client = lock_py(&self.client, "PutClient")?;
-        client
-            .send_pending(token, &RawMsg::new(message.kind, &message.data))
-            .map_err(py_err)
+        let msg = RawMsg::new(message.kind, &message.data);
+        py.allow_threads(|| {
+            let mut client = lock_py(&self.client, "PutClient")?;
+            client.send_pending(token, &msg).map_err(py_err)
+        })
     }
 
     fn send_pod(&mut self, py: Python<'_>, value: Py<PyAny>) -> PyResult<()> {
@@ -3308,8 +3632,10 @@ impl PyPutUpload {
         let token = self
             .token
             .ok_or_else(|| PyRuntimeError::new_err("put upload already finished"))?;
-        let mut client = lock_py(&self.client, "PutClient")?;
-        client.send_pending(token, &raw).map_err(py_err)
+        py.allow_threads(|| {
+            let mut client = lock_py(&self.client, "PutClient")?;
+            client.send_pending(token, &raw).map_err(py_err)
+        })
     }
 
     fn finish(&mut self, py: Python<'_>) -> PyResult<PyMessage> {
@@ -3397,11 +3723,76 @@ impl PyPutBatch {
 
 #[pyclass(name = "AckServer")]
 pub struct PyAckServer {
-    server: AckServer<RawMsg, RawMsg>,
+    server: Arc<Mutex<AckServer<RawMsg, RawMsg>>>,
+}
+
+struct PendingPutState {
+    server: Arc<Mutex<AckServer<RawMsg, RawMsg>>>,
+    token: Option<PutAckToken>,
+}
+
+/// Poll-driven pending upload returned by `AckServer.take()`. Mirrors
+/// `PendingReq`/`PutBatch`: the received puts are drained into `items` and a
+/// single ack is sent with `ack(...)` / `ack_message(...)` / `ack_pod(...)`.
+#[pyclass(name = "PendingPut")]
+#[derive(Clone)]
+pub struct PyPendingPut {
+    items: Vec<PyMessage>,
+    req_id: u64,
+    state: Arc<Mutex<PendingPutState>>,
 }
 
 #[pymethods]
 impl PyAckServer {
+    /// Poll for one pending upload. Returns `PendingPut` or `None`.
+    #[pyo3(signature = (timeout_ms=0))]
+    fn take(&self, py: Python<'_>, timeout_ms: u64) -> PyResult<Option<PyPendingPut>> {
+        py.allow_threads(|| {
+            let deadline = Instant::now() + timeout(timeout_ms);
+            loop {
+                let pending = {
+                    let mut server = lock_py(&self.server, "AckServer")?;
+                    server.take_message().map_err(py_err)?
+                };
+                if let Some(pending) = pending {
+                    let (req_id, first, mut incoming_done, token) = pending.into_parts();
+                    let mut items = Vec::new();
+                    if let Some(sample) = first {
+                        items.push(PyMessage {
+                            kind: sample.header().kind,
+                            data: sample.payload().to_vec(),
+                        });
+                    }
+                    while !incoming_done {
+                        let next = {
+                            let mut server = lock_py(&self.server, "AckServer")?;
+                            server.next_pending(token).map_err(py_err)?
+                        };
+                        match next {
+                            Some(sample) => items.push(PyMessage {
+                                kind: sample.header().kind,
+                                data: sample.payload().to_vec(),
+                            }),
+                            None => incoming_done = true,
+                        }
+                    }
+                    return Ok(Some(PyPendingPut {
+                        items,
+                        req_id,
+                        state: Arc::new(Mutex::new(PendingPutState {
+                            server: self.server.clone(),
+                            token: Some(token),
+                        })),
+                    }));
+                }
+                if Instant::now() >= deadline {
+                    return Ok(None);
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        })
+    }
+
     /// Serve one upload.
     ///
     /// Preferred shape: `handler(upload)`, where `upload.items` is a list of
@@ -3414,14 +3805,32 @@ impl PyAckServer {
         py.allow_threads(|| {
             let deadline = Instant::now() + timeout(timeout_ms);
             loop {
-                match self.server.take().map_err(py_err)? {
-                    Some(mut puts) => {
+                let pending = {
+                    let mut server = lock_py(&self.server, "AckServer")?;
+                    server.take_message().map_err(py_err)?
+                };
+                match pending {
+                    Some(pending) => {
+                        let (_req_id, first, mut incoming_done, token) = pending.into_parts();
                         let mut items = Vec::new();
-                        while let Some(put) = puts.next().map_err(py_err)? {
+                        if let Some(sample) = first {
                             items.push(PyMessage {
-                                kind: put.header().kind,
-                                data: put.payload().to_vec(),
+                                kind: sample.header().kind,
+                                data: sample.payload().to_vec(),
                             });
+                        }
+                        while !incoming_done {
+                            let next = {
+                                let mut server = lock_py(&self.server, "AckServer")?;
+                                server.next_pending(token).map_err(py_err)?
+                            };
+                            match next {
+                                Some(sample) => items.push(PyMessage {
+                                    kind: sample.header().kind,
+                                    data: sample.payload().to_vec(),
+                                }),
+                                None => incoming_done = true,
+                            }
                         }
                         let ack_slot = Arc::new(Mutex::new(None));
                         let upload = PyPutBatch {
@@ -3443,7 +3852,10 @@ impl PyAckServer {
                                 raw_from_py(&ret)
                             }
                         })?;
-                        puts.ack(&ack).map_err(py_err)?;
+                        {
+                            let mut server = lock_py(&self.server, "AckServer")?;
+                            server.ack_pending(token, &ack).map_err(py_err)?;
+                        }
                         return Ok(true);
                     }
                     None => {
@@ -3458,7 +3870,76 @@ impl PyAckServer {
     }
 
     fn stats(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
-        item_stats_dict(py, self.server.stats())
+        let server = lock_py(&self.server, "AckServer")?;
+        item_stats_dict(py, server.stats())
+    }
+}
+
+#[pymethods]
+impl PyPendingPut {
+    #[getter]
+    fn req_id(&self) -> u64 {
+        self.req_id
+    }
+
+    #[getter]
+    fn items(&self) -> Vec<PyMessage> {
+        self.items.clone()
+    }
+
+    #[getter]
+    fn messages(&self) -> Vec<PyMessage> {
+        self.items.clone()
+    }
+
+    fn __len__(&self) -> usize {
+        self.items.len()
+    }
+
+    fn __iter__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let list = PyList::new(py, self.items.clone())?;
+        Ok(list.call_method0("__iter__")?.unbind())
+    }
+
+    fn __getitem__(&self, index: isize) -> PyResult<PyMessage> {
+        let len = self.items.len() as isize;
+        let index = if index < 0 { len + index } else { index };
+        if index < 0 || index >= len {
+            return Err(PyIndexError::new_err("PendingPut index out of range"));
+        }
+        Ok(self.items[index as usize].clone())
+    }
+
+    #[pyo3(signature = (data=None, kind=0))]
+    fn ack(&mut self, py: Python<'_>, data: Option<&[u8]>, kind: u64) -> PyResult<()> {
+        let msg = RawMsg::new(kind, data.unwrap_or_default());
+        self.ack_raw(py, msg)
+    }
+
+    fn ack_message(&mut self, py: Python<'_>, message: &PyMessage) -> PyResult<()> {
+        self.ack_raw(py, RawMsg::new(message.kind, &message.data))
+    }
+
+    fn ack_pod(&mut self, py: Python<'_>, value: Py<PyAny>) -> PyResult<()> {
+        let raw = raw_from_pod(value.bind(py))?;
+        self.ack_raw(py, raw)
+    }
+}
+
+impl PyPendingPut {
+    fn ack_raw(&mut self, py: Python<'_>, ack: RawMsg) -> PyResult<()> {
+        let (server, token) = {
+            let mut state = lock_py(&self.state, "PendingPut")?;
+            let token = state
+                .token
+                .take()
+                .ok_or_else(|| PyRuntimeError::new_err("upload already acked"))?;
+            (state.server.clone(), token)
+        };
+        py.allow_threads(|| {
+            let mut server = lock_py(server.as_ref(), "AckServer")?;
+            server.ack_pending(token, &ack).map_err(py_err)
+        })
     }
 }
 
@@ -3587,30 +4068,32 @@ impl PyPipSession {
     }
 
     #[pyo3(signature = (data, kind=0))]
-    fn send(&mut self, data: &[u8], kind: u64) -> PyResult<()> {
+    fn send(&mut self, py: Python<'_>, data: &[u8], kind: u64) -> PyResult<()> {
         if self.outgoing_done {
             return Err(PyRuntimeError::new_err("pip outgoing direction is done"));
         }
         let token = self
             .token
             .ok_or_else(|| PyRuntimeError::new_err("pip session is closed"))?;
-        let mut client = lock_py(&self.client, "PipClient")?;
-        client
-            .send_pending(token, &RawMsg::new(kind, data))
-            .map_err(py_err)
+        let msg = RawMsg::new(kind, data);
+        py.allow_threads(|| {
+            let mut client = lock_py(&self.client, "PipClient")?;
+            client.send_pending(token, &msg).map_err(py_err)
+        })
     }
 
-    fn send_message(&mut self, message: &PyMessage) -> PyResult<()> {
+    fn send_message(&mut self, py: Python<'_>, message: &PyMessage) -> PyResult<()> {
         if self.outgoing_done {
             return Err(PyRuntimeError::new_err("pip outgoing direction is done"));
         }
         let token = self
             .token
             .ok_or_else(|| PyRuntimeError::new_err("pip session is closed"))?;
-        let mut client = lock_py(&self.client, "PipClient")?;
-        client
-            .send_pending(token, &RawMsg::new(message.kind, &message.data))
-            .map_err(py_err)
+        let msg = RawMsg::new(message.kind, &message.data);
+        py.allow_threads(|| {
+            let mut client = lock_py(&self.client, "PipClient")?;
+            client.send_pending(token, &msg).map_err(py_err)
+        })
     }
 
     fn send_pod(&mut self, py: Python<'_>, value: Py<PyAny>) -> PyResult<()> {
@@ -3621,19 +4104,23 @@ impl PyPipSession {
         let token = self
             .token
             .ok_or_else(|| PyRuntimeError::new_err("pip session is closed"))?;
-        let mut client = lock_py(&self.client, "PipClient")?;
-        client.send_pending(token, &raw).map_err(py_err)
+        py.allow_threads(|| {
+            let mut client = lock_py(&self.client, "PipClient")?;
+            client.send_pending(token, &raw).map_err(py_err)
+        })
     }
 
-    fn finish_send(&mut self) -> PyResult<()> {
+    fn finish_send(&mut self, py: Python<'_>) -> PyResult<()> {
         if self.outgoing_done {
             return Ok(());
         }
         let token = self
             .token
             .ok_or_else(|| PyRuntimeError::new_err("pip session is closed"))?;
-        let mut client = lock_py(&self.client, "PipClient")?;
-        client.finish_send_pending(token).map_err(py_err)?;
+        py.allow_threads(|| {
+            let mut client = lock_py(&self.client, "PipClient")?;
+            client.finish_send_pending(token).map_err(py_err)
+        })?;
         self.outgoing_done = true;
         Ok(())
     }
@@ -3871,7 +4358,7 @@ impl PyPendingPip {
     }
 
     #[pyo3(signature = (data, kind=0))]
-    fn send(&mut self, data: &[u8], kind: u64) -> PyResult<()> {
+    fn send(&mut self, py: Python<'_>, data: &[u8], kind: u64) -> PyResult<()> {
         let (server, token) = {
             let state = lock_py(&self.state, "PendingPip")?;
             if state.outgoing_done {
@@ -3882,13 +4369,14 @@ impl PyPendingPip {
                 .ok_or_else(|| PyRuntimeError::new_err("pip session is closed"))?;
             (state.server.clone(), token)
         };
-        let mut server = lock_py(server.as_ref(), "PipServer")?;
-        server
-            .send_pending(token, &RawMsg::new(kind, data))
-            .map_err(py_err)
+        let msg = RawMsg::new(kind, data);
+        py.allow_threads(|| {
+            let mut server = lock_py(server.as_ref(), "PipServer")?;
+            server.send_pending(token, &msg).map_err(py_err)
+        })
     }
 
-    fn send_message(&mut self, message: &PyMessage) -> PyResult<()> {
+    fn send_message(&mut self, py: Python<'_>, message: &PyMessage) -> PyResult<()> {
         let (server, token) = {
             let state = lock_py(&self.state, "PendingPip")?;
             if state.outgoing_done {
@@ -3899,10 +4387,11 @@ impl PyPendingPip {
                 .ok_or_else(|| PyRuntimeError::new_err("pip session is closed"))?;
             (state.server.clone(), token)
         };
-        let mut server = lock_py(server.as_ref(), "PipServer")?;
-        server
-            .send_pending(token, &RawMsg::new(message.kind, &message.data))
-            .map_err(py_err)
+        let msg = RawMsg::new(message.kind, &message.data);
+        py.allow_threads(|| {
+            let mut server = lock_py(server.as_ref(), "PipServer")?;
+            server.send_pending(token, &msg).map_err(py_err)
+        })
     }
 
     fn send_pod(&mut self, py: Python<'_>, value: Py<PyAny>) -> PyResult<()> {
@@ -3917,11 +4406,13 @@ impl PyPendingPip {
                 .ok_or_else(|| PyRuntimeError::new_err("pip session is closed"))?;
             (state.server.clone(), token)
         };
-        let mut server = lock_py(server.as_ref(), "PipServer")?;
-        server.send_pending(token, &raw).map_err(py_err)
+        py.allow_threads(|| {
+            let mut server = lock_py(server.as_ref(), "PipServer")?;
+            server.send_pending(token, &raw).map_err(py_err)
+        })
     }
 
-    fn finish_send(&mut self) -> PyResult<()> {
+    fn finish_send(&mut self, py: Python<'_>) -> PyResult<()> {
         let (server, token) = {
             let mut state = lock_py(&self.state, "PendingPip")?;
             if state.outgoing_done {
@@ -3933,12 +4424,14 @@ impl PyPendingPip {
             state.outgoing_done = true;
             (state.server.clone(), token)
         };
-        let mut server = lock_py(server.as_ref(), "PipServer")?;
-        server.finish_send_pending(token).map_err(py_err)
+        py.allow_threads(|| {
+            let mut server = lock_py(server.as_ref(), "PipServer")?;
+            server.finish_send_pending(token).map_err(py_err)
+        })
     }
 
-    fn finish_send_pod(&mut self) -> PyResult<()> {
-        self.finish_send()
+    fn finish_send_pod(&mut self, py: Python<'_>) -> PyResult<()> {
+        self.finish_send(py)
     }
 
     fn close(&mut self) -> PyResult<()> {
@@ -3988,6 +4481,8 @@ pub fn register_python_module(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyDatapodPutUpload>()?;
     module.add("DatapodPutSender", module.getattr("DatapodPutUpload")?)?;
     module.add_class::<PyDatapodAckServer>()?;
+    module.add_class::<PyDatapodPutBatch>()?;
+    module.add_class::<PyPendingDatapodPut>()?;
     module.add_class::<PyDatapodPipClient>()?;
     module.add_class::<PyDatapodPipSession>()?;
     module.add_class::<PyDatapodPipServer>()?;
@@ -4002,6 +4497,7 @@ pub fn register_python_module(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("PutSender", module.getattr("PutUpload")?)?;
     module.add_class::<PyPutBatch>()?;
     module.add_class::<PyAckServer>()?;
+    module.add_class::<PyPendingPut>()?;
     module.add_class::<PyPipClient>()?;
     module.add_class::<PyPipSession>()?;
     module.add_class::<PyPipServer>()?;
