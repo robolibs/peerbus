@@ -155,11 +155,16 @@ def main() -> None:
         raise SystemExit("width, height, fps, and shm-slots must be positive")
 
     frame_bytes = args.width * args.height * 4
+    # allow_any_peer: inbound peers are denied by default. This demo streams
+    # to whatever subscriber shows up (video_sub uses an ephemeral key, so
+    # there is no id to allowlist ahead of time). Trusted-network only — a
+    # real deployment passes allowed_peers=[<did:key>, ...] instead.
     node = peerbus.Node(
         identity=args.identity,
         max_payload_bytes=frame_bytes + 4096,
         subscriber_buffer=args.shm_slots,
         max_subscribers=8,
+        allow_any_peer=True,
     )
     qos = peerbus.TopicQos.latest(max_message_bytes=max(frame_bytes + 4096, 64 * 1024 * 1024))
     pub = node.datapod_publisher(args.topic, qos)

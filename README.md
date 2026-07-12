@@ -139,7 +139,11 @@ let mut sub  = sub_node.subscriber::<Pose>(pub_addr, "rover/pose")?;
 
 `identity_file` is the only path that can't be impersonated. Mode is re-enforced (`0600`) on every read.
 
+**Security note.** `.identity("name")` / `.identity_env(...)` derive the 32-byte Ed25519 secret key deterministically by blake3-hashing the identity string. Anyone who knows a peer's identity string can therefore derive its key and impersonate it. This is fine on a trusted LAN, but production deployments on untrusted networks should supply an explicit random key via `identity_file` rather than relying on identity-derived keys.
+
 ## Limiting who can dial in
+
+Inbound peers are **denied by default**. A node accepts an incoming connection only if the dialing peer is on its allowlist:
 
 ```rust
 let node = Node::builder()
@@ -149,7 +153,15 @@ let node = Node::builder()
     .bind()?;
 ```
 
-Without `allow_peer`, any peer that knows the ALPN can subscribe. Once one is set, every other connection is closed immediately after the QUIC handshake.
+Every other connection is closed immediately after the QUIC handshake, with a `WARN` naming the rejected peer. This covers pub/sub and all five request modes — the check runs once, on the connection, before any stream is served.
+
+A node that configures no allowlist rejects *everyone*. To accept any peer that knows the ALPN — a trusted LAN, a loopback test — opt out explicitly:
+
+```rust
+let node = Node::builder().allow_any_peer().bind()?; // WARNs at bind
+```
+
+The ALPN is not a secret (it is sent in the clear in the TLS ClientHello), so `allow_any_peer` is not access control. Only outbound dials are unfiltered; the peer you dial decides whether to accept you.
 
 ## Req/res
 
@@ -285,9 +297,9 @@ Enable the `tracing` feature for structured events on accept / connect / disconn
 | Feature   | Adds                                                              |
 |-----------|-------------------------------------------------------------------|
 | `tracing` | structured events at accept / connect / disconnect / lag / errors |
-| `config`  | service-discovery config files (TOML / JSON)                      |
+| `python`  | pyo3 CPython extension (built by maturin)                         |
 
-The local SHM backend and iroh are always on; there is no feature gate for either transport.
+The local SHM backend and iroh are always on; there is no feature gate for either transport. Service-discovery config files (TOML / JSON) are planned, not yet implemented — see [`PLAN.md`](PLAN.md).
 
 ## Foreign-language bindings
 
@@ -330,9 +342,12 @@ read-only `memoryview` payload/wire bytes without copying.
 Python also exposes `node.peer_path_diagnostics(endpoint_addr)` for remote
 path checks; the C ABI mirrors it through `peerbus_node_peer_path_diagnostics`
 and the `peerbus_peer_path_diagnostics_*` accessors.
-Inbound peer allowlisting is also binding-visible: Python accepts
-`Node(allowed_peers=[did_key_or_name, ...])`, and C uses
-`PeerbusNodeConfig.allowed_peers` / `allowed_peers_len`.
+Inbound peer allowlisting is also binding-visible, and deny-by-default applies
+to the bindings too: Python accepts
+`Node(allowed_peers=[did_key_or_name, ...], allow_any_peer=False)`, and C uses
+`PeerbusNodeConfig.allowed_peers` / `allowed_peers_len` / `allow_any_peer`.
+(`peerbus_node_new` has no ACL knob, so the node it builds refuses every
+inbound connection; use `peerbus_node_new_with_config` to serve remote peers.)
 
 The video examples use `datapod.Grid` (`Encoding.Rgba8`) over that generic
 datapod path:
@@ -420,4 +435,4 @@ Datapod-focused examples:
 
 ## Status
 
-`0.0.x` — pre-1.0. Wire format documented in [`PLAN.md`](PLAN.md), not stable between minor releases. Sharp edges in [`LIMITATIONS.md`](LIMITATIONS.md).
+`0.3.x` — pre-1.0. Wire format documented in [`PLAN.md`](PLAN.md), not stable between minor releases. Sharp edges in [`LIMITATIONS.md`](LIMITATIONS.md).

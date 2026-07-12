@@ -2,7 +2,7 @@
 
 Known sharp edges. Pair with [`PLAN.md`](PLAN.md) for the roadmap.
 
-`0.0.x` — pre-1.0. Wire formats are documented but **not stable**
+`0.3.x` — pre-1.0. Wire formats are documented but **not stable**
 between minor releases.
 
 ## Local transport (shared-memory ring)
@@ -33,6 +33,39 @@ between minor releases.
   confusion. Remaining caveat: non-Unix targets use a conservative
   fallback unless/until a native process-start token is added.
 
+- **Backing-store exhaustion is handled on tmpfs, best-effort
+  elsewhere.** A segment's pages are backed lazily on first touch, so
+  a full `/dev/shm` would otherwise deliver an uncatchable `SIGBUS`
+  when the creator zeroes the segment. On Linux tmpfs the creator
+  pre-reserves the whole segment with `fallocate` and turns an
+  out-of-space condition into a clean `Error::ShmExhausted`; an opener
+  probes pages with `MADV_POPULATE_READ` before reading. On paths
+  where pre-reservation is unavailable — a non-tmpfs `/dev/shm`,
+  kernels older than 5.14 (no `fallocate`/`MADV_POPULATE_READ`), or
+  file-descriptor exhaustion during the reservation reopen — the
+  creator falls back to the lazy path and logs a warning; a genuine
+  allocation failure there can still abort the *creating* process via
+  `SIGBUS`. This never corrupts consumers: `magic` is published only
+  after the segment is fully backed, so an opener never observes a
+  half-backed segment.
+
+- **A creator that dies mid-initialization self-heals.** If a process
+  dies after creating a segment but before it is fully initialized, the
+  next opener detects the dead creator (by pid + `/proc` start token),
+  reclaims the name via an inode-verified unlink, and rebuilds — no
+  manual `rm /dev/shm/qb_*`. A wrongly-suspected *live* creator can
+  never lose its segment: it abandons rather than fighting for the
+  name, and only the mapped-and-arbitrated inode is ever unlinked, so a
+  healthy segment recreated under the same name is never destroyed.
+  One narrow, self-healing corner remains: if a *reclaiming* process
+  dies in the sub-millisecond window between claiming responsibility
+  and unlinking, and its pid is immediately reused by an unrelated live
+  process, recovery stalls until that unrelated process exits (bounded,
+  transient, no data loss). On non-Linux targets, or if
+  `/proc/self/maps` is unreadable, the reclaimer's inode identity falls
+  back to a by-name stat, which reopens a vanishingly small
+  repurpose-during-crash window.
+
 ## Remote (iroh) transport
 
 - **Reconnect is best-effort.** `ensure_peer_connection` checks the
@@ -49,13 +82,28 @@ between minor releases.
   `header + bytes` split that `DataPod` exposes. `serde`-shaped
   payloads are not wired in; heap-bearing types participate via
   `#[datapod::datapod]` + `#[dp(bytes)]`.
-- **Type identity uses size + alignment** hashed with FNV-1a
-  (`transport::wire_type_hash::<T>()`). Stable across rustc
-  versions; two unrelated types with identical size and alignment
-  collide. Size mismatches are still caught at frame-decode time
-  via the explicit `payload_size` field in the handshake.
-- **Peer ACL is opt-in.** Without `.allow_peer(...)` on the
-  builder, every peer that knows the ALPN can dial and subscribe.
+- **Type identity uses size + alignment + type name** hashed with
+  FNV-1a (`transport::wire_type_hash::<T>()`). Distinct types produce
+  distinct hashes, so a mismatched publisher/subscriber pair fails
+  loudly with `TypeMismatch` rather than silently interchanging
+  same-shaped messages. The trade-off: the hash is **not** invariant
+  across rustc versions that reformat type names, nor across renaming
+  or moving a type — **peers must be built from the same type
+  definitions**, and ideally the same toolchain. A refused connection
+  is diagnosable in seconds; corrupted data in a control loop is not.
+  (Earlier releases hashed size+align only, which was toolchain-stable
+  but collision-prone.) Note this hash identifies the Rust-side
+  transport slot only; the cross-language `datapod` schema hash that
+  the C/Python bindings read rides *inside* the message and is
+  unaffected.
+- **Peer ACL is deny-by-default.** A node accepts an inbound
+  connection only from peers named by `.allow_peer(...)` /
+  `.allow_peers(...)`. With no allowlist configured it rejects
+  everyone, unless the deny-by-default policy is explicitly waived
+  with `.allow_any_peer()` — which accepts any peer that knows the
+  ALPN and WARNs at bind. The check runs once per connection, right
+  after the QUIC handshake, so it covers pub/sub and all five item
+  modes. Only inbound accepts are filtered; outbound dials are not.
 - **Cross-host connectivity is not in CI.** Loopback is covered by
   `remote_*` tests; cross-machine paths are demonstrated manually.
 - **Wire parsers are bounded but unfuzzed in CI.** A `fuzz/`
@@ -100,10 +148,21 @@ between minor releases.
 
 ## Identity
 
-- **`identity("name")` is impersonable.** The literal string hashes
-  to a deterministic `SecretKey`; anyone who knows the string can
-  dial as that identity. Fine on a trusted LAN, *not* fine on the
-  open internet. Use `identity_file(path)` on untrusted networks.
+- **`identity("name")` is impersonable.** The 32-byte Ed25519
+  `SecretKey` is derived deterministically by blake3-hashing the
+  identity string (`derive_secret_from_name` in `node.rs`, domain-
+  separated by the `peerbus/v1/identity` tag). This is not a
+  password-hardened KDF — the identity string *is* the key material,
+  so anyone who knows a peer's identity string can derive its secret
+  key and impersonate it. The same applies to `identity_env`, which
+  reads the string from an environment variable. Fine on a trusted
+  LAN, *not* fine on the open internet. Production deployments on
+  untrusted networks should supply an explicit random key via
+  `identity_file(path)` (32 raw bytes on disk) rather than relying on
+  identity-derived keys. `Node::builder().bind()` emits a `WARN`
+  whenever the key came from `identity` / `identity_env`, so the risk
+  is visible in logs; it is silent for `identity_file` and ephemeral
+  keys.
 - **Named publishers carry a hex-alias mirror.** When a publisher
   uses `.identity("name")`, the local service is opened under
   *two* names — the canonical `<name>__<topic>` and an alias

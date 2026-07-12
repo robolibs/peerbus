@@ -39,9 +39,6 @@ default = ["tracing"]
 # Tracing spans / events at every loan / publish / consume.
 tracing = ["dep:tracing"]
 
-# TOML / JSON config parsing for service discovery files.
-config = ["dep:serde_json", "dep:toml"]
-
 # Python bindings (pyo3). Builds the cdylib as a CPython extension.
 python = ["dep:pyo3"]
 python-extension = ["python"]
@@ -53,7 +50,6 @@ inherits = "dev"
 datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.4.1" }
 thiserror = "2.0"
 bytes = "1"
-bon = "3"
 # bytemuck for Plain-Old-Data typed payloads placed directly into
 # SHM slots. zerocopy is a good alternative; picking one later.
 bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
@@ -80,8 +76,6 @@ postcard = { version = "1.0", default-features = false, features = ["use-std"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 
 tracing = { version = "0.1", optional = true }
-serde_json = { version = "1.0", optional = true }
-toml = { version = "0.8", optional = true }
 pyo3 = { version = "0.23", optional = true, features = [
     # Python zero-copy sample views need the buffer protocol slots, which PyO3
     # exposes for the limited API starting at Python 3.11.

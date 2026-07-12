@@ -80,8 +80,14 @@ fn main() -> peerbus::Result<()> {
         history_depth: 1,
     };
 
+    // `allow_any_peer`: inbound peers are denied by default, and this demo
+    // streams to whatever subscriber shows up (the Rust/Python `video_sub`
+    // processes use ephemeral keys, so there is no id to allowlist ahead of
+    // time). Trusted-network only — a real deployment would list the
+    // subscribers' ids with `.allow_peer(<did:key or EndpointId>)`.
     let node = Node::builder()
         .identity_file(KEY_PATH)
+        .allow_any_peer()
         .local_config(local_cfg)
         .bind()?;
 

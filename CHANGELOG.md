@@ -4,7 +4,23 @@
 
 ### <!-- 0 -->⛰️  Features
 
-- More on phase 2
+- Rename the crate, C header, and Python module from quicbit to peerbus
+- Expand the C ABI and pyo3 bindings across all five modes
+- Add zero-copy sample views (`take_view` / `DatapodSubscriber.take_view`) exposing read-only `memoryview` payload and wire bytes
+- Expose `peer_path_diagnostics` and inbound peer allowlisting through the Python and C bindings
+- Add a dedicated `reqres` module and export `DatapodSample`, `AnsStream`, and `PutSenderToken`
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Move the `datapod` dependency from a local path to git tag 0.4.1
+
+## [0.3.1] - 2026-06-07
+
+### <!-- 0 -->⛰️  Features
+
+- Add `DatapodMsg` and a generic datapod binding path for cross-language pub/sub and item modes
+- Add Python video publisher and subscriber examples over the datapod `Grid` path
+- Rework the Rust video publisher/subscriber examples onto the datapod path
 
 ## [0.3.0] - 2026-06-01
 

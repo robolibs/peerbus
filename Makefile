@@ -6,7 +6,6 @@ ifeq ($(PROJECT_NAME),)
     $(error Error: PROJECT file not found or invalid)
 endif
 
-TOP_DIR := $(CURDIR)
 CARGO := cargo
 EXAMPLE ?= main
 
@@ -58,11 +57,6 @@ bind-c:
 bind-py:
 	@maturin build --features python
 
-docs:
-	@command -v mdbook >/dev/null 2>&1 || { echo "mdbook is not installed. Please install it first."; exit 1; }
-	@mdbook build $(TOP_DIR)/book --dest-dir $(TOP_DIR)/docs
-	@git add --all && git commit -m "docs: building website/mdbook"
-
 release:
 	@if [ -z "$(HAS_REL)" ]; then \
 		echo "git-rel is not installed. Please install it first."; \
@@ -87,7 +81,6 @@ help:
 	@echo "  check        Run cargo check on all targets"
 	@echo "  fmt          Format the workspace"
 	@echo "  clean        Remove Cargo build artifacts"
-	@echo "  docs         Build the documentation"
 	@echo "  release      Release a new version"
 	@echo
 	@echo "Examples:"
