@@ -139,7 +139,6 @@ def render_cube(buf: bytearray, width: int, height: int, t: float) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--identity", default=os.environ.get("PEERBUS_VIDEO_IDENTITY", "py-video-pub"))
     parser.add_argument("--topic", default=os.environ.get("PEERBUS_VIDEO_TOPIC", TOPIC))
     parser.add_argument("--width", type=int, default=env_int("PEERBUS_VIDEO_WIDTH", DEFAULT_WIDTH))
     parser.add_argument("--height", type=int, default=env_int("PEERBUS_VIDEO_HEIGHT", DEFAULT_HEIGHT))
@@ -160,7 +159,6 @@ def main() -> None:
     # there is no id to allowlist ahead of time). Trusted-network only — a
     # real deployment passes allowed_peers=[<did:key>, ...] instead.
     node = peerbus.Node(
-        identity=args.identity,
         max_payload_bytes=frame_bytes + 4096,
         subscriber_buffer=args.shm_slots,
         max_subscribers=8,
@@ -169,12 +167,13 @@ def main() -> None:
     qos = peerbus.TopicQos.latest(max_message_bytes=max(frame_bytes + 4096, 64 * 1024 * 1024))
     pub = node.datapod_publisher(args.topic, qos)
 
+    peer_addr = node.endpoint_addr()
     print(f"python video publisher ready: {args.width}x{args.height} @ {args.fps} fps")
     print(f"local SHM slots: {args.shm_slots}")
-    print(f"identity: {node.did_key()}")
+    print(f"endpoint addr: {peer_addr}")
     print()
     print("run Rust subscriber:")
-    print(f"    cargo run --release --example video_sub -- {node.did_key()}")
+    print(f"    cargo run --release --example video_sub -- {peer_addr}")
     print()
 
     pixels = bytearray(frame_bytes)

@@ -26,17 +26,21 @@ struct RobotSnapshot {
 }
 
 fn main() -> peerbus::Result<()> {
-    let pub_name = unique("gallery-pub");
-    let pub_node = Node::builder().no_relay().identity(&pub_name).bind()?;
+    let pub_node = Node::builder()
+        .no_relay()
+        .ephemeral()
+        .label(unique("gallery-pub"))
+        .bind()?;
     let sub_node = Node::builder()
         .no_relay()
-        .identity(unique("gallery-sub"))
+        .ephemeral()
+        .label(unique("gallery-sub"))
         .bind()?;
 
     let mut pubr =
         pub_node.publisher_with_qos::<RobotSnapshot>("robot/snapshot", TopicQos::reliable())?;
     let mut sub = sub_node.subscriber_with_qos::<RobotSnapshot>(
-        pub_name.as_str(),
+        pub_node.endpoint_id(),
         "robot/snapshot",
         TopicQos::reliable(),
     )?;

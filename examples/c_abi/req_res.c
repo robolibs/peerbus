@@ -32,13 +32,19 @@ static void *serve_req(void *arg) {
 }
 
 int main(void) {
-  PeerbusNode *node = peerbus_node_new("c-req-res-demo", true);
+  /* NULL secret key => ephemeral (random) identity. */
+  PeerbusNode *node = peerbus_node_new(NULL, true);
   if (!node) {
     fprintf(stderr, "node: %s\n", peerbus_last_error_message());
     return 1;
   }
   PeerbusReqServer *server = peerbus_req_server_new(node, "c/double");
-  PeerbusReqClient *client = peerbus_req_client_new(node, "c-req-res-demo", "c/double");
+  /* Address the peer by id: this node's own endpoint address string.
+     Same host => the client attaches over shared memory. */
+  char *self_addr = peerbus_node_endpoint_addr(node);
+  PeerbusReqClient *client =
+      self_addr ? peerbus_req_client_new(node, self_addr, "c/double") : NULL;
+  peerbus_string_free(self_addr);
   if (!server || !client) {
     fprintf(stderr, "setup: %s\n", peerbus_last_error_message());
     return 1;

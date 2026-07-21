@@ -34,8 +34,8 @@ fn main() -> peerbus::Result<()> {
 /// Same-host: server + client are two `Node`s; routing is SHM.
 fn local_shm() -> peerbus::Result<()> {
     println!("== req/res over shared memory ==");
-    let server_node = Node::builder().no_relay().identity("calc").bind()?;
-    let client_node = Node::builder().no_relay().identity("caller").bind()?;
+    let server_node = Node::builder().no_relay().ephemeral().label("calc").bind()?;
+    let client_node = Node::builder().no_relay().ephemeral().label("caller").bind()?;
 
     let mut server = server_node.req_server::<Add, Sum>("calc/add")?;
     let handle = std::thread::spawn(move || {
@@ -58,7 +58,7 @@ fn local_shm() -> peerbus::Result<()> {
         }
     });
 
-    let mut client = client_node.req_client::<Add, Sum>("calc", "calc/add")?;
+    let mut client = client_node.req_client::<Add, Sum>(server_node.endpoint_id(), "calc/add")?;
     for i in 1..=3 {
         let res = client.call(&Add { a: i, b: 100 })?;
         println!("  {i} + 100 = {}", res.header().value);
@@ -79,7 +79,7 @@ fn over_iroh() -> peerbus::Result<()> {
         value: req.a + req.b,
     })?;
 
-    let client_node = Node::builder().no_relay().bind()?;
+    let client_node = Node::builder().ephemeral().no_relay().bind()?;
     let mut client = client_node.req_client::<Add, Sum>(server.endpoint_addr(), "calc/add")?;
     for i in 1..=3 {
         let res = client.call(&Add { a: i, b: 200 })?;

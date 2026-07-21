@@ -34,8 +34,16 @@ fn main() -> peerbus::Result<()> {
 /// Same-host: routing is SHM between two `Node`s.
 fn local_shm() -> peerbus::Result<()> {
     println!("== pip over shared memory ==");
-    let server_node = Node::builder().no_relay().identity("session-srv").bind()?;
-    let client_node = Node::builder().no_relay().identity("session-cli").bind()?;
+    let server_node = Node::builder()
+        .no_relay()
+        .ephemeral()
+        .label("session-srv")
+        .bind()?;
+    let client_node = Node::builder()
+        .no_relay()
+        .ephemeral()
+        .label("session-cli")
+        .bind()?;
 
     let mut server = server_node.pip_server::<ClientMsg, ServerMsg>("session/echo")?;
     let handle = std::thread::spawn(move || {
@@ -59,7 +67,7 @@ fn local_shm() -> peerbus::Result<()> {
     });
 
     let mut client =
-        client_node.pip_client::<ClientMsg, ServerMsg>("session-srv", "session/echo")?;
+        client_node.pip_client::<ClientMsg, ServerMsg>(server_node.endpoint_id(), "session/echo")?;
     let mut pip = client.open()?;
     for value in [1, 2, 3] {
         pip.send(&ClientMsg { value })?;
@@ -86,7 +94,7 @@ fn over_iroh() -> peerbus::Result<()> {
             .collect()
     })?;
 
-    let client_node = Node::builder().no_relay().bind()?;
+    let client_node = Node::builder().ephemeral().no_relay().bind()?;
     let mut client =
         client_node.pip_client::<ClientMsg, ServerMsg>(server.endpoint_addr(), "session/echo")?;
     let mut pip = client.open()?;

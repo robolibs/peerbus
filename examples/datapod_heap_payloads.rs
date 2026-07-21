@@ -14,7 +14,6 @@ use datapod::{Bytes, Linestring, Point};
 use peerbus::{LocalConfig, Node, TopicQos};
 
 fn main() -> peerbus::Result<()> {
-    let pub_name = unique("heap-pub");
     let local_cfg = LocalConfig {
         max_payload_bytes: 1024 * 1024,
         history_depth: 4,
@@ -23,12 +22,14 @@ fn main() -> peerbus::Result<()> {
     };
     let pub_node = Node::builder()
         .no_relay()
-        .identity(&pub_name)
+        .ephemeral()
+        .label(unique("heap-pub"))
         .local_config(local_cfg)
         .bind()?;
     let sub_node = Node::builder()
         .no_relay()
-        .identity(unique("heap-sub"))
+        .ephemeral()
+        .label(unique("heap-sub"))
         .bind()?;
 
     let qos = TopicQos::latest()
@@ -37,19 +38,15 @@ fn main() -> peerbus::Result<()> {
         .with_max_inflight_bytes(2 * 1024 * 1024)
         .with_subscriber_queue(4);
 
-    bytes_case(&pub_node, &sub_node, &pub_name, qos)?;
-    linestring_case(&pub_node, &sub_node, &pub_name, qos)?;
+    bytes_case(&pub_node, &sub_node, qos)?;
+    linestring_case(&pub_node, &sub_node, qos)?;
     Ok(())
 }
 
-fn bytes_case(
-    pub_node: &Node,
-    sub_node: &Node,
-    pub_name: &str,
-    qos: TopicQos,
-) -> peerbus::Result<()> {
+fn bytes_case(pub_node: &Node, sub_node: &Node, qos: TopicQos) -> peerbus::Result<()> {
     let mut pubr = pub_node.publisher_with_qos::<Bytes>("blob/raw", qos)?;
-    let mut sub = sub_node.subscriber_with_qos::<Bytes>(pub_name, "blob/raw", qos)?;
+    let mut sub =
+        sub_node.subscriber_with_qos::<Bytes>(pub_node.endpoint_id(), "blob/raw", qos)?;
 
     let payload: Vec<u8> = (0..128 * 1024).map(|i| (i % 251) as u8).collect();
     pubr.send(&Bytes::from_slice(&payload))?;
@@ -66,14 +63,13 @@ fn bytes_case(
     Ok(())
 }
 
-fn linestring_case(
-    pub_node: &Node,
-    sub_node: &Node,
-    pub_name: &str,
-    qos: TopicQos,
-) -> peerbus::Result<()> {
+fn linestring_case(pub_node: &Node, sub_node: &Node, qos: TopicQos) -> peerbus::Result<()> {
     let mut pubr = pub_node.publisher_with_qos::<Linestring>("path/local_plan", qos)?;
-    let mut sub = sub_node.subscriber_with_qos::<Linestring>(pub_name, "path/local_plan", qos)?;
+    let mut sub = sub_node.subscriber_with_qos::<Linestring>(
+        pub_node.endpoint_id(),
+        "path/local_plan",
+        qos,
+    )?;
 
     let points = vec![
         Point::new(0.0, 0.0, 0.0),

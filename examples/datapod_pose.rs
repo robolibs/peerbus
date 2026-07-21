@@ -16,11 +16,11 @@ use datapod::{Point, Pose, Quaternion};
 use peerbus::Node;
 
 fn main() -> peerbus::Result<()> {
-    let pub_node = Node::builder().no_relay().identity("rover-a").bind()?;
-    let sub_node = Node::builder().no_relay().identity("planner").bind()?;
+    let pub_node = Node::builder().no_relay().ephemeral().label("rover-a").bind()?;
+    let sub_node = Node::builder().no_relay().ephemeral().label("planner").bind()?;
 
     let mut pubr = pub_node.publisher::<Pose>("rover/pose")?;
-    let mut sub = sub_node.subscriber::<Pose>("rover-a", "rover/pose")?;
+    let mut sub = sub_node.subscriber::<Pose>(pub_node.endpoint_id(), "rover/pose")?;
 
     println!(
         "publisher \"rover-a\"   EndpointId={}",

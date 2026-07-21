@@ -2,21 +2,21 @@ use super::*;
 
 // ---- node ----
 
-/// Create a node. `identity` may be NULL for an ephemeral key. Returns
-/// NULL on failure (see [`peerbus_last_error_message`]).
+/// Create a node. `secret_key` points to 32 raw ed25519 key bytes, or is
+/// NULL for an ephemeral (random) key. Returns NULL on failure (see
+/// [`peerbus_last_error_message`]).
 ///
 /// The node this creates denies every inbound connection (no allowlist, no
 /// `allow_any_peer`). To serve remote peers, use
 /// [`peerbus_node_new_with_config`] and set `allowed_peers` (preferred) or
 /// `allow_any_peer`.
 #[unsafe(no_mangle)]
-pub extern "C" fn peerbus_node_new(identity: *const c_char, no_relay: bool) -> *mut PeerbusNode {
+pub extern "C" fn peerbus_node_new(secret_key: *const u8, no_relay: bool) -> *mut PeerbusNode {
     ffi_guard(ptr::null_mut(), move || {
     clear_last_error();
     let cfg = PeerbusNodeConfig {
-        identity,
+        secret_key,
         no_relay,
-        system_did: ptr::null(),
         allowed_peers: ptr::null(),
         allowed_peers_len: 0,
         allow_any_peer: false,
@@ -36,9 +36,8 @@ pub extern "C" fn peerbus_node_new(identity: *const c_char, no_relay: bool) -> *
 #[unsafe(no_mangle)]
 pub extern "C" fn peerbus_node_config_default() -> PeerbusNodeConfig {
     PeerbusNodeConfig {
-        identity: ptr::null(),
+        secret_key: ptr::null(),
         no_relay: false,
-        system_did: ptr::null(),
         allowed_peers: ptr::null(),
         allowed_peers_len: 0,
         allow_any_peer: false,
@@ -72,29 +71,6 @@ pub extern "C" fn peerbus_node_free(node: *mut PeerbusNode) {
 })
 }
 
-/// This node's identity as a `did:key:z6Mk…` string. Caller owns the
-/// returned C string and must free it with [`peerbus_string_free`].
-/// Returns NULL on failure.
-#[unsafe(no_mangle)]
-pub extern "C" fn peerbus_node_did_key(node: *const PeerbusNode) -> *mut c_char {
-    ffi_guard(ptr::null_mut(), move || {
-    clear_last_error();
-    if node.is_null() {
-        set_last_error("null node handle");
-        return ptr::null_mut();
-    }
-    // SAFETY: validated non-null.
-    let node = unsafe { &*node };
-    match CString::new(node.node.endpoint_did_key()) {
-        Ok(s) => s.into_raw(),
-        Err(_) => {
-            set_last_error("did:key contained a NUL byte");
-            ptr::null_mut()
-        }
-    }
-})
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn peerbus_node_endpoint_addr(node: *const PeerbusNode) -> *mut c_char {
     ffi_guard(ptr::null_mut(), move || {
@@ -107,63 +83,6 @@ pub extern "C" fn peerbus_node_endpoint_addr(node: *const PeerbusNode) -> *mut c
     match encode_endpoint_addr(&node.node.endpoint_addr()) {
         Ok(addr) => addr.into_raw(),
         Err(()) => ptr::null_mut(),
-    }
-})
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn peerbus_node_add_topic_route(
-    node: *const PeerbusNode,
-    topic: *const c_char,
-    endpoint_addr: *const c_char,
-) -> bool {
-    ffi_guard(false, move || {
-    clear_last_error();
-    if node.is_null() {
-        set_last_error("null node handle");
-        return false;
-    }
-    let topic = match unsafe { cstr(topic) } {
-        Ok(topic) => topic,
-        Err(()) => return false,
-    };
-    let endpoint_addr = match unsafe { endpoint_addr_in(endpoint_addr) } {
-        Ok(addr) => addr,
-        Err(()) => return false,
-    };
-    let node = unsafe { &*node };
-    match node.node.add_topic_route(topic, endpoint_addr) {
-        Ok(()) => true,
-        Err(e) => {
-            set_last_error(e.to_string());
-            false
-        }
-    }
-})
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn peerbus_node_add_system_peer(
-    node: *const PeerbusNode,
-    endpoint_addr: *const c_char,
-) -> bool {
-    ffi_guard(false, move || {
-    clear_last_error();
-    if node.is_null() {
-        set_last_error("null node handle");
-        return false;
-    }
-    let endpoint_addr = match unsafe { endpoint_addr_in(endpoint_addr) } {
-        Ok(addr) => addr,
-        Err(()) => return false,
-    };
-    let node = unsafe { &*node };
-    match node.node.add_system_peer(endpoint_addr) {
-        Ok(()) => true,
-        Err(e) => {
-            set_last_error(e.to_string());
-            false
-        }
     }
 })
 }
@@ -229,11 +148,11 @@ pub extern "C" fn peerbus_peer_path_diagnostics_peer(
         set_last_error("null peer path diagnostics handle");
         return ptr::null_mut();
     }
-    let did = crate::did_key::endpoint_id_to_did_key(&unsafe { &*diag }.diag.peer);
-    match CString::new(did) {
+    let hex = hex_encode(unsafe { &*diag }.diag.peer.as_bytes());
+    match CString::new(hex) {
         Ok(s) => s.into_raw(),
         Err(_) => {
-            set_last_error("peer did:key contained a NUL byte");
+            set_last_error("peer id contained a NUL byte");
             ptr::null_mut()
         }
     }
@@ -450,7 +369,7 @@ pub extern "C" fn peerbus_peer_path_diagnostics_path_lost_packets(
 })
 }
 
-/// Free a string returned by peerbus (e.g. [`peerbus_node_did_key`]).
+/// Free a string returned by peerbus (e.g. [`peerbus_node_endpoint_addr`]).
 #[unsafe(no_mangle)]
 pub extern "C" fn peerbus_string_free(s: *mut c_char) {
     ffi_guard((), move || {

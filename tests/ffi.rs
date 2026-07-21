@@ -173,13 +173,6 @@ fn c_qos_zero_numeric_fields_keep_policy_defaults() {
 fn c_abi_null_timeout_and_ownership_edges() {
     let _guard = FFI_TEST_LOCK.lock().unwrap();
 
-    assert!(peerbus_node_did_key(ptr::null()).is_null());
-    assert!(
-        last_error().contains("null node"),
-        "expected null-node error, got: {}",
-        last_error()
-    );
-
     let empty = peerbus_message_data(ptr::null());
     assert!(empty.ptr.is_null());
     assert_eq!(empty.len, 0);
@@ -194,9 +187,8 @@ fn c_abi_null_timeout_and_ownership_edges() {
     peerbus_message_free(message);
     peerbus_message_free(ptr::null_mut());
 
-    let identity = cstr(&unique("ffi-null-timeout"));
     let topic = cstr(&unique("ffi-null-timeout-topic"));
-    let node = peerbus_node_new(identity.as_ptr(), true);
+    let node = peerbus_node_new(ptr::null(), true);
     assert!(!node.is_null(), "node_new failed: {}", last_error());
 
     assert!(peerbus_publisher_new(ptr::null(), topic.as_ptr()).is_null());
@@ -243,19 +235,18 @@ fn c_abi_null_timeout_and_ownership_edges() {
 #[test]
 fn c_abi_pubsub_round_trip() {
     let _guard = FFI_TEST_LOCK.lock().unwrap();
-    let identity = cstr(&unique("ffi-pubsub"));
     let topic = cstr("ffi/topic");
 
-    let node = peerbus_node_new(identity.as_ptr(), true);
+    let node = peerbus_node_new(ptr::null(), true);
     assert!(!node.is_null(), "node_new failed: {}", last_error());
 
-    // did:key is a non-empty owned string.
-    let did = peerbus_node_did_key(node);
-    assert!(!did.is_null());
-    peerbus_string_free(did);
+    // Peers are addressed only by their hex postcard-encoded endpoint addr.
+    let peer = peerbus_node_endpoint_addr(node);
+    assert!(!peer.is_null(), "endpoint addr failed: {}", last_error());
 
     let publisher = peerbus_publisher_new(node, topic.as_ptr());
-    let subscriber = peerbus_subscriber_new(node, identity.as_ptr(), topic.as_ptr());
+    let subscriber = peerbus_subscriber_new(node, peer, topic.as_ptr());
+    peerbus_string_free(peer);
     assert!(!publisher.is_null() && !subscriber.is_null());
 
     let payload = [0xDEu8, 0xAD, 0xBE, 0xEF];
@@ -295,14 +286,17 @@ fn c_abi_pubsub_round_trip() {
 #[test]
 fn c_abi_pubsub_zero_copy_sample_view_round_trip() {
     let _guard = FFI_TEST_LOCK.lock().unwrap();
-    let identity = cstr(&unique("ffi-pubsub-sample"));
     let topic = cstr("ffi/topic_sample");
 
-    let node = peerbus_node_new(identity.as_ptr(), true);
+    let node = peerbus_node_new(ptr::null(), true);
     assert!(!node.is_null(), "node_new failed: {}", last_error());
 
+    let peer = peerbus_node_endpoint_addr(node);
+    assert!(!peer.is_null(), "endpoint addr failed: {}", last_error());
+
     let publisher = peerbus_publisher_new(node, topic.as_ptr());
-    let subscriber = peerbus_subscriber_new(node, identity.as_ptr(), topic.as_ptr());
+    let subscriber = peerbus_subscriber_new(node, peer, topic.as_ptr());
+    peerbus_string_free(peer);
     assert!(!publisher.is_null() && !subscriber.is_null());
 
     let payload = b"borrowed-sample";
@@ -336,16 +330,19 @@ fn c_abi_pubsub_zero_copy_sample_view_round_trip() {
 #[test]
 fn c_abi_datapod_pubsub_zero_copy_sample_view_round_trip() {
     let _guard = FFI_TEST_LOCK.lock().unwrap();
-    let identity = cstr(&unique("ffi-datapod-sample"));
     let topic = cstr("ffi/datapod_sample");
 
-    let node = peerbus_node_new(identity.as_ptr(), true);
+    let node = peerbus_node_new(ptr::null(), true);
     assert!(!node.is_null(), "node_new failed: {}", last_error());
+
+    let peer = peerbus_node_endpoint_addr(node);
+    assert!(!peer.is_null(), "endpoint addr failed: {}", last_error());
 
     let qos = peerbus_topic_qos_reliable();
     let publisher = peerbus_datapod_publisher_new_with_qos(node, topic.as_ptr(), qos);
     let subscriber =
-        peerbus_datapod_subscriber_new_with_qos(node, identity.as_ptr(), topic.as_ptr(), qos);
+        peerbus_datapod_subscriber_new_with_qos(node, peer, topic.as_ptr(), qos);
+    peerbus_string_free(peer);
     assert!(!publisher.is_null() && !subscriber.is_null());
 
     let wire = grid_wire(1, 2, vec![9; 8]);
@@ -389,297 +386,6 @@ fn c_abi_datapod_pubsub_zero_copy_sample_view_round_trip() {
     peerbus_node_free(node);
 }
 
-#[test]
-fn c_abi_system_did_pubsub_with_qos_round_trip() {
-    let _guard = FFI_TEST_LOCK.lock().unwrap();
-    let seed = peerbus_node_new(ptr::null(), true);
-    assert!(!seed.is_null(), "seed node_new failed: {}", last_error());
-    let did = peerbus_node_did_key(seed);
-    assert!(!did.is_null());
-    let system_did = unsafe { std::ffi::CStr::from_ptr(did) }
-        .to_string_lossy()
-        .into_owned();
-    peerbus_string_free(did);
-    peerbus_node_free(seed);
-
-    let system = cstr(&system_did);
-    let topic = cstr("ffi/system_topic");
-    let cfg = PeerbusNodeConfig {
-        identity: ptr::null(),
-        no_relay: true,
-        system_did: system.as_ptr(),
-        allowed_peers: ptr::null(),
-        allowed_peers_len: 0,
-        allow_any_peer: false,
-        max_payload_bytes: 0,
-        history_depth: 8,
-        subscriber_buffer: 8,
-        max_publishers: 0,
-        max_subscribers: 0,
-    };
-    let pub_node = peerbus_node_new_with_config(cfg);
-    let sub_node = peerbus_node_new_with_config(cfg);
-    assert!(!pub_node.is_null(), "pub node failed: {}", last_error());
-    assert!(!sub_node.is_null(), "sub node failed: {}", last_error());
-
-    let qos = peerbus_topic_qos_latest();
-    let publisher = peerbus_publisher_new_with_qos(pub_node, topic.as_ptr(), qos);
-    let subscriber = peerbus_subscribe_new_with_qos(sub_node, topic.as_ptr(), qos);
-    assert!(
-        !publisher.is_null() && !subscriber.is_null(),
-        "system setup failed: {}",
-        last_error()
-    );
-
-    let payload = b"system";
-    assert!(peerbus_publisher_send(
-        publisher,
-        55,
-        payload.as_ptr(),
-        payload.len()
-    ));
-    let mut msg: *mut PeerbusMessage = ptr::null_mut();
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let mut rc = 0;
-    while rc == 0 && Instant::now() < deadline {
-        rc = peerbus_subscriber_take(subscriber, &mut msg);
-        if rc == 0 {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    }
-    assert_eq!(rc, 1, "expected system message: {}", last_error());
-    assert_eq!(peerbus_message_kind(msg), 55);
-    let bytes = peerbus_message_data(msg);
-    let got = unsafe { std::slice::from_raw_parts(bytes.ptr, bytes.len) };
-    assert_eq!(got, payload);
-
-    peerbus_message_free(msg);
-    peerbus_subscriber_free(subscriber);
-    peerbus_publisher_free(publisher);
-    peerbus_node_free(sub_node);
-    peerbus_node_free(pub_node);
-}
-
-#[test]
-fn c_abi_system_did_all_client_modes_round_trip() {
-    let _guard = FFI_TEST_LOCK.lock().unwrap();
-    let seed = peerbus_node_new(ptr::null(), true);
-    assert!(!seed.is_null(), "seed node_new failed: {}", last_error());
-    let did = peerbus_node_did_key(seed);
-    assert!(!did.is_null());
-    let system_did = unsafe { std::ffi::CStr::from_ptr(did) }
-        .to_string_lossy()
-        .into_owned();
-    peerbus_string_free(did);
-    peerbus_node_free(seed);
-
-    let system = cstr(&system_did);
-    let cfg = PeerbusNodeConfig {
-        identity: ptr::null(),
-        no_relay: true,
-        system_did: system.as_ptr(),
-        allowed_peers: ptr::null(),
-        allowed_peers_len: 0,
-        allow_any_peer: false,
-        max_payload_bytes: 0,
-        history_depth: 8,
-        subscriber_buffer: 8,
-        max_publishers: 0,
-        max_subscribers: 0,
-    };
-    let server_node = peerbus_node_new_with_config(cfg);
-    let client_node = peerbus_node_new_with_config(cfg);
-    assert!(
-        !server_node.is_null() && !client_node.is_null(),
-        "system nodes failed: {}",
-        last_error()
-    );
-
-    let qos = peerbus_topic_qos_reliable();
-    let base = unique("ffi-system-modes");
-
-    let req_topic = cstr(&format!("{base}/req"));
-    let req_server = peerbus_req_server_new_with_qos(server_node, req_topic.as_ptr(), qos);
-    let req_client = peerbus_req_system_client_new_with_qos(client_node, req_topic.as_ptr(), qos);
-    assert!(
-        !req_server.is_null() && !req_client.is_null(),
-        "system req setup failed: {}",
-        last_error()
-    );
-    let req_server_addr = req_server as usize;
-    let req_handle = std::thread::spawn(move || {
-        let server = req_server_addr as *mut PeerbusReqServer;
-        peerbus_req_server_serve_one(server, 3000, Some(double_handler), ptr::null_mut())
-    });
-    let request = [2u8, 4, 6];
-    let mut response: *mut PeerbusMessage = ptr::null_mut();
-    assert!(peerbus_req_client_call(
-        req_client,
-        70,
-        request.as_ptr(),
-        request.len(),
-        &mut response,
-    ));
-    assert_eq!(req_handle.join().unwrap(), 1);
-    assert_eq!(peerbus_message_kind(response), 70);
-    assert_eq!(message_bytes(response), vec![4, 8, 12]);
-    peerbus_message_free(response);
-    peerbus_req_client_free(req_client);
-    peerbus_req_server_free(req_server);
-
-    let que_topic = cstr(&format!("{base}/que"));
-    let ans_server = peerbus_ans_server_new_with_qos(server_node, que_topic.as_ptr(), qos);
-    let que_client = peerbus_que_system_client_new_with_qos(client_node, que_topic.as_ptr(), qos);
-    assert!(
-        !ans_server.is_null() && !que_client.is_null(),
-        "system que setup failed: {}",
-        last_error()
-    );
-    let ans_server_addr = ans_server as usize;
-    let ans_handle = std::thread::spawn(move || {
-        let server = ans_server_addr as *mut PeerbusAnsServer;
-        peerbus_ans_server_serve_one(server, 3000, Some(range_handler), ptr::null_mut())
-    });
-    let query = [9u8, 2];
-    let mut answers: *mut PeerbusAnswers = ptr::null_mut();
-    assert!(peerbus_que_client_send(
-        que_client,
-        71,
-        query.as_ptr(),
-        query.len(),
-        &mut answers,
-    ));
-    assert_eq!(ans_handle.join().unwrap(), 1);
-    assert_eq!(peerbus_answers_len(answers), 2);
-    assert_eq!(peerbus_answers_kind_at(answers, 0), 71);
-    assert_eq!(peerbus_answers_kind_at(answers, 1), 71);
-    assert_eq!(
-        unsafe {
-            let bytes = peerbus_answers_data_at(answers, 0);
-            std::slice::from_raw_parts(bytes.ptr, bytes.len)
-        },
-        &[9]
-    );
-    assert_eq!(
-        unsafe {
-            let bytes = peerbus_answers_data_at(answers, 1);
-            std::slice::from_raw_parts(bytes.ptr, bytes.len)
-        },
-        &[10]
-    );
-    peerbus_answers_free(answers);
-    peerbus_que_client_free(que_client);
-    peerbus_ans_server_free(ans_server);
-
-    let put_topic = cstr(&format!("{base}/put"));
-    let ack_server = peerbus_ack_server_new_with_qos(server_node, put_topic.as_ptr(), qos);
-    let put_client = peerbus_put_system_client_new_with_qos(client_node, put_topic.as_ptr(), qos);
-    assert!(
-        !ack_server.is_null() && !put_client.is_null(),
-        "system put setup failed: {}",
-        last_error()
-    );
-    let ack_server_addr = ack_server as usize;
-    let ack_handle = std::thread::spawn(move || {
-        let server = ack_server_addr as *mut PeerbusAckServer;
-        peerbus_ack_server_serve_one(server, 3000, Some(upload_handler), ptr::null_mut())
-    });
-    let a = [1u8, 2];
-    let b = [3u8];
-    let puts = [
-        PeerbusRawMessage {
-            kind: 72,
-            data: PeerbusBytes {
-                ptr: a.as_ptr(),
-                len: a.len(),
-            },
-        },
-        PeerbusRawMessage {
-            kind: 72,
-            data: PeerbusBytes {
-                ptr: b.as_ptr(),
-                len: b.len(),
-            },
-        },
-    ];
-    let mut ack: *mut PeerbusMessage = ptr::null_mut();
-    assert!(peerbus_put_client_put(
-        put_client,
-        puts.as_ptr(),
-        puts.len(),
-        &mut ack,
-    ));
-    assert_eq!(ack_handle.join().unwrap(), 1);
-    assert_eq!(peerbus_message_kind(ack), 99);
-    assert_eq!(message_bytes(ack), vec![6]);
-    peerbus_message_free(ack);
-    peerbus_put_client_free(put_client);
-    peerbus_ack_server_free(ack_server);
-
-    let pip_topic = cstr(&format!("{base}/pip"));
-    let pip_server = peerbus_pip_server_new_with_qos(server_node, pip_topic.as_ptr(), qos);
-    let pip_client = peerbus_pip_system_client_new_with_qos(client_node, pip_topic.as_ptr(), qos);
-    assert!(
-        !pip_server.is_null() && !pip_client.is_null(),
-        "system pip setup failed: {}",
-        last_error()
-    );
-    let pip_server_addr = pip_server as usize;
-    let pip_handle = std::thread::spawn(move || {
-        let server = pip_server_addr as *mut PeerbusPipServer;
-        peerbus_pip_server_serve_one(server, 3000, Some(pip_handler), ptr::null_mut())
-    });
-    let x = [4u8, 5];
-    let y = [7u8];
-    let pip_items = [
-        PeerbusRawMessage {
-            kind: 73,
-            data: PeerbusBytes {
-                ptr: x.as_ptr(),
-                len: x.len(),
-            },
-        },
-        PeerbusRawMessage {
-            kind: 74,
-            data: PeerbusBytes {
-                ptr: y.as_ptr(),
-                len: y.len(),
-            },
-        },
-    ];
-    let mut replies: *mut PeerbusMessages = ptr::null_mut();
-    assert!(peerbus_pip_client_exchange(
-        pip_client,
-        pip_items.as_ptr(),
-        pip_items.len(),
-        &mut replies,
-    ));
-    assert_eq!(pip_handle.join().unwrap(), 1);
-    assert_eq!(peerbus_messages_len(replies), 2);
-    assert_eq!(peerbus_messages_kind_at(replies, 0), 73);
-    assert_eq!(peerbus_messages_kind_at(replies, 1), 74);
-    assert_eq!(
-        unsafe {
-            let bytes = peerbus_messages_data_at(replies, 0);
-            std::slice::from_raw_parts(bytes.ptr, bytes.len)
-        },
-        &[8, 10]
-    );
-    assert_eq!(
-        unsafe {
-            let bytes = peerbus_messages_data_at(replies, 1);
-            std::slice::from_raw_parts(bytes.ptr, bytes.len)
-        },
-        &[14]
-    );
-    peerbus_messages_free(replies);
-    peerbus_pip_client_free(pip_client);
-    peerbus_pip_server_free(pip_server);
-
-    peerbus_node_free(client_node);
-    peerbus_node_free(server_node);
-}
-
 unsafe extern "C" fn double_handler(
     _ctx: *mut c_void,
     kind: u64,
@@ -720,13 +426,16 @@ unsafe extern "C" fn range_handler(
 #[test]
 fn c_abi_que_ans_round_trip() {
     let _guard = FFI_TEST_LOCK.lock().unwrap();
-    let identity = cstr(&unique("ffi-search"));
     let topic = cstr("ffi/range");
-    let node = peerbus_node_new(identity.as_ptr(), true);
+    let node = peerbus_node_new(ptr::null(), true);
     assert!(!node.is_null(), "node_new failed: {}", last_error());
 
+    let peer = peerbus_node_endpoint_addr(node);
+    assert!(!peer.is_null(), "endpoint addr failed: {}", last_error());
+
     let server = peerbus_ans_server_new(node, topic.as_ptr());
-    let client = peerbus_que_client_new(node, identity.as_ptr(), topic.as_ptr());
+    let client = peerbus_que_client_new(node, peer, topic.as_ptr());
+    peerbus_string_free(peer);
     assert!(
         !server.is_null() && !client.is_null(),
         "que setup failed: {}",
@@ -785,12 +494,14 @@ unsafe extern "C" fn upload_handler(
 #[test]
 fn c_abi_put_ack_round_trip() {
     let _guard = FFI_TEST_LOCK.lock().unwrap();
-    let identity = cstr(&unique("ffi-sink"));
     let topic = cstr("ffi/upload");
-    let node = peerbus_node_new(identity.as_ptr(), true);
+    let node = peerbus_node_new(ptr::null(), true);
     assert!(!node.is_null(), "node_new failed: {}", last_error());
+    let peer = peerbus_node_endpoint_addr(node);
+    assert!(!peer.is_null(), "endpoint addr failed: {}", last_error());
     let server = peerbus_ack_server_new(node, topic.as_ptr());
-    let client = peerbus_put_client_new(node, identity.as_ptr(), topic.as_ptr());
+    let client = peerbus_put_client_new(node, peer, topic.as_ptr());
+    peerbus_string_free(peer);
     assert!(
         !server.is_null() && !client.is_null(),
         "put setup failed: {}",
@@ -860,12 +571,14 @@ unsafe extern "C" fn pip_handler(
 #[test]
 fn c_abi_pip_round_trip() {
     let _guard = FFI_TEST_LOCK.lock().unwrap();
-    let identity = cstr(&unique("ffi-pip"));
     let topic = cstr("ffi/session");
-    let node = peerbus_node_new(identity.as_ptr(), true);
+    let node = peerbus_node_new(ptr::null(), true);
     assert!(!node.is_null(), "node_new failed: {}", last_error());
+    let peer = peerbus_node_endpoint_addr(node);
+    assert!(!peer.is_null(), "endpoint addr failed: {}", last_error());
     let server = peerbus_pip_server_new(node, topic.as_ptr());
-    let client = peerbus_pip_client_new(node, identity.as_ptr(), topic.as_ptr());
+    let client = peerbus_pip_client_new(node, peer, topic.as_ptr());
+    peerbus_string_free(peer);
     assert!(
         !server.is_null() && !client.is_null(),
         "pip setup failed: {}",
@@ -918,14 +631,17 @@ fn c_abi_pip_round_trip() {
 #[test]
 fn c_abi_req_res_round_trip() {
     let _guard = FFI_TEST_LOCK.lock().unwrap();
-    let identity = cstr(&unique("ffi-calc"));
     let topic = cstr("ffi/double");
 
-    let node = peerbus_node_new(identity.as_ptr(), true);
+    let node = peerbus_node_new(ptr::null(), true);
     assert!(!node.is_null(), "node_new failed: {}", last_error());
 
+    let peer = peerbus_node_endpoint_addr(node);
+    assert!(!peer.is_null(), "endpoint addr failed: {}", last_error());
+
     let server = peerbus_req_server_new(node, topic.as_ptr());
-    let client = peerbus_req_client_new(node, identity.as_ptr(), topic.as_ptr());
+    let client = peerbus_req_client_new(node, peer, topic.as_ptr());
+    peerbus_string_free(peer);
     assert!(!server.is_null() && !client.is_null());
 
     // Move the server pointer into the serve thread (raw ptrs aren't Send;
@@ -965,20 +681,23 @@ fn c_abi_req_res_round_trip() {
 #[test]
 fn c_abi_datapod_req_res_round_trip() {
     let _guard = FFI_TEST_LOCK.lock().unwrap();
-    let identity = cstr(&unique("ffi-datapod-calc"));
     let topic = cstr("ffi/datapod_req");
 
-    let node = peerbus_node_new(identity.as_ptr(), true);
+    let node = peerbus_node_new(ptr::null(), true);
     assert!(!node.is_null(), "node_new failed: {}", last_error());
+
+    let peer = peerbus_node_endpoint_addr(node);
+    assert!(!peer.is_null(), "endpoint addr failed: {}", last_error());
 
     let server =
         peerbus_datapod_req_server_new_with_qos(node, topic.as_ptr(), peerbus_topic_qos_reliable());
     let client = peerbus_datapod_req_client_new_with_qos(
         node,
-        identity.as_ptr(),
+        peer,
         topic.as_ptr(),
         peerbus_topic_qos_reliable(),
     );
+    peerbus_string_free(peer);
     assert!(
         !server.is_null() && !client.is_null(),
         "datapod req setup failed: {}",
@@ -1055,20 +774,23 @@ fn c_abi_datapod_req_res_round_trip() {
 #[test]
 fn c_abi_datapod_que_ans_round_trip() {
     let _guard = FFI_TEST_LOCK.lock().unwrap();
-    let identity = cstr(&unique("ffi-datapod-search"));
     let topic = cstr("ffi/datapod_que");
 
-    let node = peerbus_node_new(identity.as_ptr(), true);
+    let node = peerbus_node_new(ptr::null(), true);
     assert!(!node.is_null(), "node_new failed: {}", last_error());
+
+    let peer = peerbus_node_endpoint_addr(node);
+    assert!(!peer.is_null(), "endpoint addr failed: {}", last_error());
 
     let server =
         peerbus_datapod_ans_server_new_with_qos(node, topic.as_ptr(), peerbus_topic_qos_reliable());
     let client = peerbus_datapod_que_client_new_with_qos(
         node,
-        identity.as_ptr(),
+        peer,
         topic.as_ptr(),
         peerbus_topic_qos_reliable(),
     );
+    peerbus_string_free(peer);
     assert!(
         !server.is_null() && !client.is_null(),
         "datapod que setup failed: {}",
@@ -1167,20 +889,23 @@ fn c_abi_datapod_que_ans_round_trip() {
 #[test]
 fn c_abi_datapod_put_ack_round_trip() {
     let _guard = FFI_TEST_LOCK.lock().unwrap();
-    let identity = cstr(&unique("ffi-datapod-sink"));
     let topic = cstr("ffi/datapod_put");
 
-    let node = peerbus_node_new(identity.as_ptr(), true);
+    let node = peerbus_node_new(ptr::null(), true);
     assert!(!node.is_null(), "node_new failed: {}", last_error());
+
+    let peer = peerbus_node_endpoint_addr(node);
+    assert!(!peer.is_null(), "endpoint addr failed: {}", last_error());
 
     let server =
         peerbus_datapod_ack_server_new_with_qos(node, topic.as_ptr(), peerbus_topic_qos_reliable());
     let client = peerbus_datapod_put_client_new_with_qos(
         node,
-        identity.as_ptr(),
+        peer,
         topic.as_ptr(),
         peerbus_topic_qos_reliable(),
     );
+    peerbus_string_free(peer);
     assert!(
         !server.is_null() && !client.is_null(),
         "datapod put setup failed: {}",
@@ -1289,20 +1014,23 @@ fn c_abi_datapod_put_ack_round_trip() {
 #[test]
 fn c_abi_datapod_put_sender_round_trip() {
     let _guard = FFI_TEST_LOCK.lock().unwrap();
-    let identity = cstr(&unique("ffi-datapod-put-sender"));
     let topic = cstr("ffi/datapod_put_sender");
 
-    let node = peerbus_node_new(identity.as_ptr(), true);
+    let node = peerbus_node_new(ptr::null(), true);
     assert!(!node.is_null(), "node_new failed: {}", last_error());
+
+    let peer = peerbus_node_endpoint_addr(node);
+    assert!(!peer.is_null(), "endpoint addr failed: {}", last_error());
 
     let server =
         peerbus_datapod_ack_server_new_with_qos(node, topic.as_ptr(), peerbus_topic_qos_reliable());
     let client = peerbus_datapod_put_client_new_with_qos(
         node,
-        identity.as_ptr(),
+        peer,
         topic.as_ptr(),
         peerbus_topic_qos_reliable(),
     );
+    peerbus_string_free(peer);
     assert!(
         !server.is_null() && !client.is_null(),
         "datapod put sender setup failed: {}",
@@ -1406,20 +1134,23 @@ fn c_abi_datapod_put_sender_round_trip() {
 #[test]
 fn c_abi_datapod_pip_round_trip() {
     let _guard = FFI_TEST_LOCK.lock().unwrap();
-    let identity = cstr(&unique("ffi-datapod-pip"));
     let topic = cstr("ffi/datapod_pip");
 
-    let node = peerbus_node_new(identity.as_ptr(), true);
+    let node = peerbus_node_new(ptr::null(), true);
     assert!(!node.is_null(), "node_new failed: {}", last_error());
+
+    let peer = peerbus_node_endpoint_addr(node);
+    assert!(!peer.is_null(), "endpoint addr failed: {}", last_error());
 
     let server =
         peerbus_datapod_pip_server_new_with_qos(node, topic.as_ptr(), peerbus_topic_qos_reliable());
     let client = peerbus_datapod_pip_client_new_with_qos(
         node,
-        identity.as_ptr(),
+        peer,
         topic.as_ptr(),
         peerbus_topic_qos_reliable(),
     );
+    peerbus_string_free(peer);
     assert!(
         !server.is_null() && !client.is_null(),
         "datapod pip setup failed: {}",
@@ -1555,417 +1286,29 @@ fn c_abi_datapod_pip_round_trip() {
 }
 
 #[test]
-fn c_abi_datapod_system_did_all_client_modes_round_trip() {
-    let _guard = FFI_TEST_LOCK.lock().unwrap();
-    let seed = peerbus_node_new(ptr::null(), true);
-    assert!(!seed.is_null(), "seed node_new failed: {}", last_error());
-    let did = peerbus_node_did_key(seed);
-    assert!(!did.is_null());
-    let system_did = unsafe { std::ffi::CStr::from_ptr(did) }
-        .to_string_lossy()
-        .into_owned();
-    peerbus_string_free(did);
-    peerbus_node_free(seed);
-
-    let system = cstr(&system_did);
-    let cfg = PeerbusNodeConfig {
-        identity: ptr::null(),
-        no_relay: true,
-        system_did: system.as_ptr(),
-        allowed_peers: ptr::null(),
-        allowed_peers_len: 0,
-        allow_any_peer: false,
-        max_payload_bytes: 0,
-        history_depth: 8,
-        subscriber_buffer: 8,
-        max_publishers: 0,
-        max_subscribers: 0,
-    };
-    let server_node = peerbus_node_new_with_config(cfg);
-    let client_node = peerbus_node_new_with_config(cfg);
-    assert!(
-        !server_node.is_null() && !client_node.is_null(),
-        "datapod system nodes failed: {}",
-        last_error()
-    );
-    let qos = peerbus_topic_qos_reliable();
-    let base = unique("ffi-datapod-system");
-
-    let pubsub_topic = cstr(&format!("{base}/pubsub"));
-    let publisher = peerbus_datapod_publisher_new_with_qos(server_node, pubsub_topic.as_ptr(), qos);
-    let subscriber = peerbus_datapod_subscribe_with_qos(client_node, pubsub_topic.as_ptr(), qos);
-    assert!(
-        !publisher.is_null() && !subscriber.is_null(),
-        "datapod system pub/sub setup failed: {}",
-        last_error()
-    );
-    let pubsub_grid = grid_wire(1, 2, (90_u8..98).collect());
-    assert!(peerbus_datapod_publisher_send(
-        publisher,
-        pubsub_grid.type_hash,
-        pubsub_grid.bytes.as_ptr(),
-        pubsub_grid.bytes.len(),
-    ));
-    let mut sample: *mut PeerbusDatapodSample = ptr::null_mut();
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let mut rc = 0;
-    while rc == 0 && Instant::now() < deadline {
-        rc = peerbus_datapod_subscriber_take_sample(subscriber, &mut sample);
-        if rc == 0 {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    }
-    assert_eq!(
-        rc,
-        1,
-        "expected datapod system pub/sub sample: {}",
-        last_error()
-    );
-    let sample_wire = datapod_sample_wire(sample);
-    assert_grid_message(
-        peerbus_datapod_sample_type_hash(sample),
-        &sample_wire,
-        1,
-        2,
-        &(90_u8..98).collect::<Vec<_>>(),
-    );
-    peerbus_datapod_sample_free(sample);
-    peerbus_datapod_subscriber_free(subscriber);
-    peerbus_datapod_publisher_free(publisher);
-
-    let req_topic = cstr(&format!("{base}/req"));
-    let req_server = peerbus_datapod_req_server_new_with_qos(server_node, req_topic.as_ptr(), qos);
-    let req_client =
-        peerbus_datapod_req_system_client_new_with_qos(client_node, req_topic.as_ptr(), qos);
-    assert!(
-        !req_server.is_null() && !req_client.is_null(),
-        "datapod system req setup failed: {}",
-        last_error()
-    );
-    let req_response = grid_wire(1, 1, (10_u8..14).collect());
-    let req_response_hash = req_response.type_hash;
-    let req_response_bytes = req_response.bytes.clone();
-    let req_server_addr = req_server as usize;
-    let req_thread = std::thread::spawn(move || {
-        let server = req_server_addr as *mut PeerbusDatapodReqServer;
-        let mut pending: *mut PeerbusPendingDatapodReq = ptr::null_mut();
-        assert_eq!(
-            peerbus_datapod_req_server_take(server, 3000, &mut pending),
-            1
-        );
-        let request = peerbus_pending_datapod_req_request(pending);
-        let wire = datapod_message_wire(request);
-        assert_grid_message(
-            peerbus_datapod_message_type_hash(request),
-            &wire,
-            1,
-            2,
-            &(0_u8..8).collect::<Vec<_>>(),
-        );
-        assert!(peerbus_pending_datapod_req_reply(
-            pending,
-            req_response_hash,
-            req_response_bytes.as_ptr(),
-            req_response_bytes.len(),
-        ));
-        peerbus_pending_datapod_req_free(pending);
-    });
-    let req = grid_wire(1, 2, (0_u8..8).collect());
-    let mut req_out: *mut PeerbusDatapodMessage = ptr::null_mut();
-    assert!(peerbus_datapod_req_client_call(
-        req_client,
-        req.type_hash,
-        req.bytes.as_ptr(),
-        req.bytes.len(),
-        &mut req_out,
-    ));
-    req_thread.join().unwrap();
-    let req_out_wire = datapod_message_wire(req_out);
-    assert_grid_message(
-        peerbus_datapod_message_type_hash(req_out),
-        &req_out_wire,
-        1,
-        1,
-        &(10_u8..14).collect::<Vec<_>>(),
-    );
-    peerbus_datapod_message_free(req_out);
-    peerbus_datapod_req_client_free(req_client);
-    peerbus_datapod_req_server_free(req_server);
-
-    let que_topic = cstr(&format!("{base}/que"));
-    let ans_server = peerbus_datapod_ans_server_new_with_qos(server_node, que_topic.as_ptr(), qos);
-    let que_client =
-        peerbus_datapod_que_system_client_new_with_qos(client_node, que_topic.as_ptr(), qos);
-    assert!(
-        !ans_server.is_null() && !que_client.is_null(),
-        "datapod system que setup failed: {}",
-        last_error()
-    );
-    let ans_a = grid_wire(1, 1, (20_u8..24).collect());
-    let ans_b = grid_wire(1, 2, (30_u8..38).collect());
-    let ans_a_hash = ans_a.type_hash;
-    let ans_a_bytes = ans_a.bytes.clone();
-    let ans_b_hash = ans_b.type_hash;
-    let ans_b_bytes = ans_b.bytes.clone();
-    let ans_server_addr = ans_server as usize;
-    let ans_thread = std::thread::spawn(move || {
-        let server = ans_server_addr as *mut PeerbusDatapodAnsServer;
-        let mut pending: *mut PeerbusPendingDatapodQue = ptr::null_mut();
-        assert_eq!(
-            peerbus_datapod_ans_server_take(server, 3000, &mut pending),
-            1
-        );
-        let request = peerbus_pending_datapod_que_request(pending);
-        let wire = datapod_message_wire(request);
-        assert_grid_message(
-            peerbus_datapod_message_type_hash(request),
-            &wire,
-            1,
-            2,
-            &(0_u8..8).collect::<Vec<_>>(),
-        );
-        assert!(peerbus_pending_datapod_que_send(
-            pending,
-            ans_a_hash,
-            ans_a_bytes.as_ptr(),
-            ans_a_bytes.len(),
-        ));
-        assert!(peerbus_pending_datapod_que_send(
-            pending,
-            ans_b_hash,
-            ans_b_bytes.as_ptr(),
-            ans_b_bytes.len(),
-        ));
-        assert!(peerbus_pending_datapod_que_finish(pending));
-        peerbus_pending_datapod_que_free(pending);
-    });
-    let que = grid_wire(1, 2, (0_u8..8).collect());
-    let mut answers: *mut PeerbusDatapodMessages = ptr::null_mut();
-    assert!(peerbus_datapod_que_client_send(
-        que_client,
-        que.type_hash,
-        que.bytes.as_ptr(),
-        que.bytes.len(),
-        &mut answers,
-    ));
-    ans_thread.join().unwrap();
-    assert_eq!(peerbus_datapod_messages_len(answers), 2);
-    let ans0 = datapod_messages_wire_at(answers, 0);
-    let ans1 = datapod_messages_wire_at(answers, 1);
-    assert_grid_message(
-        peerbus_datapod_messages_type_hash_at(answers, 0),
-        &ans0,
-        1,
-        1,
-        &(20_u8..24).collect::<Vec<_>>(),
-    );
-    assert_grid_message(
-        peerbus_datapod_messages_type_hash_at(answers, 1),
-        &ans1,
-        1,
-        2,
-        &(30_u8..38).collect::<Vec<_>>(),
-    );
-    peerbus_datapod_messages_free(answers);
-    peerbus_datapod_que_client_free(que_client);
-    peerbus_datapod_ans_server_free(ans_server);
-
-    let put_topic = cstr(&format!("{base}/put"));
-    let ack_server = peerbus_datapod_ack_server_new_with_qos(server_node, put_topic.as_ptr(), qos);
-    let put_client =
-        peerbus_datapod_put_system_client_new_with_qos(client_node, put_topic.as_ptr(), qos);
-    assert!(
-        !ack_server.is_null() && !put_client.is_null(),
-        "datapod system put setup failed: {}",
-        last_error()
-    );
-    let ack = grid_wire(1, 1, (40_u8..44).collect());
-    let ack_hash = ack.type_hash;
-    let ack_bytes = ack.bytes.clone();
-    let ack_server_addr = ack_server as usize;
-    let put_thread = std::thread::spawn(move || {
-        let server = ack_server_addr as *mut PeerbusDatapodAckServer;
-        let mut puts: *mut PeerbusDatapodPuts = ptr::null_mut();
-        assert_eq!(peerbus_datapod_ack_server_take(server, 3000, &mut puts), 1);
-        let mut got = Vec::new();
-        loop {
-            let mut msg: *mut PeerbusDatapodMessage = ptr::null_mut();
-            let rc = peerbus_datapod_puts_next(puts, &mut msg);
-            if rc == 0 {
-                break;
-            }
-            assert_eq!(rc, 1);
-            let wire = datapod_message_wire(msg);
-            let view =
-                datapod::dynamic::view_message(peerbus_datapod_message_type_hash(msg), &wire)
-                    .unwrap();
-            got.push(view.get_u32("cols").unwrap());
-            peerbus_datapod_message_free(msg);
-        }
-        assert_eq!(got, vec![1, 2]);
-        assert!(peerbus_datapod_puts_ack(
-            puts,
-            ack_hash,
-            ack_bytes.as_ptr(),
-            ack_bytes.len(),
-        ));
-        peerbus_datapod_puts_free(puts);
-    });
-    let put_a = grid_wire(1, 1, (50_u8..54).collect());
-    let put_b = grid_wire(1, 2, (60_u8..68).collect());
-    let put_items = [
-        PeerbusDatapodRawMessage {
-            type_hash: put_a.type_hash,
-            wire: PeerbusBytes {
-                ptr: put_a.bytes.as_ptr(),
-                len: put_a.bytes.len(),
-            },
-        },
-        PeerbusDatapodRawMessage {
-            type_hash: put_b.type_hash,
-            wire: PeerbusBytes {
-                ptr: put_b.bytes.as_ptr(),
-                len: put_b.bytes.len(),
-            },
-        },
-    ];
-    let mut put_out: *mut PeerbusDatapodMessage = ptr::null_mut();
-    assert!(peerbus_datapod_put_client_put(
-        put_client,
-        put_items.as_ptr(),
-        put_items.len(),
-        &mut put_out,
-    ));
-    put_thread.join().unwrap();
-    let put_out_wire = datapod_message_wire(put_out);
-    assert_grid_message(
-        peerbus_datapod_message_type_hash(put_out),
-        &put_out_wire,
-        1,
-        1,
-        &(40_u8..44).collect::<Vec<_>>(),
-    );
-    peerbus_datapod_message_free(put_out);
-    peerbus_datapod_put_client_free(put_client);
-    peerbus_datapod_ack_server_free(ack_server);
-
-    let pip_topic = cstr(&format!("{base}/pip"));
-    let pip_server = peerbus_datapod_pip_server_new_with_qos(server_node, pip_topic.as_ptr(), qos);
-    let pip_client =
-        peerbus_datapod_pip_system_client_new_with_qos(client_node, pip_topic.as_ptr(), qos);
-    assert!(
-        !pip_server.is_null() && !pip_client.is_null(),
-        "datapod system pip setup failed: {}",
-        last_error()
-    );
-    let reply_a = grid_wire(1, 1, (70_u8..74).collect());
-    let reply_b = grid_wire(1, 2, (80_u8..88).collect());
-    let reply_a_hash = reply_a.type_hash;
-    let reply_a_bytes = reply_a.bytes.clone();
-    let reply_b_hash = reply_b.type_hash;
-    let reply_b_bytes = reply_b.bytes.clone();
-    let pip_server_addr = pip_server as usize;
-    let pip_thread = std::thread::spawn(move || {
-        let server = pip_server_addr as *mut PeerbusDatapodPipServer;
-        let mut pending: *mut PeerbusPendingDatapodPip = ptr::null_mut();
-        assert_eq!(
-            peerbus_datapod_pip_server_take(server, 3000, &mut pending),
-            1
-        );
-        let mut got = Vec::new();
-        loop {
-            let mut msg: *mut PeerbusDatapodMessage = ptr::null_mut();
-            let rc = peerbus_pending_datapod_pip_next(pending, &mut msg);
-            if rc == 0 {
-                break;
-            }
-            assert_eq!(rc, 1);
-            let wire = datapod_message_wire(msg);
-            let view =
-                datapod::dynamic::view_message(peerbus_datapod_message_type_hash(msg), &wire)
-                    .unwrap();
-            got.push(view.get_u32("cols").unwrap());
-            peerbus_datapod_message_free(msg);
-        }
-        assert_eq!(got, vec![1, 2]);
-        assert!(peerbus_pending_datapod_pip_send(
-            pending,
-            reply_a_hash,
-            reply_a_bytes.as_ptr(),
-            reply_a_bytes.len(),
-        ));
-        assert!(peerbus_pending_datapod_pip_send(
-            pending,
-            reply_b_hash,
-            reply_b_bytes.as_ptr(),
-            reply_b_bytes.len(),
-        ));
-        assert!(peerbus_pending_datapod_pip_finish_send(pending));
-        peerbus_pending_datapod_pip_free(pending);
-    });
-    let pip_a = grid_wire(1, 1, (90_u8..94).collect());
-    let pip_b = grid_wire(1, 2, (100_u8..108).collect());
-    let pip_items = [
-        PeerbusDatapodRawMessage {
-            type_hash: pip_a.type_hash,
-            wire: PeerbusBytes {
-                ptr: pip_a.bytes.as_ptr(),
-                len: pip_a.bytes.len(),
-            },
-        },
-        PeerbusDatapodRawMessage {
-            type_hash: pip_b.type_hash,
-            wire: PeerbusBytes {
-                ptr: pip_b.bytes.as_ptr(),
-                len: pip_b.bytes.len(),
-            },
-        },
-    ];
-    let mut replies: *mut PeerbusDatapodMessages = ptr::null_mut();
-    assert!(peerbus_datapod_pip_client_exchange(
-        pip_client,
-        pip_items.as_ptr(),
-        pip_items.len(),
-        &mut replies,
-    ));
-    pip_thread.join().unwrap();
-    assert_eq!(peerbus_datapod_messages_len(replies), 2);
-    let reply0 = datapod_messages_wire_at(replies, 0);
-    let reply1 = datapod_messages_wire_at(replies, 1);
-    assert_grid_message(
-        peerbus_datapod_messages_type_hash_at(replies, 0),
-        &reply0,
-        1,
-        1,
-        &(70_u8..74).collect::<Vec<_>>(),
-    );
-    assert_grid_message(
-        peerbus_datapod_messages_type_hash_at(replies, 1),
-        &reply1,
-        1,
-        2,
-        &(80_u8..88).collect::<Vec<_>>(),
-    );
-    peerbus_datapod_messages_free(replies);
-    peerbus_datapod_pip_client_free(pip_client);
-    peerbus_datapod_pip_server_free(pip_server);
-
-    peerbus_node_free(client_node);
-    peerbus_node_free(server_node);
-}
-
-#[test]
 fn c_abi_endpoint_addr_peer_and_stats_round_trip() {
     let _guard = FFI_TEST_LOCK.lock().unwrap();
-    let server_identity = cstr(&unique("ffi-addr-server"));
-    let client_identity = cstr(&unique("ffi-addr-client"));
     let topic = cstr("ffi/addr_double");
 
-    let allowed_peers = [client_identity.as_ptr()];
+    // Create the client node first so the server can allowlist it by its
+    // hex postcard-encoded endpoint addr (peers are addressed only by id).
+    let client_node = peerbus_node_new(ptr::null(), true);
+    assert!(
+        !client_node.is_null(),
+        "client node failed: {}",
+        last_error()
+    );
+    let client_addr = peerbus_node_endpoint_addr(client_node);
+    assert!(
+        !client_addr.is_null(),
+        "client endpoint addr failed: {}",
+        last_error()
+    );
+
+    let allowed_peers = [client_addr.cast_const()];
     let server_cfg = PeerbusNodeConfig {
-        identity: server_identity.as_ptr(),
+        secret_key: ptr::null(),
         no_relay: true,
-        system_did: ptr::null(),
         allowed_peers: allowed_peers.as_ptr(),
         allowed_peers_len: allowed_peers.len(),
         allow_any_peer: false,
@@ -1976,15 +1319,10 @@ fn c_abi_endpoint_addr_peer_and_stats_round_trip() {
         max_subscribers: 0,
     };
     let server_node = peerbus_node_new_with_config(server_cfg);
-    let client_node = peerbus_node_new(client_identity.as_ptr(), true);
+    peerbus_string_free(client_addr);
     assert!(
         !server_node.is_null(),
         "server node failed: {}",
-        last_error()
-    );
-    assert!(
-        !client_node.is_null(),
-        "client node failed: {}",
         last_error()
     );
 
@@ -2068,7 +1406,12 @@ fn c_abi_endpoint_addr_peer_and_stats_round_trip() {
     let peer = unsafe { std::ffi::CStr::from_ptr(peer_ptr) }
         .to_string_lossy()
         .into_owned();
-    assert!(peer.starts_with("did:key:"), "unexpected peer DID: {peer}");
+    // The peer is now reported as the hex-encoded 32-byte endpoint id.
+    assert_eq!(peer.len(), 64, "unexpected peer id encoding: {peer}");
+    assert!(
+        peer.bytes().all(|b| b.is_ascii_hexdigit()),
+        "peer id is not hex: {peer}"
+    );
     peerbus_string_free(peer_ptr);
 
     let path_count = peerbus_peer_path_diagnostics_path_count(diag);
@@ -2115,12 +1458,14 @@ fn c_abi_polling_and_session_handles_round_trip() {
     let _guard = FFI_TEST_LOCK.lock().unwrap();
 
     // req/res explicit polling.
-    let req_identity = cstr(&unique("ffi-req-poll"));
     let req_topic = cstr("ffi/poll_req");
-    let req_node = peerbus_node_new(req_identity.as_ptr(), true);
+    let req_node = peerbus_node_new(ptr::null(), true);
     assert!(!req_node.is_null(), "req node failed: {}", last_error());
+    let req_peer = peerbus_node_endpoint_addr(req_node);
+    assert!(!req_peer.is_null(), "req endpoint addr failed: {}", last_error());
     let req_server = peerbus_req_server_new(req_node, req_topic.as_ptr());
-    let req_client = peerbus_req_client_new(req_node, req_identity.as_ptr(), req_topic.as_ptr());
+    let req_client = peerbus_req_client_new(req_node, req_peer, req_topic.as_ptr());
+    peerbus_string_free(req_peer);
     assert!(!req_server.is_null() && !req_client.is_null());
     let req_server_addr = req_server as usize;
     let req_thread = std::thread::spawn(move || {
@@ -2158,12 +1503,14 @@ fn c_abi_polling_and_session_handles_round_trip() {
     peerbus_node_free(req_node);
 
     // que/ans explicit polling.
-    let que_identity = cstr(&unique("ffi-que-poll"));
     let que_topic = cstr("ffi/poll_que");
-    let que_node = peerbus_node_new(que_identity.as_ptr(), true);
+    let que_node = peerbus_node_new(ptr::null(), true);
     assert!(!que_node.is_null(), "que node failed: {}", last_error());
+    let que_peer = peerbus_node_endpoint_addr(que_node);
+    assert!(!que_peer.is_null(), "que endpoint addr failed: {}", last_error());
     let ans_server = peerbus_ans_server_new(que_node, que_topic.as_ptr());
-    let que_client = peerbus_que_client_new(que_node, que_identity.as_ptr(), que_topic.as_ptr());
+    let que_client = peerbus_que_client_new(que_node, que_peer, que_topic.as_ptr());
+    peerbus_string_free(que_peer);
     assert!(!ans_server.is_null() && !que_client.is_null());
     let ans_server_addr = ans_server as usize;
     let que_thread = std::thread::spawn(move || {
@@ -2200,12 +1547,14 @@ fn c_abi_polling_and_session_handles_round_trip() {
     peerbus_node_free(que_node);
 
     // put/ack interactive client upload.
-    let put_identity = cstr(&unique("ffi-put-open"));
     let put_topic = cstr("ffi/open_put");
-    let put_node = peerbus_node_new(put_identity.as_ptr(), true);
+    let put_node = peerbus_node_new(ptr::null(), true);
     assert!(!put_node.is_null(), "put node failed: {}", last_error());
+    let put_peer = peerbus_node_endpoint_addr(put_node);
+    assert!(!put_peer.is_null(), "put endpoint addr failed: {}", last_error());
     let ack_server = peerbus_ack_server_new(put_node, put_topic.as_ptr());
-    let put_client = peerbus_put_client_new(put_node, put_identity.as_ptr(), put_topic.as_ptr());
+    let put_client = peerbus_put_client_new(put_node, put_peer, put_topic.as_ptr());
+    peerbus_string_free(put_peer);
     assert!(!ack_server.is_null() && !put_client.is_null());
     let ack_server_addr = ack_server as usize;
     let put_thread = std::thread::spawn(move || {
@@ -2243,12 +1592,14 @@ fn c_abi_polling_and_session_handles_round_trip() {
     peerbus_node_free(put_node);
 
     // pip interactive client and server sessions.
-    let pip_identity = cstr(&unique("ffi-pip-open"));
     let pip_topic = cstr("ffi/open_pip");
-    let pip_node = peerbus_node_new(pip_identity.as_ptr(), true);
+    let pip_node = peerbus_node_new(ptr::null(), true);
     assert!(!pip_node.is_null(), "pip node failed: {}", last_error());
+    let pip_peer = peerbus_node_endpoint_addr(pip_node);
+    assert!(!pip_peer.is_null(), "pip endpoint addr failed: {}", last_error());
     let pip_server = peerbus_pip_server_new(pip_node, pip_topic.as_ptr());
-    let pip_client = peerbus_pip_client_new(pip_node, pip_identity.as_ptr(), pip_topic.as_ptr());
+    let pip_client = peerbus_pip_client_new(pip_node, pip_peer, pip_topic.as_ptr());
+    peerbus_string_free(pip_peer);
     assert!(!pip_server.is_null() && !pip_client.is_null());
     let pip_server_addr = pip_server as usize;
     let pip_thread = std::thread::spawn(move || {

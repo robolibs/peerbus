@@ -8,7 +8,7 @@ want a Wayland window.
 Run from the repo root inside `nix develop`:
 
     peerbus-python-develop
-    peerbus-video-sub <did:key:z...>
+    peerbus-video-sub <endpoint-addr>
 """
 
 from __future__ import annotations

@@ -4,8 +4,7 @@ impl Node {
     /// Serve que/ans queries for `topic`.
     ///
     /// A que/ans server receives one query and may send zero or more
-    /// answer items before calling `finish()`. In system-DID mode the
-    /// service and remote route are keyed by `(system_did, topic)`.
+    /// answer items before calling `finish()`.
     ///
     /// This is the naming-parity counterpart to [`Node::req_server`] and
     /// [`Node::pip_server`]; it is an exact alias of the older
@@ -24,8 +23,7 @@ impl Node {
     /// Serve que/ans queries for `topic`.
     ///
     /// A que/ans server receives one query and may send zero or more
-    /// answer items before calling `finish()`. In system-DID mode the
-    /// service and remote route are keyed by `(system_did, topic)`.
+    /// answer items before calling `finish()`.
     #[deprecated(note = "renamed to que_server/put_server for naming parity; will be removed pre-1.0")]
     pub fn ans<Que, Ans>(&self, topic: &str) -> Result<AnsServer<Que, Ans>>
     where
@@ -92,19 +90,6 @@ impl Node {
             server: primary_server,
         });
 
-        if self.inner.system_did.is_none() && self.inner.identity_name.is_some() {
-            let hex_name = service_name(None, self.inner.endpoint_id.as_bytes(), topic);
-            let alias_service = LocalQueAnsService::<Que, Ans>::open_or_create(
-                &hex_name,
-                self.inner.local_cfg.clone(),
-            )?;
-            let alias_server = alias_service.server()?;
-            local_servers.push(LocalAnsServerState {
-                _service: alias_service,
-                server: alias_server,
-            });
-        }
-
         Ok(AnsServer {
             inner: self.inner.clone(),
             route_topic,
@@ -151,66 +136,7 @@ impl Node {
         let peer = peer.into_peer();
         let peer_bytes: [u8; 32] = *peer.endpoint_id.as_bytes();
 
-        let mut candidates = Vec::with_capacity(2);
-        if peer.name.is_some() {
-            candidates.push(service_name(peer.name.as_deref(), &peer_bytes, topic));
-        }
-        candidates.push(service_name(None, &peer_bytes, topic));
-        for svc_name in candidates {
-            if let Ok(svc) = LocalQueAnsService::<Que, Ans>::open_existing(&svc_name) {
-                return Ok(QueClient {
-                    source: QueClientSource::Local {
-                        client: svc.client()?,
-                    },
-                });
-            }
-        }
-
-        Ok(QueClient {
-            source: QueClientSource::Remote {
-                inner: self.inner.clone(),
-                peer_id: peer.endpoint_id,
-                addr_hint: peer.addr,
-                topic: topic.to_string(),
-                next_id: AtomicU64::new(0),
-                qos,
-                stats: Arc::new(ItemStatsInner::default()),
-            },
-        })
-    }
-
-    /// Build a system-DID que/ans client for `topic`.
-    ///
-    /// Resolution order mirrors [`req`](Self::req): local SHM,
-    /// explicit topic route, then topic-agnostic system peer.
-    pub fn que<Que, Ans>(&self, topic: &str) -> Result<QueClient<Que, Ans>>
-    where
-        Que: datapod::DataPod + 'static,
-        <Que as datapod::DataPod>::Header: datapod::LeWireHeader,
-        Ans: datapod::DataPod + 'static,
-        <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
-    {
-        self.que_with_qos(topic, TopicQos::default())
-    }
-
-    /// Build a system-DID que/ans client for `topic` with explicit QoS.
-    pub fn que_with_qos<Que, Ans>(&self, topic: &str, qos: TopicQos) -> Result<QueClient<Que, Ans>>
-    where
-        Que: datapod::DataPod + 'static,
-        <Que as datapod::DataPod>::Header: datapod::LeWireHeader,
-        Ans: datapod::DataPod + 'static,
-        <Ans as datapod::DataPod>::Header: datapod::LeWireHeader,
-    {
-        validate_topic(topic)?;
-        let route_topic = self.system_route_topic(topic)?;
-        let svc_name = system_service_name(
-            self.inner
-                .system_did
-                .as_deref()
-                .expect("system_route_topic validates presence"),
-            topic,
-        );
-
+        let svc_name = service_name(&peer_bytes, topic);
         if let Ok(svc) = LocalQueAnsService::<Que, Ans>::open_existing(&svc_name) {
             return Ok(QueClient {
                 source: QueClientSource::Local {
@@ -219,26 +145,12 @@ impl Node {
             });
         }
 
-        let endpoint =
-            crate::trace::recover_poison(self.inner.system_routes.lock(), "Node::system_routes")
-                .get(&route_topic)
-                .cloned()
-                .or_else(|| {
-                    crate::trace::recover_poison(
-                        self.inner.system_peers.lock(),
-                        "Node::system_peers",
-                    )
-                    .first()
-                    .cloned()
-                })
-                .ok_or_else(|| Error::ServiceNotFound(route_topic.clone()))?;
-
         Ok(QueClient {
             source: QueClientSource::Remote {
                 inner: self.inner.clone(),
-                peer_id: endpoint.id,
-                addr_hint: Some(endpoint),
-                topic: route_topic,
+                peer_id: peer.endpoint_id,
+                addr_hint: peer.addr,
+                topic: topic.to_string(),
                 next_id: AtomicU64::new(0),
                 qos,
                 stats: Arc::new(ItemStatsInner::default()),

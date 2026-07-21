@@ -29,8 +29,8 @@ fn main() -> peerbus::Result<()> {
 /// Same-host: routing is SHM between two `Node`s.
 fn local_shm() -> peerbus::Result<()> {
     println!("== put/ack over shared memory ==");
-    let server_node = Node::builder().no_relay().identity("sink").bind()?;
-    let client_node = Node::builder().no_relay().identity("uploader").bind()?;
+    let server_node = Node::builder().no_relay().ephemeral().label("sink").bind()?;
+    let client_node = Node::builder().no_relay().ephemeral().label("uploader").bind()?;
 
     let mut server = server_node.put_server::<LogChunk, UploadAck>("logs/upload")?;
     let handle = std::thread::spawn(move || {
@@ -53,7 +53,8 @@ fn local_shm() -> peerbus::Result<()> {
         }
     });
 
-    let mut client = client_node.put_client::<LogChunk, UploadAck>("sink", "logs/upload")?;
+    let mut client =
+        client_node.put_client::<LogChunk, UploadAck>(server_node.endpoint_id(), "logs/upload")?;
     let mut put = client.open()?;
     for value in [3, 14, 15, 92] {
         put.send(&LogChunk { value })?;
@@ -80,7 +81,7 @@ fn over_iroh() -> peerbus::Result<()> {
         sum: puts.iter().map(|p| p.value).sum(),
     })?;
 
-    let client_node = Node::builder().no_relay().bind()?;
+    let client_node = Node::builder().ephemeral().no_relay().bind()?;
     let mut client =
         client_node.put_client::<LogChunk, UploadAck>(server.endpoint_addr(), "logs/upload")?;
     let mut put = client.open()?;

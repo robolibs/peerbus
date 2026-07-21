@@ -1,49 +1,24 @@
 use super::*;
 
-/// Local service name = `<identity_name|hex_endpoint_id>__<sanitised_topic>`.
-/// The SHM backend hashes this to an OS-safe id; we still sanitise spaces and a
-/// few oddities so the logical name remains friendly in logs/tests.
-pub fn service_name(identity_name: Option<&str>, endpoint_id: &[u8; 32], topic: &str) -> String {
+/// Local shared-memory service name for `(peer id, topic)`:
+/// `"<hex endpoint_id>__<sanitised topic>"`. The SHM backend hashes this
+/// to an OS-safe id. Both publisher and subscriber derive it identically
+/// from the id, so same-host peers rendezvous without any name registry.
+pub fn service_name(endpoint_id: &[u8; 32], topic: &str) -> String {
     let topic = sanitise(topic);
-    match identity_name {
-        Some(name) => format!("{}__{topic}", sanitise(name)),
-        None => {
-            let mut hex = String::with_capacity(64);
-            for b in endpoint_id.iter() {
-                let _ = std::fmt::Write::write_fmt(&mut hex, format_args!("{b:02x}"));
-            }
-            format!("{hex}__{topic}")
-        }
+    let mut hex = String::with_capacity(64);
+    for b in endpoint_id.iter() {
+        let _ = std::fmt::Write::write_fmt(&mut hex, format_args!("{b:02x}"));
     }
+    format!("{hex}__{topic}")
 }
 
 pub(crate) fn sanitise(s: &str) -> String {
     s.replace([' '], "_")
 }
 
-pub(crate) fn validate_system_did(did: &str) -> Result<()> {
-    if !crate::did_key::looks_like_did_key(did) {
-        return Err(Error::invalid_argument(format!(
-            "system_did must be did:key:z..., got '{did}'"
-        )));
-    }
-    crate::did_key::did_key_to_endpoint_id(did)?;
-    Ok(())
-}
-
-pub(crate) fn system_route_topic(system_did: &str, topic: &str) -> String {
-    format!("{system_did}::{topic}")
-}
-
-pub(crate) fn system_service_name(system_did: &str, topic: &str) -> String {
-    format!(
-        "sys_{:016x}",
-        fnv1a64(&system_route_topic(system_did, topic))
-    )
-}
-
 /// Maximum byte length for a topic name. The local SHM backend uses the same
-/// cap for direct services and for composed `<identity>__<topic>` names.
+/// cap for direct services and for composed `<id>__<topic>` names.
 pub const MAX_TOPIC_BYTES: usize = 200;
 
 /// Validate a user-supplied topic string. Allowed characters:

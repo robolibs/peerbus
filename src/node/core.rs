@@ -36,8 +36,8 @@ pub struct Node {
 pub(crate) struct NodeInner {
     pub(crate) endpoint: Endpoint,
     pub(crate) endpoint_id: EndpointId,
-    pub(crate) identity_name: Option<String>,
-    pub(crate) system_did: Option<String>,
+    /// Optional cosmetic label used only in logs (never in routing).
+    pub(crate) label: Option<String>,
     pub(crate) alpn: Vec<u8>,
     pub(crate) local_cfg: LocalConfig,
     pub(crate) publisher_topics: Mutex<HashMap<String, PublisherTopicState>>,
@@ -45,11 +45,6 @@ pub(crate) struct NodeInner {
     pub(crate) que_topics: Mutex<HashMap<String, QueTopicState>>,
     pub(crate) put_topics: Mutex<HashMap<String, PutTopicState>>,
     pub(crate) pip_topics: Mutex<HashMap<String, PipTopicState>>,
-    pub(crate) system_routes: Mutex<HashMap<String, EndpointAddr>>,
-    /// Explicit remote peers that participate in this node's configured
-    /// system DID. Used as a topic-agnostic fallback after local SHM and
-    /// per-topic routes.
-    pub(crate) system_peers: Mutex<Vec<EndpointAddr>>,
     /// Outbound iroh connections, keyed by peer endpoint id. Each
     /// slot holds the current connection (if any) and the
     /// most-recent dial address hint, so reconnect attempts can
@@ -206,8 +201,8 @@ pub struct PeerPathDiagnostics {
 impl Node {
     pub fn builder() -> NodeBuilder {
         NodeBuilder {
-            identity: IdentitySource::Ephemeral,
-            system_did: None,
+            secret: None,
+            label: None,
             alpn: DEFAULT_ALPN.to_vec(),
             no_relay: false,
             local_cfg: LocalConfig::default(),
@@ -216,8 +211,10 @@ impl Node {
         }
     }
 
-    pub fn identity_name(&self) -> Option<&str> {
-        self.inner.identity_name.as_deref()
+    /// The optional cosmetic label set on the builder. Logs only; not
+    /// part of any id or rendezvous name.
+    pub fn label(&self) -> Option<&str> {
+        self.inner.label.as_deref()
     }
 
     pub fn endpoint_id(&self) -> EndpointId {
@@ -228,53 +225,72 @@ impl Node {
         self.inner.endpoint.addr()
     }
 
-    /// This node's `EndpointId` formatted as a W3C `did:key:z6Mk…`
-    /// URI. The same 32-byte ed25519 public key, just wrapped in
-    /// the DID multibase encoding so it can be exchanged with
-    /// DID-aware tooling.
-    pub fn endpoint_did_key(&self) -> String {
-        crate::did_key::endpoint_id_to_did_key(&self.inner.endpoint_id)
-    }
-
-    /// The logical system namespace this node joined, if any.
-    ///
-    /// In system mode, high-level publishers and subscribers route by
-    /// `(system_did, topic)` so multiple processes can contribute to
-    /// one machine/system bus without sharing a process identity.
-    pub fn system_did(&self) -> Option<&str> {
-        self.inner.system_did.as_deref()
-    }
-
-    /// Add an explicit remote route for this node's configured system:
-    /// `(system_did, topic) -> endpoint address`.
-    ///
-    /// Local SHM is always tried first by [`subscribe`](Self::subscribe).
-    /// This route is the first simple remote-discovery hook for when
-    /// the topic is not present on this host.
-    pub fn add_topic_route(&self, topic: &str, endpoint: EndpointAddr) -> Result<()> {
-        validate_topic(topic)?;
-        let route = self.system_route_topic(topic)?;
-        crate::trace::recover_poison(self.inner.system_routes.lock(), "Node::system_routes")
-            .insert(route, endpoint);
-        Ok(())
-    }
-
-    /// Add a remote peer that participates in this node's configured
-    /// system DID, independent of a particular topic key.
-    ///
-    /// [`subscribe`](Self::subscribe) still tries local SHM first and a
-    /// per-topic route second; if neither exists, it dials these peers
-    /// using the high-level `(system_did, topic)` route topic.
-    pub fn add_system_peer(&self, endpoint: EndpointAddr) -> Result<()> {
-        // Validate that the node is in system mode. The returned route is not
-        // needed here; the check keeps misuse symmetric with add_topic_route.
-        let _ = self.system_route_topic("__peer__")?;
-        let mut peers =
-            crate::trace::recover_poison(self.inner.system_peers.lock(), "Node::system_peers");
-        if !peers.iter().any(|existing| existing.id == endpoint.id) {
-            peers.push(endpoint);
+    /// The topics this node currently hosts, across all modes, with the
+    /// payload type-hash the higher-level crate needs to build and
+    /// answer a `topic -> (type, id)` directory. Cheap; briefly locks
+    /// each per-mode topic map to read it.
+    pub fn hosted_topics(&self) -> Vec<HostedTopic> {
+        let mut out = Vec::new();
+        {
+            let map = crate::trace::recover_poison(
+                self.inner.publisher_topics.lock(),
+                "Node::publisher_topics",
+            );
+            for (topic, st) in map.iter() {
+                out.push(HostedTopic {
+                    topic: topic.clone(),
+                    mode: TopicMode::PubSub,
+                    type_hash: st.type_hash,
+                });
+            }
         }
-        Ok(())
+        {
+            let map = crate::trace::recover_poison(
+                self.inner.request_topics.lock(),
+                "Node::request_topics",
+            );
+            for (topic, st) in map.iter() {
+                out.push(HostedTopic {
+                    topic: topic.clone(),
+                    mode: TopicMode::ReqRes,
+                    type_hash: st.req_type_hash,
+                });
+            }
+        }
+        {
+            let map =
+                crate::trace::recover_poison(self.inner.que_topics.lock(), "Node::que_topics");
+            for (topic, st) in map.iter() {
+                out.push(HostedTopic {
+                    topic: topic.clone(),
+                    mode: TopicMode::QueAns,
+                    type_hash: st.que_type_hash,
+                });
+            }
+        }
+        {
+            let map =
+                crate::trace::recover_poison(self.inner.put_topics.lock(), "Node::put_topics");
+            for (topic, st) in map.iter() {
+                out.push(HostedTopic {
+                    topic: topic.clone(),
+                    mode: TopicMode::PutAck,
+                    type_hash: st.put_type_hash,
+                });
+            }
+        }
+        {
+            let map =
+                crate::trace::recover_poison(self.inner.pip_topics.lock(), "Node::pip_topics");
+            for (topic, st) in map.iter() {
+                out.push(HostedTopic {
+                    topic: topic.clone(),
+                    mode: TopicMode::Pip,
+                    type_hash: st.client_type_hash,
+                });
+            }
+        }
+        out
     }
 
     /// Snapshot of node-level operational counters. Cheap; takes
@@ -483,32 +499,39 @@ impl Node {
         })
     }
 
+    /// The iroh-side topic key. With group/system routing gone this is
+    /// just the topic itself; kept as a thin helper so the per-mode
+    /// call sites read uniformly.
     pub(crate) fn route_topic(&self, topic: &str) -> Result<String> {
-        match self.inner.system_did.as_deref() {
-            Some(system_did) => Ok(system_route_topic(system_did, topic)),
-            None => Ok(topic.to_string()),
-        }
+        Ok(topic.to_string())
     }
 
-    pub(crate) fn system_route_topic(&self, topic: &str) -> Result<String> {
-        let system_did = self.inner.system_did.as_deref().ok_or_else(|| {
-            Error::invalid_argument(
-                "system_did is required for system topic subscribe/add_topic_route",
-            )
-        })?;
-        Ok(system_route_topic(system_did, topic))
-    }
-
+    /// The shared-memory service name this node serves `topic` under,
+    /// derived solely from `(endpoint_id, topic)`.
     pub(crate) fn primary_service_name(&self, topic: &str) -> Result<String> {
-        match self.inner.system_did.as_deref() {
-            Some(system_did) => Ok(system_service_name(system_did, topic)),
-            None => Ok(service_name(
-                self.inner.identity_name.as_deref(),
-                self.inner.endpoint_id.as_bytes(),
-                topic,
-            )),
-        }
+        Ok(service_name(self.inner.endpoint_id.as_bytes(), topic))
     }
+}
+
+/// One topic this node hosts, as reported by [`Node::hosted_topics`].
+#[derive(Debug, Clone)]
+pub struct HostedTopic {
+    pub topic: String,
+    pub mode: TopicMode,
+    /// Payload type-hash (`transport::wire_type_hash`). For the
+    /// two-type modes it is the client-facing type
+    /// (req / que / put / pip-client message).
+    pub type_hash: u64,
+}
+
+/// Which messaging mode a [`HostedTopic`] is served under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopicMode {
+    PubSub,
+    ReqRes,
+    QueAns,
+    PutAck,
+    Pip,
 }
 
 pub(crate) fn diagnose_peer_connection(peer: EndpointId, conn: &Connection) -> PeerPathDiagnostics {

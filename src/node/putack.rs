@@ -4,8 +4,7 @@ impl Node {
     /// Serve put/ack uploads for `topic`.
     ///
     /// A put/ack server receives zero or more put items, then sends
-    /// one final ack. In system-DID mode the service and remote route
-    /// are keyed by `(system_did, topic)`.
+    /// one final ack.
     ///
     /// This is the naming-parity counterpart to [`Node::req_server`] and
     /// [`Node::pip_server`]; it is an exact alias of the older
@@ -24,8 +23,7 @@ impl Node {
     /// Serve put/ack uploads for `topic`.
     ///
     /// A put/ack server receives zero or more put items, then sends
-    /// one final ack. In system-DID mode the service and remote route
-    /// are keyed by `(system_did, topic)`.
+    /// one final ack.
     #[deprecated(note = "renamed to que_server/put_server for naming parity; will be removed pre-1.0")]
     pub fn ack<Put, Ack>(&self, topic: &str) -> Result<AckServer<Put, Ack>>
     where
@@ -92,19 +90,6 @@ impl Node {
             server: primary_server,
         });
 
-        if self.inner.system_did.is_none() && self.inner.identity_name.is_some() {
-            let hex_name = service_name(None, self.inner.endpoint_id.as_bytes(), topic);
-            let alias_service = LocalPutAckService::<Put, Ack>::open_or_create(
-                &hex_name,
-                self.inner.local_cfg.clone(),
-            )?;
-            let alias_server = alias_service.server()?;
-            local_servers.push(LocalAckServerState {
-                _service: alias_service,
-                server: alias_server,
-            });
-        }
-
         Ok(AckServer {
             inner: self.inner.clone(),
             route_topic,
@@ -151,70 +136,7 @@ impl Node {
         let peer = peer.into_peer();
         let peer_bytes: [u8; 32] = *peer.endpoint_id.as_bytes();
 
-        let mut candidates = Vec::with_capacity(2);
-        if peer.name.is_some() {
-            candidates.push(service_name(peer.name.as_deref(), &peer_bytes, topic));
-        }
-        candidates.push(service_name(None, &peer_bytes, topic));
-        for svc_name in candidates {
-            if let Ok(svc) = LocalPutAckService::<Put, Ack>::open_existing(&svc_name) {
-                return Ok(PutClient {
-                    source: PutClientSource::Local {
-                        client: svc.client()?,
-                    },
-                    pending_remote_uploads: HashMap::new(),
-                    next_pending_upload: 0,
-                });
-            }
-        }
-
-        Ok(PutClient {
-            source: PutClientSource::Remote {
-                inner: self.inner.clone(),
-                peer_id: peer.endpoint_id,
-                addr_hint: peer.addr,
-                topic: topic.to_string(),
-                next_id: AtomicU64::new(0),
-                qos,
-                stats: Arc::new(ItemStatsInner::default()),
-            },
-            pending_remote_uploads: HashMap::new(),
-            next_pending_upload: 0,
-        })
-    }
-
-    /// Build a system-DID put/ack client for `topic`.
-    ///
-    /// Resolution order mirrors [`req`](Self::req): local SHM,
-    /// explicit topic route, then topic-agnostic system peer.
-    pub fn put<Put, Ack>(&self, topic: &str) -> Result<PutClient<Put, Ack>>
-    where
-        Put: datapod::DataPod + 'static,
-        <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
-        Ack: datapod::DataPod + 'static,
-        <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
-    {
-        self.put_with_qos(topic, TopicQos::default())
-    }
-
-    /// Build a system-DID put/ack client for `topic` with explicit QoS.
-    pub fn put_with_qos<Put, Ack>(&self, topic: &str, qos: TopicQos) -> Result<PutClient<Put, Ack>>
-    where
-        Put: datapod::DataPod + 'static,
-        <Put as datapod::DataPod>::Header: datapod::LeWireHeader,
-        Ack: datapod::DataPod + 'static,
-        <Ack as datapod::DataPod>::Header: datapod::LeWireHeader,
-    {
-        validate_topic(topic)?;
-        let route_topic = self.system_route_topic(topic)?;
-        let svc_name = system_service_name(
-            self.inner
-                .system_did
-                .as_deref()
-                .expect("system_route_topic validates presence"),
-            topic,
-        );
-
+        let svc_name = service_name(&peer_bytes, topic);
         if let Ok(svc) = LocalPutAckService::<Put, Ack>::open_existing(&svc_name) {
             return Ok(PutClient {
                 source: PutClientSource::Local {
@@ -225,26 +147,12 @@ impl Node {
             });
         }
 
-        let endpoint =
-            crate::trace::recover_poison(self.inner.system_routes.lock(), "Node::system_routes")
-                .get(&route_topic)
-                .cloned()
-                .or_else(|| {
-                    crate::trace::recover_poison(
-                        self.inner.system_peers.lock(),
-                        "Node::system_peers",
-                    )
-                    .first()
-                    .cloned()
-                })
-                .ok_or_else(|| Error::ServiceNotFound(route_topic.clone()))?;
-
         Ok(PutClient {
             source: PutClientSource::Remote {
                 inner: self.inner.clone(),
-                peer_id: endpoint.id,
-                addr_hint: Some(endpoint),
-                topic: route_topic,
+                peer_id: peer.endpoint_id,
+                addr_hint: peer.addr,
+                topic: topic.to_string(),
                 next_id: AtomicU64::new(0),
                 qos,
                 stats: Arc::new(ItemStatsInner::default()),

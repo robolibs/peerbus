@@ -139,7 +139,8 @@ fn node_subscriber_survives_publisher_drop() {
 
     let sub_node = Node::builder()
         .no_relay()
-        .identity("drop_observer")
+        .ephemeral()
+        .label("drop_observer")
         .bind()
         .expect("subscriber node");
 

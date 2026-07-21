@@ -69,30 +69,9 @@ impl Node {
         let service = LocalService::<T>::open_or_create(&svc_name, self.inner.local_cfg.clone())?;
         let local_publisher = service.publisher()?;
 
-        // Auto-alias: when the primary service name uses an
-        // identity_name (e.g. `.identity("rover-a")`), also open an
-        // alias service under the hex-EndpointId composition so
-        // subscribers that only know the public key (`did:key:…`
-        // strings, bare `EndpointId`) can also route locally instead
-        // of falling back to iroh loopback. No-op when the publisher
-        // already composes by hex (`identity_file` / ephemeral).
-        let alias = if self.inner.system_did.is_none() && self.inner.identity_name.is_some() {
-            let hex_name = service_name(None, self.inner.endpoint_id.as_bytes(), topic);
-            let alias_service =
-                LocalService::<T>::open_or_create(&hex_name, self.inner.local_cfg.clone())?;
-            let alias_publisher = alias_service.publisher()?;
-            Some(PublisherAlias {
-                publisher: alias_publisher,
-                _service: alias_service,
-            })
-        } else {
-            None
-        };
-
         Ok(Publisher {
             local_publisher,
             _local_service: service,
-            alias,
             iroh_tx,
             qos,
             published,
@@ -101,69 +80,6 @@ impl Node {
             bytes_sent,
             send_errors,
         })
-    }
-
-    /// Subscribe to a topic in this node's configured system DID.
-    ///
-    /// Resolution order:
-    ///
-    /// 1. Try local SHM for `(system_did, topic)`.
-    /// 2. If absent, use an explicit route added via
-    ///    [`add_topic_route`](Self::add_topic_route) and subscribe over iroh.
-    pub fn subscribe<T>(&self, topic: &str) -> Result<Subscriber<T>>
-    where
-        T: datapod::DataPod + 'static,
-        <T as datapod::DataPod>::Header: datapod::LeWireHeader,
-    {
-        self.subscribe_with_qos(topic, TopicQos::default())
-    }
-
-    pub fn subscribe_with_qos<T>(&self, topic: &str, _qos: TopicQos) -> Result<Subscriber<T>>
-    where
-        T: datapod::DataPod + 'static,
-        <T as datapod::DataPod>::Header: datapod::LeWireHeader,
-    {
-        validate_topic(topic)?;
-        let route_topic = self.system_route_topic(topic)?;
-        let svc_name = system_service_name(
-            self.inner
-                .system_did
-                .as_deref()
-                .expect("system_route_topic validates presence"),
-            topic,
-        );
-
-        if let Ok(svc) = LocalService::<T>::open_existing(&svc_name) {
-            let local_sub = svc.subscriber()?;
-            return Ok(Subscriber {
-                source: SubscriberSource::Local {
-                    sub: local_sub,
-                    qos: _qos,
-                    _svc: svc,
-                },
-                received: Arc::new(AtomicU64::new(0)),
-                disconnects: Arc::new(AtomicU64::new(0)),
-                stale_dropped: Arc::new(AtomicU64::new(0)),
-                incomplete_dropped: Arc::new(AtomicU64::new(0)),
-                bytes_received: Arc::new(AtomicU64::new(0)),
-            });
-        }
-
-        let endpoint =
-            crate::trace::recover_poison(self.inner.system_routes.lock(), "Node::system_routes")
-                .get(&route_topic)
-                .cloned()
-                .or_else(|| {
-                    crate::trace::recover_poison(
-                        self.inner.system_peers.lock(),
-                        "Node::system_peers",
-                    )
-                    .first()
-                    .cloned()
-                })
-                .ok_or_else(|| Error::ServiceNotFound(route_topic.clone()))?;
-
-        self.remote_subscriber::<T>(endpoint.id, Some(endpoint), route_topic, _qos)
     }
 
     /// Subscribe to `peer`'s publication of `topic`.
@@ -196,34 +112,24 @@ impl Node {
         let peer = peer.into_peer();
         let peer_bytes: [u8; 32] = *peer.endpoint_id.as_bytes();
 
-        // Try local first. The open-only call returns Err if
-        // the service hasn't been created anywhere on the host. We
-        // try the named composition first (if any) then fall through
-        // to the hex-EndpointId composition — that second probe is
-        // what makes `did:key:` and bare-EndpointId peers route to a
-        // local publisher whose identity is also un-named (i.e. an
-        // `identity_file` or ephemeral key).
-        let mut candidates: Vec<String> = Vec::with_capacity(2);
-        if peer.name.is_some() {
-            candidates.push(service_name(peer.name.as_deref(), &peer_bytes, topic));
-        }
-        candidates.push(service_name(None, &peer_bytes, topic));
-        for svc_name in candidates {
-            if let Ok(svc) = LocalService::<T>::open_existing(&svc_name) {
-                let local_sub = svc.subscriber()?;
-                return Ok(Subscriber {
-                    source: SubscriberSource::Local {
-                        sub: local_sub,
-                        qos: _qos,
-                        _svc: svc,
-                    },
-                    received: Arc::new(AtomicU64::new(0)),
-                    disconnects: Arc::new(AtomicU64::new(0)),
-                    stale_dropped: Arc::new(AtomicU64::new(0)),
-                    incomplete_dropped: Arc::new(AtomicU64::new(0)),
-                    bytes_received: Arc::new(AtomicU64::new(0)),
-                });
-            }
+        // Probe local shared memory first, keyed solely by the peer id +
+        // topic. `open_existing` returns Err if no publisher created that
+        // segment on this host, in which case the peer is remote → dial it.
+        let svc_name = service_name(&peer_bytes, topic);
+        if let Ok(svc) = LocalService::<T>::open_existing(&svc_name) {
+            let local_sub = svc.subscriber()?;
+            return Ok(Subscriber {
+                source: SubscriberSource::Local {
+                    sub: local_sub,
+                    qos: _qos,
+                    _svc: svc,
+                },
+                received: Arc::new(AtomicU64::new(0)),
+                disconnects: Arc::new(AtomicU64::new(0)),
+                stale_dropped: Arc::new(AtomicU64::new(0)),
+                incomplete_dropped: Arc::new(AtomicU64::new(0)),
+                bytes_received: Arc::new(AtomicU64::new(0)),
+            });
         }
 
         self.remote_subscriber::<T>(peer.endpoint_id, peer.addr.clone(), topic.to_string(), _qos)
@@ -435,17 +341,9 @@ impl ItemStatsInner {
     }
 }
 
-/// Mirror publisher kept alive under the hex-EndpointId name when
-/// the primary publisher used an identity-name. See `Publisher`.
-pub(crate) struct PublisherAlias<T: datapod::DataPod + 'static> {
-    pub(crate) publisher: LocalPublisher<T>,
-    pub(crate) _service: LocalService<T>,
-}
-
 pub struct Publisher<T: datapod::DataPod + 'static> {
     pub(crate) local_publisher: LocalPublisher<T>,
     pub(crate) _local_service: LocalService<T>,
-    pub(crate) alias: Option<PublisherAlias<T>>,
     pub(crate) iroh_tx: broadcast::Sender<Vec<u8>>,
     pub(crate) qos: TopicQos,
     pub(crate) published: Arc<AtomicU64>,
@@ -466,8 +364,7 @@ impl<T: datapod::DataPod + 'static> Publisher<T> {
 
     pub fn publish(&mut self, loan: Loan<T>) -> Result<u64> {
         // Snapshot header + payload bytes before local publish consumes
-        // the loan; needed for the iroh broadcast and (when present)
-        // the hex-aliased publisher's mirror loan.
+        // the loan; needed for the iroh broadcast.
         let header_bytes = bytemuck::bytes_of(loan.header()).to_vec();
         let payload_bytes = loan.payload().to_vec();
         let mut frame = Vec::with_capacity(header_bytes.len() + payload_bytes.len());
@@ -480,19 +377,6 @@ impl<T: datapod::DataPod + 'static> Publisher<T> {
             });
         }
         let seq = self.local_publisher.publish(loan)?;
-        if let Some(alias) = self.alias.as_mut() {
-            // Best-effort mirror. A failed alias publish should not
-            // break the primary path; downgrade to a warning so the
-            // operator notices if the hex service falls behind.
-            if let Err(e) = mirror_publish::<T>(alias, &header_bytes, &payload_bytes) {
-                let _ = &e;
-                qb_warn!(
-                    target: "peerbus::node",
-                    error = %e,
-                    "publisher hex-alias mirror failed; DID:KEY subscribers may fall back to iroh"
-                );
-            }
-        }
         if self.iroh_tx.send(frame).is_err() {
             self.remote_dropped.fetch_add(1, Ordering::Relaxed);
         }
@@ -519,20 +403,6 @@ impl<T: datapod::DataPod + 'static> Publisher<T> {
             send_errors: self.send_errors.load(Ordering::Relaxed),
         }
     }
-}
-
-pub(crate) fn mirror_publish<T: datapod::DataPod + 'static>(
-    alias: &mut PublisherAlias<T>,
-    header_bytes: &[u8],
-    payload_bytes: &[u8],
-) -> Result<()> {
-    let mut loan = alias.publisher.loan(payload_bytes.len())?;
-    // Copy the header back into the alias slot. `bytemuck::bytes_of_mut`
-    // gives us a writeable byte view of the same fixed-size header.
-    bytemuck::bytes_of_mut(loan.header_mut()).copy_from_slice(header_bytes);
-    loan.payload_mut().copy_from_slice(payload_bytes);
-    alias.publisher.publish(loan)?;
-    Ok(())
 }
 
 // ---- subscriber ----

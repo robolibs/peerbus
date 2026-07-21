@@ -20,7 +20,7 @@
 //! # fn run() -> peerbus::Result<()> {
 //! # #[datapod::datapod]
 //! # struct Pose { x: f32, y: f32, yaw: f32 }
-//! let node = Node::builder().no_relay().bind()?;
+//! let node = Node::builder().ephemeral().no_relay().bind()?;
 //! let mut pubr = node.publisher::<Pose>("rover/pose")?;
 //! pubr.send(&Pose { x: 0.0, y: 0.0, yaw: 0.0 })?;
 //! # Ok(()) }
@@ -28,10 +28,7 @@
 
 use std::any::type_name;
 use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::io::{Read, Write};
 use std::marker::PhantomData;
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -69,7 +66,6 @@ use crate::{qb_debug, qb_info, qb_warn};
 
 const DEFAULT_ALPN: &[u8] = b"peerbus/1";
 const DEFAULT_BROADCAST_CAPACITY: usize = 256;
-const IDENTITY_DERIVATION_TAG: &[u8] = b"peerbus/v1/identity";
 /// QUIC application close code used when an inbound connection is
 /// refused by the peer ACL. Distinct from 0 (graceful close) so the
 /// dialing side can tell "rejected" from "went away".

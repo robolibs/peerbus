@@ -1,8 +1,14 @@
 use super::*;
 
 pub struct NodeBuilder {
-    pub(crate) identity: IdentitySource,
-    pub(crate) system_did: Option<String>,
+    /// The ed25519 key this node binds its iroh endpoint with. peerbus
+    /// only *consumes* a key; producing / naming / persisting keys is
+    /// the higher-level crate's job. `None` until `secret_key` /
+    /// `ephemeral` is called; `bind` errors if still `None`.
+    pub(crate) secret: Option<SecretKey>,
+    /// Optional cosmetic label used only in logs — never in routing or
+    /// the shared-memory rendezvous name.
+    pub(crate) label: Option<String>,
     pub(crate) alpn: Vec<u8>,
     pub(crate) no_relay: bool,
     pub(crate) local_cfg: LocalConfig,
@@ -17,63 +23,29 @@ pub struct NodeBuilder {
 }
 
 impl NodeBuilder {
-    /// Join a logical multi-process system namespace identified by
-    /// a `did:key:z...` URI. In system mode, high-level
-    /// [`Node::publisher`] / [`Node::subscribe`] routes are keyed by
-    /// `(system_did, topic)` instead of this process' transport id.
-    pub fn system_did(mut self, did: impl Into<String>) -> Self {
-        self.system_did = Some(did.into());
+    /// Bind with this exact ed25519 key. Its public half is the node's
+    /// `EndpointId` — the single id used for both iroh dialing and the
+    /// shared-memory rendezvous name. Required (unless [`ephemeral`] is
+    /// used).
+    ///
+    /// [`ephemeral`]: Self::ephemeral
+    pub fn secret_key(mut self, key: SecretKey) -> Self {
+        self.secret = Some(key);
         self
     }
 
-    /// Literal name → deterministic `SecretKey` via blake3.
-    /// Same name on two machines → same `EndpointId`.
-    ///
-    /// # Security: this identity is impersonable
-    ///
-    /// **The identity string *is* the private key material.** The
-    /// 32-byte ed25519 secret key is a domain-separated blake3 hash of
-    /// `name` and nothing else — no salt, no local entropy. Anyone who
-    /// learns the string (from a config file, a log line, a `ps`
-    /// listing, a screenshot, a git history) can recompute this node's
-    /// secret key and impersonate it to every peer that allowlists it.
-    ///
-    /// Use this only on a trusted network, for local development, or
-    /// in tests. On production / untrusted networks use
-    /// [`identity_file`](Self::identity_file), which stores 32 random
-    /// bytes on disk with `0600` and is *not* derivable from any
-    /// human-readable name.
-    ///
-    /// [`bind`](Self::bind) emits a `WARN` whenever this path is used.
-    pub fn identity(mut self, name: impl Into<String>) -> Self {
-        self.identity = IdentitySource::Name(name.into());
+    /// Bind with a fresh random key. Convenience for tests, examples,
+    /// and short-lived nodes whose id need not persist across runs.
+    pub fn ephemeral(mut self) -> Self {
+        self.secret = Some(SecretKey::generate());
         self
     }
 
-    /// Read 32 raw bytes as the `SecretKey`; generate + write on
-    /// first run (mode `0600`). Cryptographically meaningful; this is
-    /// the production knob, and the only identity source that is not
-    /// derivable from a guessable string.
-    pub fn identity_file(mut self, path: impl Into<PathBuf>) -> Self {
-        self.identity = IdentitySource::File(path.into());
-        self
-    }
-
-    /// Read the env var `var` and feed its value through
-    /// [`Self::identity`].
-    ///
-    /// # Security: this identity is impersonable
-    ///
-    /// Inherits every weakness of [`identity`](Self::identity): the
-    /// env var's *value* is hashed straight into the ed25519 secret
-    /// key, so anyone who knows the value can impersonate this peer.
-    /// An env var is not a secret store — it leaks through `ps`,
-    /// `/proc/<pid>/environ`, CI logs and crash dumps. Prefer
-    /// [`identity_file`](Self::identity_file) in production.
-    ///
-    /// [`bind`](Self::bind) emits a `WARN` whenever this path is used.
-    pub fn identity_env(mut self, var: impl Into<String>) -> Self {
-        self.identity = IdentitySource::Env(var.into());
+    /// Optional human-readable label for this node. Used **only** in log
+    /// lines to make a node recognisable; it is never part of routing or
+    /// the shared-memory rendezvous name (those key off the id).
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
         self
     }
 
@@ -157,20 +129,20 @@ impl NodeBuilder {
 
     /// Bind the node's endpoint and start the inbound accept loop.
     ///
-    /// Warns loudly on the two insecure-but-supported postures:
-    /// [`allow_any_peer`](Self::allow_any_peer) (no peer ACL) and a
-    /// string-derived, impersonable identity
-    /// ([`identity`](Self::identity) / [`identity_env`](Self::identity_env)).
+    /// Requires a key ([`secret_key`](Self::secret_key) or
+    /// [`ephemeral`](Self::ephemeral)). Warns loudly on the one
+    /// insecure-but-supported posture: [`allow_any_peer`](Self::allow_any_peer)
+    /// (no peer ACL).
     pub fn bind(self) -> Result<Node> {
         let rt = runtime::shared()?;
-        let identity_is_derived = self.identity.is_derived_from_string();
-        let (secret, identity_name) = resolve_identity(&self.identity)?;
-        let system_did = self
-            .system_did
-            .map(|did| validate_system_did(&did).map(|_| did))
-            .transpose()?;
+        let secret = self.secret.ok_or_else(|| {
+            Error::invalid_argument(
+                "Node::builder: no key set; call .secret_key(<SecretKey>) or .ephemeral()",
+            )
+        })?;
         let endpoint_id = secret.public();
         let secret_bytes = secret.to_bytes();
+        let label = self.label;
         let alpn = self.alpn.clone();
         let no_relay = self.no_relay;
 
@@ -223,7 +195,7 @@ impl NodeBuilder {
         qb_info!(
             target: "peerbus::node",
             endpoint_id = %endpoint_id,
-            identity = identity_name.as_deref().unwrap_or("<ephemeral>"),
+            label = label.as_deref().unwrap_or("<none>"),
             no_relay,
             "node bound"
         );
@@ -240,24 +212,10 @@ impl NodeBuilder {
             );
         }
 
-        if identity_is_derived {
-            qb_warn!(
-                target: "peerbus::node",
-                endpoint_id = %endpoint_id,
-                identity = identity_name.as_deref().unwrap_or("<unknown>"),
-                "INSECURE identity: this node's ed25519 secret key is derived \
-                 from the identity string, so the string IS the key material. \
-                 Anyone who learns it can derive this key and impersonate this \
-                 peer. Use Node::builder().identity_file(<path>) on production \
-                 or untrusted networks"
-            );
-        }
-
         let inner = Arc::new(NodeInner {
             endpoint,
             endpoint_id,
-            identity_name,
-            system_did,
+            label,
             alpn: self.alpn,
             local_cfg: self.local_cfg,
             publisher_topics: Mutex::new(HashMap::new()),
@@ -265,8 +223,6 @@ impl NodeBuilder {
             que_topics: Mutex::new(HashMap::new()),
             put_topics: Mutex::new(HashMap::new()),
             pip_topics: Mutex::new(HashMap::new()),
-            system_routes: Mutex::new(HashMap::new()),
-            system_peers: Mutex::new(Vec::new()),
             peer_connections: Mutex::new(HashMap::new()),
             pubsub_datagram_routes: Mutex::new(HashMap::new()),
             pubsub_datagram_readers: Mutex::new(HashMap::new()),

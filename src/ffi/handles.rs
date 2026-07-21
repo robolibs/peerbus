@@ -15,9 +15,11 @@ pub struct PeerbusNode {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct PeerbusNodeConfig {
-    pub identity: *const c_char,
+    /// Pointer to 32 raw ed25519 secret-key bytes, or null for an
+    /// ephemeral (random) key. peerbus only consumes a key; deriving or
+    /// persisting one is the higher-level crate's job.
+    pub secret_key: *const u8,
     pub no_relay: bool,
-    pub system_did: *const c_char,
     pub allowed_peers: *const *const c_char,
     pub allowed_peers_len: usize,
     /// Accept connections from ANY peer that knows the ALPN. Insecure;

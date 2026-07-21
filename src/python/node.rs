@@ -9,9 +9,9 @@ pub struct PyNode {
 impl PyNode {
     #[new]
     #[pyo3(signature = (
-        identity=None,
+        secret_key=None,
         no_relay=false,
-        system_did=None,
+        label=None,
         max_payload_bytes=None,
         history_depth=None,
         subscriber_buffer=None,
@@ -22,9 +22,9 @@ impl PyNode {
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
-        identity: Option<String>,
+        secret_key: Option<Vec<u8>>,
         no_relay: bool,
-        system_did: Option<String>,
+        label: Option<String>,
         max_payload_bytes: Option<usize>,
         history_depth: Option<u32>,
         subscriber_buffer: Option<u32>,
@@ -34,18 +34,32 @@ impl PyNode {
         allow_any_peer: bool,
     ) -> PyResult<Self> {
         let mut builder = Node::builder();
-        if let Some(id) = identity {
-            builder = builder.identity(id);
+        // 32 raw ed25519 key bytes, or a random ephemeral key when None.
+        match secret_key {
+            Some(bytes) => {
+                if bytes.len() != 32 {
+                    return Err(PyRuntimeError::new_err(format!(
+                        "secret_key must be 32 bytes, got {}",
+                        bytes.len()
+                    )));
+                }
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&bytes);
+                builder = builder.secret_key(iroh::SecretKey::from_bytes(&key));
+            }
+            None => {
+                builder = builder.ephemeral();
+            }
+        }
+        if let Some(label) = label {
+            builder = builder.label(label);
         }
         if no_relay {
             builder = builder.no_relay();
         }
-        if let Some(did) = system_did {
-            builder = builder.system_did(did);
-        }
         if let Some(peers) = allowed_peers {
             for peer in peers {
-                builder = builder.allow_peer(peer);
+                builder = builder.allow_peer(decode_endpoint_addr(&peer)?);
             }
         }
         if allow_any_peer {
@@ -79,34 +93,16 @@ impl PyNode {
         Ok(Self { node })
     }
 
-    /// This node's identity as a `did:key:z6Mk…` string.
-    fn did_key(&self) -> String {
-        self.node.endpoint_did_key()
-    }
-
-    fn system_did(&self) -> Option<String> {
-        self.node.system_did().map(ToOwned::to_owned)
+    /// This node's optional cosmetic label (logs only), if set.
+    fn label(&self) -> Option<String> {
+        self.node.label().map(ToOwned::to_owned)
     }
 
     /// This node's full iroh endpoint address as a hex-encoded
-    /// postcard blob. Pass this string to peer-addressed APIs,
-    /// add_topic_route(), or add_system_peer() to avoid discovery.
+    /// postcard blob. Pass this string as the `peer` argument to
+    /// peer-addressed APIs to reach this node without discovery.
     fn endpoint_addr(&self) -> PyResult<String> {
         encode_endpoint_addr(&self.node.endpoint_addr())
-    }
-
-    /// Add `(system_did, topic) -> endpoint_addr` fallback route.
-    fn add_topic_route(&self, topic: &str, endpoint_addr: &str) -> PyResult<()> {
-        self.node
-            .add_topic_route(topic, decode_endpoint_addr(endpoint_addr)?)
-            .map_err(py_err)
-    }
-
-    /// Add a peer fallback for this node's configured system DID.
-    fn add_system_peer(&self, endpoint_addr: &str) -> PyResult<()> {
-        self.node
-            .add_system_peer(decode_endpoint_addr(endpoint_addr)?)
-            .map_err(py_err)
     }
 
     fn stats(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
@@ -131,7 +127,7 @@ impl PyNode {
             return Ok(None);
         };
         let dict = PyDict::new(py);
-        dict.set_item("peer", crate::did_key::endpoint_id_to_did_key(&diag.peer))?;
+        dict.set_item("peer", hex_encode(diag.peer.as_bytes()))?;
         dict.set_item("max_datagram_size", diag.max_datagram_size)?;
         dict.set_item(
             "datagram_send_buffer_space",
@@ -187,11 +183,8 @@ impl PyNode {
         qos: Option<PyRef<'_, PyTopicQos>>,
     ) -> PyResult<PySubscriber> {
         let qos = qos_value(qos);
-        let subscriber = if let Ok(addr) = decode_endpoint_addr(peer) {
-            self.node.subscriber_with_qos::<RawMsg>(addr, topic, qos)
-        } else {
-            self.node.subscriber_with_qos::<RawMsg>(peer, topic, qos)
-        }
+        let addr = decode_endpoint_addr(peer)?;
+        let subscriber = self.node.subscriber_with_qos::<RawMsg>(addr, topic, qos)
         .map_err(py_err)?;
         Ok(PySubscriber { subscriber })
     }
@@ -206,37 +199,10 @@ impl PyNode {
         qos: Option<PyRef<'_, PyTopicQos>>,
     ) -> PyResult<PyDatapodSubscriber> {
         let qos = qos_value(qos);
-        let subscriber = if let Ok(addr) = decode_endpoint_addr(peer) {
-            self.node
+        let addr = decode_endpoint_addr(peer)?;
+        let subscriber = self.node
                 .subscriber_with_qos::<DatapodMsg>(addr, topic, qos)
-        } else {
-            self.node
-                .subscriber_with_qos::<DatapodMsg>(peer, topic, qos)
-        }
         .map_err(py_err)?;
-        Ok(PyDatapodSubscriber { subscriber })
-    }
-
-    #[pyo3(signature = (topic, qos=None))]
-    fn subscribe(&self, topic: &str, qos: Option<PyRef<'_, PyTopicQos>>) -> PyResult<PySubscriber> {
-        let subscriber = self
-            .node
-            .subscribe_with_qos::<RawMsg>(topic, qos_value(qos))
-            .map_err(py_err)?;
-        Ok(PySubscriber { subscriber })
-    }
-
-    /// System-DID topic-only generic datapod subscriber.
-    #[pyo3(signature = (topic, qos=None))]
-    fn datapod_subscribe(
-        &self,
-        topic: &str,
-        qos: Option<PyRef<'_, PyTopicQos>>,
-    ) -> PyResult<PyDatapodSubscriber> {
-        let subscriber = self
-            .node
-            .subscribe_with_qos::<DatapodMsg>(topic, qos_value(qos))
-            .map_err(py_err)?;
         Ok(PyDatapodSubscriber { subscriber })
     }
 
@@ -248,23 +214,10 @@ impl PyNode {
         qos: Option<PyRef<'_, PyTopicQos>>,
     ) -> PyResult<PyReqClient> {
         let qos = qos_value(qos);
-        let client = if let Ok(addr) = decode_endpoint_addr(peer) {
-            self.node
+        let addr = decode_endpoint_addr(peer)?;
+        let client = self.node
                 .req_client_with_qos::<RawMsg, RawMsg>(addr, topic, qos)
-        } else {
-            self.node
-                .req_client_with_qos::<RawMsg, RawMsg>(peer, topic, qos)
-        }
         .map_err(py_err)?;
-        Ok(PyReqClient { client })
-    }
-
-    #[pyo3(signature = (topic, qos=None))]
-    fn req(&self, topic: &str, qos: Option<PyRef<'_, PyTopicQos>>) -> PyResult<PyReqClient> {
-        let client = self
-            .node
-            .req_with_qos::<RawMsg, RawMsg>(topic, qos_value(qos))
-            .map_err(py_err)?;
         Ok(PyReqClient { client })
     }
 
@@ -287,27 +240,10 @@ impl PyNode {
         qos: Option<PyRef<'_, PyTopicQos>>,
     ) -> PyResult<PyDatapodReqClient> {
         let qos = qos_value(qos);
-        let client = if let Ok(addr) = decode_endpoint_addr(peer) {
-            self.node
+        let addr = decode_endpoint_addr(peer)?;
+        let client = self.node
                 .req_client_with_qos::<DatapodMsg, DatapodMsg>(addr, topic, qos)
-        } else {
-            self.node
-                .req_client_with_qos::<DatapodMsg, DatapodMsg>(peer, topic, qos)
-        }
         .map_err(py_err)?;
-        Ok(PyDatapodReqClient { client })
-    }
-
-    #[pyo3(signature = (topic, qos=None))]
-    fn datapod_req(
-        &self,
-        topic: &str,
-        qos: Option<PyRef<'_, PyTopicQos>>,
-    ) -> PyResult<PyDatapodReqClient> {
-        let client = self
-            .node
-            .req_with_qos::<DatapodMsg, DatapodMsg>(topic, qos_value(qos))
-            .map_err(py_err)?;
         Ok(PyDatapodReqClient { client })
     }
 
@@ -334,27 +270,10 @@ impl PyNode {
         qos: Option<PyRef<'_, PyTopicQos>>,
     ) -> PyResult<PyDatapodQueClient> {
         let qos = qos_value(qos);
-        let client = if let Ok(addr) = decode_endpoint_addr(peer) {
-            self.node
+        let addr = decode_endpoint_addr(peer)?;
+        let client = self.node
                 .que_client_with_qos::<DatapodMsg, DatapodMsg>(addr, topic, qos)
-        } else {
-            self.node
-                .que_client_with_qos::<DatapodMsg, DatapodMsg>(peer, topic, qos)
-        }
         .map_err(py_err)?;
-        Ok(PyDatapodQueClient { client })
-    }
-
-    #[pyo3(signature = (topic, qos=None))]
-    fn datapod_que(
-        &self,
-        topic: &str,
-        qos: Option<PyRef<'_, PyTopicQos>>,
-    ) -> PyResult<PyDatapodQueClient> {
-        let client = self
-            .node
-            .que_with_qos::<DatapodMsg, DatapodMsg>(topic, qos_value(qos))
-            .map_err(py_err)?;
         Ok(PyDatapodQueClient { client })
     }
 
@@ -381,23 +300,10 @@ impl PyNode {
         qos: Option<PyRef<'_, PyTopicQos>>,
     ) -> PyResult<PyQueClient> {
         let qos = qos_value(qos);
-        let client = if let Ok(addr) = decode_endpoint_addr(peer) {
-            self.node
+        let addr = decode_endpoint_addr(peer)?;
+        let client = self.node
                 .que_client_with_qos::<RawMsg, RawMsg>(addr, topic, qos)
-        } else {
-            self.node
-                .que_client_with_qos::<RawMsg, RawMsg>(peer, topic, qos)
-        }
         .map_err(py_err)?;
-        Ok(PyQueClient { client })
-    }
-
-    #[pyo3(signature = (topic, qos=None))]
-    fn que(&self, topic: &str, qos: Option<PyRef<'_, PyTopicQos>>) -> PyResult<PyQueClient> {
-        let client = self
-            .node
-            .que_with_qos::<RawMsg, RawMsg>(topic, qos_value(qos))
-            .map_err(py_err)?;
         Ok(PyQueClient { client })
     }
 
@@ -420,25 +326,10 @@ impl PyNode {
         qos: Option<PyRef<'_, PyTopicQos>>,
     ) -> PyResult<PyPutClient> {
         let qos = qos_value(qos);
-        let client = if let Ok(addr) = decode_endpoint_addr(peer) {
-            self.node
+        let addr = decode_endpoint_addr(peer)?;
+        let client = self.node
                 .put_client_with_qos::<RawMsg, RawMsg>(addr, topic, qos)
-        } else {
-            self.node
-                .put_client_with_qos::<RawMsg, RawMsg>(peer, topic, qos)
-        }
         .map_err(py_err)?;
-        Ok(PyPutClient {
-            client: Arc::new(Mutex::new(client)),
-        })
-    }
-
-    #[pyo3(signature = (topic, qos=None))]
-    fn put(&self, topic: &str, qos: Option<PyRef<'_, PyTopicQos>>) -> PyResult<PyPutClient> {
-        let client = self
-            .node
-            .put_with_qos::<RawMsg, RawMsg>(topic, qos_value(qos))
-            .map_err(py_err)?;
         Ok(PyPutClient {
             client: Arc::new(Mutex::new(client)),
         })
@@ -463,29 +354,10 @@ impl PyNode {
         qos: Option<PyRef<'_, PyTopicQos>>,
     ) -> PyResult<PyDatapodPutClient> {
         let qos = qos_value(qos);
-        let client = if let Ok(addr) = decode_endpoint_addr(peer) {
-            self.node
+        let addr = decode_endpoint_addr(peer)?;
+        let client = self.node
                 .put_client_with_qos::<DatapodMsg, DatapodMsg>(addr, topic, qos)
-        } else {
-            self.node
-                .put_client_with_qos::<DatapodMsg, DatapodMsg>(peer, topic, qos)
-        }
         .map_err(py_err)?;
-        Ok(PyDatapodPutClient {
-            client: Arc::new(Mutex::new(client)),
-        })
-    }
-
-    #[pyo3(signature = (topic, qos=None))]
-    fn datapod_put(
-        &self,
-        topic: &str,
-        qos: Option<PyRef<'_, PyTopicQos>>,
-    ) -> PyResult<PyDatapodPutClient> {
-        let client = self
-            .node
-            .put_with_qos::<DatapodMsg, DatapodMsg>(topic, qos_value(qos))
-            .map_err(py_err)?;
         Ok(PyDatapodPutClient {
             client: Arc::new(Mutex::new(client)),
         })
@@ -514,29 +386,10 @@ impl PyNode {
         qos: Option<PyRef<'_, PyTopicQos>>,
     ) -> PyResult<PyDatapodPipClient> {
         let qos = qos_value(qos);
-        let client = if let Ok(addr) = decode_endpoint_addr(peer) {
-            self.node
+        let addr = decode_endpoint_addr(peer)?;
+        let client = self.node
                 .pip_client_with_qos::<DatapodMsg, DatapodMsg>(addr, topic, qos)
-        } else {
-            self.node
-                .pip_client_with_qos::<DatapodMsg, DatapodMsg>(peer, topic, qos)
-        }
         .map_err(py_err)?;
-        Ok(PyDatapodPipClient {
-            client: Arc::new(Mutex::new(client)),
-        })
-    }
-
-    #[pyo3(signature = (topic, qos=None))]
-    fn datapod_pip(
-        &self,
-        topic: &str,
-        qos: Option<PyRef<'_, PyTopicQos>>,
-    ) -> PyResult<PyDatapodPipClient> {
-        let client = self
-            .node
-            .pip_with_qos::<DatapodMsg, DatapodMsg>(topic, qos_value(qos))
-            .map_err(py_err)?;
         Ok(PyDatapodPipClient {
             client: Arc::new(Mutex::new(client)),
         })
@@ -565,25 +418,10 @@ impl PyNode {
         qos: Option<PyRef<'_, PyTopicQos>>,
     ) -> PyResult<PyPipClient> {
         let qos = qos_value(qos);
-        let client = if let Ok(addr) = decode_endpoint_addr(peer) {
-            self.node
+        let addr = decode_endpoint_addr(peer)?;
+        let client = self.node
                 .pip_client_with_qos::<RawMsg, RawMsg>(addr, topic, qos)
-        } else {
-            self.node
-                .pip_client_with_qos::<RawMsg, RawMsg>(peer, topic, qos)
-        }
         .map_err(py_err)?;
-        Ok(PyPipClient {
-            client: Arc::new(Mutex::new(client)),
-        })
-    }
-
-    #[pyo3(signature = (topic, qos=None))]
-    fn pip(&self, topic: &str, qos: Option<PyRef<'_, PyTopicQos>>) -> PyResult<PyPipClient> {
-        let client = self
-            .node
-            .pip_with_qos::<RawMsg, RawMsg>(topic, qos_value(qos))
-            .map_err(py_err)?;
         Ok(PyPipClient {
             client: Arc::new(Mutex::new(client)),
         })

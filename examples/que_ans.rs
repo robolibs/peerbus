@@ -29,8 +29,8 @@ fn main() -> peerbus::Result<()> {
 /// Same-host: routing is SHM between two `Node`s.
 fn local_shm() -> peerbus::Result<()> {
     println!("== que/ans over shared memory ==");
-    let server_node = Node::builder().no_relay().identity("search").bind()?;
-    let client_node = Node::builder().no_relay().identity("seeker").bind()?;
+    let server_node = Node::builder().no_relay().ephemeral().label("search").bind()?;
+    let client_node = Node::builder().no_relay().ephemeral().label("seeker").bind()?;
 
     let mut server = server_node.que_server::<RangeQue, Hit>("search/range")?;
     let handle = std::thread::spawn(move || {
@@ -54,7 +54,8 @@ fn local_shm() -> peerbus::Result<()> {
         }
     });
 
-    let mut client = client_node.que_client::<RangeQue, Hit>("search", "search/range")?;
+    let mut client =
+        client_node.que_client::<RangeQue, Hit>(server_node.endpoint_id(), "search/range")?;
     let mut answers = client.send(&RangeQue {
         start: 10,
         count: 4,
@@ -77,7 +78,7 @@ fn over_iroh() -> peerbus::Result<()> {
         (0..q.count).map(|o| Hit { value: q.start + o }).collect()
     })?;
 
-    let client_node = Node::builder().no_relay().bind()?;
+    let client_node = Node::builder().ephemeral().no_relay().bind()?;
     let mut client =
         client_node.que_client::<RangeQue, Hit>(server.endpoint_addr(), "search/range")?;
     let mut answers = client.send(&RangeQue {

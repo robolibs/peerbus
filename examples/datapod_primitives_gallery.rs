@@ -1,9 +1,8 @@
 //! Datapod gallery across the high-level three-letter primitives.
 //!
-//! This keeps everything in one local system-DID namespace, so the client
-//! side never names a transport peer. It just asks for data on a topic:
-//! `pub/sub`, `req/res`, `que/ans`, `put/ack`, and `pip` all route by
-//! `(system_did, topic)`.
+//! Two `Node`s in one process: a server/publisher node and a client node
+//! that addresses it by `endpoint_id()`. It walks the high-level primitives:
+//! `pub/sub`, `req/res`, `que/ans`, `put/ack`, and `pip`.
 //!
 //! ```text
 //! cargo run --example datapod_primitives_gallery
@@ -12,7 +11,7 @@
 use std::time::{Duration, Instant};
 
 use datapod::{Aabb, Bytes, Linestring, Odom, Point, Pose, Quaternion, Twist, Velocity, Wrench};
-use peerbus::{LocalConfig, Node, TopicQos, did_key::endpoint_id_to_did_key};
+use peerbus::{LocalConfig, Node, TopicQos};
 
 #[datapod::datapod]
 struct UploadAck {
@@ -22,7 +21,6 @@ struct UploadAck {
 }
 
 fn main() -> peerbus::Result<()> {
-    let system_did = endpoint_id_to_did_key(&iroh::SecretKey::generate().public());
     let cfg = LocalConfig {
         history_depth: 8,
         subscriber_buffer: 8,
@@ -32,12 +30,12 @@ fn main() -> peerbus::Result<()> {
 
     let server_node = Node::builder()
         .no_relay()
-        .system_did(&system_did)
+        .ephemeral()
         .local_config(cfg)
         .bind()?;
-    let client_node = Node::builder().no_relay().system_did(&system_did).bind()?;
+    let client_node = Node::builder().no_relay().ephemeral().bind()?;
 
-    println!("system did: {system_did}");
+    println!("server endpoint id: {}", server_node.endpoint_id());
     pub_sub_odom(&server_node, &client_node)?;
     req_res_pose_to_wrench(&server_node, &client_node)?;
     que_ans_bbox_to_path(&server_node, &client_node)?;
@@ -50,7 +48,8 @@ fn pub_sub_odom(server_node: &Node, client_node: &Node) -> peerbus::Result<()> {
     println!("== pub/sub: Odom state ==");
     let qos = TopicQos::latest().with_subscriber_queue(4);
     let mut pubr = server_node.publisher_with_qos::<Odom>("state/odom", qos)?;
-    let mut sub = client_node.subscribe_with_qos::<Odom>("state/odom", qos)?;
+    let mut sub =
+        client_node.subscriber_with_qos::<Odom>(server_node.endpoint_id(), "state/odom", qos)?;
 
     pubr.send(&Odom {
         pose: pose(1.0, 2.0, 0.0),
@@ -89,7 +88,8 @@ fn req_res_pose_to_wrench(server_node: &Node, client_node: &Node) -> peerbus::Re
         .expect("req/res server should receive pose");
     });
 
-    let mut client = client_node.req::<Pose, Wrench>("control/wrench")?;
+    let mut client =
+        client_node.req_client::<Pose, Wrench>(server_node.endpoint_id(), "control/wrench")?;
     let wrench = client.call(&pose(0.2, -0.1, 0.4))?;
     println!(
         "  wrench force=({:.1}, {:.1}, {:.1})",
@@ -124,7 +124,11 @@ fn que_ans_bbox_to_path(server_node: &Node, client_node: &Node) -> peerbus::Resu
         .expect("que/ans server should receive bbox");
     });
 
-    let mut client = client_node.que_with_qos::<Aabb, Linestring>("planner/path", qos)?;
+    let mut client = client_node.que_client_with_qos::<Aabb, Linestring>(
+        server_node.endpoint_id(),
+        "planner/path",
+        qos,
+    )?;
     let mut answers = client.send(&Aabb::new(
         Point::new(-2.0, -1.0, 0.0),
         Point::new(4.0, 3.0, 0.0),
@@ -168,7 +172,11 @@ fn put_ack_byte_chunks(server_node: &Node, client_node: &Node) -> peerbus::Resul
 
     let chunk_a: Vec<u8> = (0..32 * 1024).map(|i| (i % 251) as u8).collect();
     let chunk_b: Vec<u8> = (0..48 * 1024).map(|i| (255 - (i % 251)) as u8).collect();
-    let mut client = client_node.put_with_qos::<Bytes, UploadAck>("bag/upload", qos)?;
+    let mut client = client_node.put_client_with_qos::<Bytes, UploadAck>(
+        server_node.endpoint_id(),
+        "bag/upload",
+        qos,
+    )?;
     let mut put = client.open()?;
     put.send(&Bytes::from_slice(&chunk_a))?;
     put.send(&Bytes::from_slice(&chunk_b))?;
@@ -202,7 +210,8 @@ fn pip_twist_to_pose(server_node: &Node, client_node: &Node) -> peerbus::Result<
         .expect("pip server should receive session");
     });
 
-    let mut client = client_node.pip::<Twist, Pose>("session/integrate")?;
+    let mut client =
+        client_node.pip_client::<Twist, Pose>(server_node.endpoint_id(), "session/integrate")?;
     let mut pip = client.open()?;
     for vx in [0.25, 0.5, 1.0] {
         pip.send(&twist(vx, 0.0, 0.0))?;

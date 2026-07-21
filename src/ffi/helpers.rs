@@ -125,16 +125,12 @@ pub(crate) unsafe fn endpoint_addr_in(ptr: *const c_char) -> Result<EndpointAddr
     })
 }
 
-pub(crate) unsafe fn peer_arg(peer: *const c_char) -> Result<Result<EndpointAddr, String>, ()> {
-    let value = unsafe { cstr(peer) }?;
-    let looks_hex = value.len() % 2 == 0 && value.as_bytes().iter().all(|b| b.is_ascii_hexdigit());
-    if looks_hex
-        && let Ok(bytes) = hex_decode(value)
-        && let Ok(addr) = postcard::from_bytes::<EndpointAddr>(&bytes)
-    {
-        return Ok(Ok(addr));
-    }
-    Ok(Err(value.to_string()))
+/// Parse a peer argument. peerbus addresses peers only by id, so the C
+/// string must be a hex postcard-encoded `EndpointAddr` (as produced by
+/// `peerbus_node_endpoint_addr`). Friendly names / `did:key` resolution
+/// live in the higher-level crate.
+pub(crate) unsafe fn peer_arg(peer: *const c_char) -> Result<EndpointAddr, ()> {
+    unsafe { endpoint_addr_in(peer) }
 }
 
 pub(crate) fn item_stats_out(stats: crate::ItemStats) -> PeerbusItemStats {
@@ -195,16 +191,18 @@ pub(crate) fn messages_from_raw(values: Vec<RawMsg>) -> PeerbusMessages {
 
 pub(crate) fn build_node_from_config(cfg: PeerbusNodeConfig) -> Result<Node, ()> {
     let mut builder = Node::builder();
-    if !cfg.identity.is_null() {
-        let identity = unsafe { cstr(cfg.identity) }?;
-        builder = builder.identity(identity);
+    // 32-byte ed25519 secret key, or ephemeral when null.
+    if cfg.secret_key.is_null() {
+        builder = builder.ephemeral();
+    } else {
+        // SAFETY: caller promises 32 readable bytes when non-null.
+        let bytes = unsafe { std::slice::from_raw_parts(cfg.secret_key, 32) };
+        let mut key = [0u8; 32];
+        key.copy_from_slice(bytes);
+        builder = builder.secret_key(iroh::SecretKey::from_bytes(&key));
     }
     if cfg.no_relay {
         builder = builder.no_relay();
-    }
-    if !cfg.system_did.is_null() {
-        let system_did = unsafe { cstr(cfg.system_did) }?;
-        builder = builder.system_did(system_did);
     }
     if cfg.allowed_peers_len != 0 {
         if cfg.allowed_peers.is_null() {
@@ -214,7 +212,7 @@ pub(crate) fn build_node_from_config(cfg: PeerbusNodeConfig) -> Result<Node, ()>
         // SAFETY: caller promises `allowed_peers_len` valid C string pointers.
         let peers = unsafe { std::slice::from_raw_parts(cfg.allowed_peers, cfg.allowed_peers_len) };
         for peer in peers {
-            let peer = unsafe { cstr(*peer) }?;
+            let peer = unsafe { endpoint_addr_in(*peer) }?;
             builder = builder.allow_peer(peer);
         }
     }

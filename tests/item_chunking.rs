@@ -89,7 +89,8 @@ fn chunky_qos() -> TopicQos {
 fn server_node(stem: &str) -> Node {
     let node = Node::builder()
         .no_relay()
-        .identity(unique(stem))
+        .ephemeral()
+        .label(unique(stem))
         .bind()
         .expect("server node");
     node.wait_for_direct_addresses(Duration::from_secs(5))
@@ -100,7 +101,8 @@ fn server_node(stem: &str) -> Node {
 fn client_node(stem: &str) -> Node {
     Node::builder()
         .no_relay()
-        .identity(unique(stem))
+        .ephemeral()
+        .label(unique(stem))
         .bind()
         .expect("client node")
 }

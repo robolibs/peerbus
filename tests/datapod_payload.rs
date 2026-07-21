@@ -167,22 +167,23 @@ fn datapod_msg_uses_datapod_canonical_wire_message() {
 
 #[test]
 fn node_datapod_msg_dynamic_view_reads_builtin_grid_without_callsite_type() {
-    let pub_identity = unique_name("datapod_msg_pub");
     let topic = unique_name("datapod/msg/grid");
     let pub_node = Node::builder()
         .no_relay()
-        .identity(&pub_identity)
+        .ephemeral()
+        .label(unique_name("datapod_msg_pub"))
         .bind()
         .expect("publisher node");
     let sub_node = Node::builder()
         .no_relay()
-        .identity(unique_name("datapod_msg_sub"))
+        .ephemeral()
+        .label(unique_name("datapod_msg_sub"))
         .bind()
         .expect("subscriber node");
 
     let mut pubr = pub_node.publisher::<DatapodMsg>(&topic).unwrap();
     let mut sub = sub_node
-        .subscriber::<DatapodMsg>(pub_identity.as_str(), &topic)
+        .subscriber::<DatapodMsg>(pub_node.endpoint_id(), &topic)
         .unwrap();
 
     let grid = Grid::new(
@@ -213,17 +214,17 @@ fn node_datapod_msg_dynamic_view_reads_builtin_grid_without_callsite_type() {
 
 #[test]
 fn node_req_res_can_exchange_generic_datapod_msg_and_dynamic_views() {
-    let server_identity = unique_name("datapod_req_server");
-    let client_identity = unique_name("datapod_req_client");
     let topic = unique_name("datapod/req");
     let server_node = Node::builder()
         .no_relay()
-        .identity(&server_identity)
+        .ephemeral()
+        .label(unique_name("datapod_req_server"))
         .bind()
         .expect("server node");
     let client_node = Node::builder()
         .no_relay()
-        .identity(client_identity)
+        .ephemeral()
+        .label(unique_name("datapod_req_client"))
         .bind()
         .expect("client node");
 
@@ -269,7 +270,7 @@ fn node_req_res_can_exchange_generic_datapod_msg_and_dynamic_views() {
     );
     let request_wire = datapod::to_wire_message(&request_grid);
     let mut client = client_node
-        .req_client::<DatapodMsg, DatapodMsg>(server_identity.as_str(), &topic)
+        .req_client::<DatapodMsg, DatapodMsg>(server_node.endpoint_id(), &topic)
         .unwrap();
     let res = client
         .call(&DatapodMsg::new(

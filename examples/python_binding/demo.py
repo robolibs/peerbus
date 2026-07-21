@@ -46,9 +46,9 @@ class DemoPod:
 
 def pubsub_demo() -> None:
     print("== pub/sub ==")
-    node = peerbus.Node(identity="py-demo", no_relay=True)
+    node = peerbus.Node(no_relay=True)
     pub = node.publisher("py/topic")
-    sub = node.subscriber("py-demo", "py/topic")
+    sub = node.subscriber(node.endpoint_addr(), "py/topic")
 
     pub.send(b"\xde\xad\xbe\xef", kind=42)
 
@@ -64,7 +64,7 @@ def pubsub_demo() -> None:
 
 def reqres_demo() -> None:
     print("== req/res ==")
-    server_node = peerbus.Node(identity="py-calc", no_relay=True)
+    server_node = peerbus.Node(no_relay=True)
     client_node = peerbus.Node(no_relay=True)
 
     server = server_node.req_server("calc/double")
@@ -91,7 +91,7 @@ def reqres_demo() -> None:
 
 def queans_demo() -> None:
     print("== que/ans ==")
-    server_node = peerbus.Node(identity="py-search", no_relay=True)
+    server_node = peerbus.Node(no_relay=True)
     client_node = peerbus.Node(no_relay=True)
     server = server_node.ans_server("search/range")
 
@@ -103,7 +103,7 @@ def queans_demo() -> None:
 
     t = threading.Thread(target=serve)
     t.start()
-    client = client_node.que_client("py-search", "search/range")
+    client = client_node.que_client(server_node.endpoint_addr(), "search/range")
     answers = client.send(bytes([10, 4]), kind=11)
     print("answers", [(msg.kind, msg.data.hex()) for msg in answers])
     t.join()
@@ -111,7 +111,7 @@ def queans_demo() -> None:
 
 def putack_demo() -> None:
     print("== put/ack ==")
-    server_node = peerbus.Node(identity="py-sink", no_relay=True)
+    server_node = peerbus.Node(no_relay=True)
     client_node = peerbus.Node(no_relay=True)
     server = server_node.ack_server("logs/upload")
 
@@ -124,7 +124,7 @@ def putack_demo() -> None:
 
     t = threading.Thread(target=serve)
     t.start()
-    client = client_node.put_client("py-sink", "logs/upload")
+    client = client_node.put_client(server_node.endpoint_addr(), "logs/upload")
     ack = client.put_message([(1, b"\x01\x02"), (1, b"\x03\x04")])
     print(f"ack kind={ack.kind} total={int.from_bytes(ack.data, 'little')}")
     t.join()
@@ -132,7 +132,7 @@ def putack_demo() -> None:
 
 def pip_demo() -> None:
     print("== pip ==")
-    server_node = peerbus.Node(identity="py-session", no_relay=True)
+    server_node = peerbus.Node(no_relay=True)
     client_node = peerbus.Node(no_relay=True)
     server = server_node.pip_server("session/echo")
 
@@ -144,68 +144,8 @@ def pip_demo() -> None:
 
     t = threading.Thread(target=serve)
     t.start()
-    client = client_node.pip_client("py-session", "session/echo")
+    client = client_node.pip_client(server_node.endpoint_addr(), "session/echo")
     replies = client.exchange([(7, b"\x01\x02"), (8, b"\x03")])
     print("replies", [(msg.kind, msg.data.hex()) for msg in replies])
     t.join()
 
-
-def system_did_demo() -> None:
-    print("== system DID topic-only pub/sub ==")
-    seed = peerbus.Node(no_relay=True)
-    system_did = seed.did_key()
-    pub_node = peerbus.Node(no_relay=True, system_did=system_did)
-    sub_node = peerbus.Node(no_relay=True, system_did=system_did)
-    pub = pub_node.publisher("system/topic", qos=peerbus.TopicQos.latest())
-    sub = sub_node.subscribe("system/topic", qos=peerbus.TopicQos.latest())
-    sub_node.add_topic_route("system/topic", pub_node.endpoint_addr())
-    pub.send(b"hello-system", kind=123)
-    for _ in range(200):
-        msg = sub.take()
-        if msg is not None:
-            print(f"system received kind={msg.kind} data={msg.data!r}")
-            print("pub/sub stats", pub.stats(), sub.stats())
-            break
-        time.sleep(0.005)
-
-
-def datapod_bridge_demo() -> None:
-    print("== datapod bridge helpers ==")
-    node = peerbus.Node(identity="py-pod", no_relay=True)
-
-    pub = node.publisher("pod/topic")
-    sub = node.subscriber("py-pod", "pod/topic")
-    pub.send_pod(DemoPod(1234))
-    for _ in range(200):
-        pod = sub.take_pod(DemoPod)
-        if pod is not None:
-            print("pod pub/sub", pod)
-            break
-        time.sleep(0.005)
-
-    server = node.req_server("pod/double")
-
-    def serve():
-        def handle(kind, data):
-            pod = DemoPod.from_wire_message(kind, data)
-            return DemoPod(pod.value * 2)
-
-        server.serve_one(handle, timeout_ms=3000)
-
-    t = threading.Thread(target=serve)
-    t.start()
-    client = node.req_client("py-pod", "pod/double")
-    doubled = client.call_pod(DemoPod(21), DemoPod)
-    print("pod req/res", doubled)
-    t.join()
-
-
-if __name__ == "__main__":
-    print("peerbus", peerbus.__version__)
-    pubsub_demo()
-    reqres_demo()
-    queans_demo()
-    putack_demo()
-    pip_demo()
-    system_did_demo()
-    datapod_bridge_demo()

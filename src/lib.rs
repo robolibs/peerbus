@@ -19,10 +19,10 @@
 //! #[datapod::datapod]
 //! struct Pose { x: f32, y: f32, yaw: f32 }
 //!
-//! let node = Node::builder().identity("rover-a").no_relay().bind()?;
+//! let node = Node::builder().ephemeral().no_relay().bind()?;
 //!
 //! let mut pubr = node.publisher::<Pose>("rover/pose")?;
-//! let mut sub  = node.subscriber::<Pose>("rover-a", "rover/pose")?;
+//! let mut sub  = node.subscriber::<Pose>(node.endpoint_id(), "rover/pose")?;
 //!
 //! pubr.send(&Pose { x: 1.0, y: 2.0, yaw: 0.1 })?;
 //! if let Some(s) = sub.take()? {
@@ -39,7 +39,6 @@ pub mod async_adapter;
 pub mod chunk;
 pub mod datapod_msg;
 pub mod demo;
-pub mod did_key;
 pub mod error;
 pub mod ffi;
 pub mod local;
@@ -83,8 +82,9 @@ pub use local::{
     QueSample as LocalQueSample, ReplyHandle, Sample,
 };
 pub use node::{
-    AckSample, AckServer, AnsReplyToken, AnsSample, AnsServer, AnsStream, Answers, IntoPeer,
-    ItemStats, Node, NodeBuilder, NodeSample, NodeStats, PathDiagnostic, Peer, PeerPathDiagnostics,
+    AckSample, AckServer, AnsReplyToken, AnsSample, AnsServer, AnsStream, Answers, HostedTopic,
+    IntoPeer, ItemStats, Node, NodeBuilder, NodeSample, NodeStats, PathDiagnostic, Peer,
+    PeerPathDiagnostics, TopicMode,
     PendingPipMessage, PendingPutMessage, PendingQue, PendingQueMessage, PendingReq,
     PendingReqMessage, Pip, PipClient, PipSample, PipServer, PipServerToken, PipSessionToken,
     PipStats, Publisher, PublisherStats, PutAckToken, PutClient, PutSample, PutSender,

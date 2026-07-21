@@ -3,11 +3,12 @@
 //! Run:
 //!
 //! ```bash
-//! cargo run --release --example video_sub -- <did:key:z…>
+//! cargo run --release --example video_sub -- <peer-addr>
 //! ```
 //!
-//! Same command works whether the publisher is on the same host
-//! (local SHM) or another machine (iroh). peerbus picks.
+//! `<peer-addr>` is the hex postcard-encoded `EndpointAddr` printed by
+//! `video_pub`. Same command works whether the publisher is on the same
+//! host (local SHM) or another machine (iroh). peerbus picks.
 
 use std::time::{Duration, Instant};
 
@@ -21,9 +22,10 @@ fn main() -> peerbus::Result<()> {
     init_tracing();
     ensure_wayland_session();
 
-    let did = std::env::args()
+    let peer_arg = std::env::args()
         .nth(1)
-        .expect("usage: video_sub <did:key:z…>");
+        .expect("usage: video_sub <peer-addr>");
+    let peer = decode_peer(&peer_arg).expect("peer arg must be a hex postcard EndpointAddr");
 
     // Big enough for 4K RGBA frames.
     let local_cfg = LocalConfig {
@@ -31,10 +33,10 @@ fn main() -> peerbus::Result<()> {
         subscriber_buffer: 4,
         ..LocalConfig::default()
     };
-    let node = Node::builder().local_config(local_cfg).bind()?;
+    let node = Node::builder().ephemeral().local_config(local_cfg).bind()?;
 
-    println!("subscribing to {did} on '{TOPIC}'  (Esc to quit)");
-    let mut sub = node.subscriber::<DatapodMsg>(did.as_str(), TOPIC)?;
+    println!("subscribing to {} on '{TOPIC}'  (Esc to quit)", peer.id);
+    let mut sub = node.subscriber::<DatapodMsg>(peer, TOPIC)?;
 
     println!("waiting for first frame …");
     let (width, height, first_frame) = loop {
@@ -93,6 +95,18 @@ fn main() -> peerbus::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Decode the hex postcard `EndpointAddr` blob printed by `video_pub`.
+fn decode_peer(s: &str) -> Option<iroh::EndpointAddr> {
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    let bytes: Option<Vec<u8>> = (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect();
+    postcard::from_bytes(&bytes?).ok()
 }
 
 fn ensure_wayland_session() {

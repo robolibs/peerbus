@@ -28,14 +28,9 @@ pub extern "C" fn peerbus_put_client_new_with_qos(
         Ok(t) => t,
         Err(()) => return ptr::null_mut(),
     };
-    let result = match peer {
-        Ok(addr) => node
+    let result = node
             .node
-            .put_client_with_qos::<RawMsg, RawMsg>(addr, topic, qos),
-        Err(name) => node
-            .node
-            .put_client_with_qos::<RawMsg, RawMsg>(name.as_str(), topic, qos),
-    };
+            .put_client_with_qos::<RawMsg, RawMsg>(peer, topic, qos);
     match result {
         Ok(client) => {
             Box::into_raw(Box::new(PeerbusPutClient {
@@ -61,40 +56,6 @@ pub extern "C" fn peerbus_put_client_new(
 })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn peerbus_put_system_client_new_with_qos(
-    node: *const PeerbusNode,
-    topic: *const c_char,
-    qos: PeerbusTopicQos,
-) -> *mut PeerbusPutClient {
-    ffi_guard(ptr::null_mut(), move || {
-    clear_last_error();
-    let qos = match topic_qos_from_c(qos) {
-        Ok(qos) => qos,
-        Err(()) => return ptr::null_mut(),
-    };
-    if node.is_null() {
-        set_last_error("null node handle");
-        return ptr::null_mut();
-    }
-    let node = unsafe { &*node };
-    let topic = match unsafe { cstr(topic) } {
-        Ok(t) => t,
-        Err(()) => return ptr::null_mut(),
-    };
-    match node.node.put_with_qos::<RawMsg, RawMsg>(topic, qos) {
-        Ok(client) => {
-            Box::into_raw(Box::new(PeerbusPutClient {
-                client: Arc::new(Mutex::new(client)),
-            }))
-        }
-        Err(e) => {
-            set_last_error(e.to_string());
-            ptr::null_mut()
-        }
-    }
-})
-}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn peerbus_put_client_free(client: *mut PeerbusPutClient) {

@@ -17,6 +17,9 @@
 //!
 //! Same command works whether the subscriber is on the same host
 //! (local SHM) or another machine (iroh). peerbus picks.
+//!
+//! The publisher prints a hex postcard-encoded `EndpointAddr`; pass that
+//! string to `video_sub` so it can address (and dial) this node.
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -30,7 +33,6 @@ const DEFAULT_HEIGHT: u32 = 720;
 const DEFAULT_FPS: u32 = 15;
 const DEFAULT_SHM_SLOTS: u32 = 32;
 const TOPIC: &str = "demo/video";
-const KEY_PATH: &str = "/tmp/peerbus_video_pub.key";
 
 #[derive(Debug, Clone, Copy)]
 struct VideoSettings {
@@ -84,14 +86,13 @@ fn main() -> peerbus::Result<()> {
     // streams to whatever subscriber shows up (the Rust/Python `video_sub`
     // processes use ephemeral keys, so there is no id to allowlist ahead of
     // time). Trusted-network only — a real deployment would list the
-    // subscribers' ids with `.allow_peer(<did:key or EndpointId>)`.
+    // subscribers' ids with `.allow_peer(<EndpointId>)`.
     let node = Node::builder()
-        .identity_file(KEY_PATH)
+        .ephemeral()
         .allow_any_peer()
         .local_config(local_cfg)
         .bind()?;
 
-    let did = node.endpoint_did_key();
     let raw_mbps = bytes_per_frame as f64 * fps_target as f64 * 8.0 / 1_000_000.0;
     println!("publisher ready: {width}x{height} @ {fps_target} fps");
     println!(
@@ -100,7 +101,7 @@ fn main() -> peerbus::Result<()> {
         raw_mbps
     );
     println!("local SHM slots: {shm_slots}");
-    println!("identity: {did}");
+    println!("endpoint id: {}", node.endpoint_id());
 
     // Wait for iroh to publish at least one transport address.
     // Without this, a remote subscriber dialing immediately would
@@ -113,9 +114,12 @@ fn main() -> peerbus::Result<()> {
         eprintln!("addresses ready, remote subscribers can dial");
     }
 
+    // Hex postcard-encoded `EndpointAddr` — includes the direct addresses
+    // discovered above so a remote subscriber can dial without relay/DNS.
+    let peer_arg = encode_peer(&node.endpoint_addr());
     println!();
     println!("run subscriber:");
-    println!("    cargo run --release --example video_sub -- {did}");
+    println!("    cargo run --release --example video_sub -- {peer_arg}");
     println!();
 
     let qos = TopicQos::latest().with_max_message_bytes(MAX_PAYLOAD_LEN as usize);
@@ -172,6 +176,18 @@ fn main() -> peerbus::Result<()> {
             thread::sleep(rem);
         }
     }
+}
+
+/// Encode an `EndpointAddr` as a hex postcard blob — the peer argument
+/// consumed by `video_sub`.
+fn encode_peer(addr: &iroh::EndpointAddr) -> String {
+    let bytes = postcard::to_stdvec(addr).expect("encode endpoint addr");
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        use std::fmt::Write;
+        let _ = write!(out, "{b:02x}");
+    }
+    out
 }
 
 fn video_settings() -> peerbus::Result<VideoSettings> {

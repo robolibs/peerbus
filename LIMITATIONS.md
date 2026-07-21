@@ -148,33 +148,19 @@ between minor releases.
 
 ## Identity
 
-- **`identity("name")` is impersonable.** The 32-byte Ed25519
-  `SecretKey` is derived deterministically by blake3-hashing the
-  identity string (`derive_secret_from_name` in `node.rs`, domain-
-  separated by the `peerbus/v1/identity` tag). This is not a
-  password-hardened KDF — the identity string *is* the key material,
-  so anyone who knows a peer's identity string can derive its secret
-  key and impersonate it. The same applies to `identity_env`, which
-  reads the string from an environment variable. Fine on a trusted
-  LAN, *not* fine on the open internet. Production deployments on
-  untrusted networks should supply an explicit random key via
-  `identity_file(path)` (32 raw bytes on disk) rather than relying on
-  identity-derived keys. `Node::builder().bind()` emits a `WARN`
-  whenever the key came from `identity` / `identity_env`, so the risk
-  is visible in logs; it is silent for `identity_file` and ephemeral
-  keys.
-- **Named publishers carry a hex-alias mirror.** When a publisher
-  uses `.identity("name")`, the local service is opened under
-  *two* names — the canonical `<name>__<topic>` and an alias
-  `<hex(EndpointId)>__<topic>` — so DID:KEY / bare-EndpointId
-  subscribers can still route locally. Each publish does an extra
-  loan + byte-copy on the alias service; the cost is per-message
-  and scales with payload size. `identity_file` / ephemeral
-  publishers compose by hex directly and pay no alias cost.
-- **`identity_file` stores 32 raw bytes** and sets `0600` on Unix.
-  Mode is enforced on every read; chmod failures (read-only mount,
-  foreign FS) downgrade to a warning so the bind doesn't refuse on
-  pre-existing keys.
+- **peerbus only consumes a key.** `Node::builder()` takes either
+  `.secret_key(sk)` (an explicit ed25519 key) or `.ephemeral()` (a fresh
+  random key). The key's public half is the node's `EndpointId` — the
+  single id used for both iroh dialing and the shared-memory rendezvous
+  name (`<hex(EndpointId)>__<topic>`). peerbus does **not** derive keys
+  from names, load them from files, or persist them; producing, naming,
+  and securing keys is the higher-level crate's responsibility (see
+  `PLAN_HIGHER_CRATE.md`). A caller that derives a key from a guessable
+  string is responsible for the impersonation risk that implies.
+- **Peers are addressed only by id.** `subscriber` / `*_client` take an
+  `EndpointId` or `EndpointAddr`; there is no friendly-name or `did:key`
+  form inside peerbus. The higher-level crate resolves names → ids and
+  then calls in here.
 
 ## Platforms
 

@@ -5,8 +5,7 @@ impl Node {
     ///
     /// A pip session is bidirectional: clients send `ClientMsg`,
     /// servers send `ServerMsg`, and either direction may finish
-    /// independently. In system-DID mode the service and remote route
-    /// are keyed by `(system_did, topic)`.
+    /// independently.
     pub fn pip_server<ClientMsg, ServerMsg>(
         &self,
         topic: &str,
@@ -79,18 +78,6 @@ impl Node {
             server: primary_server,
         });
 
-        if self.inner.system_did.is_none() && self.inner.identity_name.is_some() {
-            let hex_name = service_name(None, self.inner.endpoint_id.as_bytes(), topic);
-            let alias_service = LocalPipService::<ClientMsg, ServerMsg>::open_or_create(
-                &hex_name,
-                self.inner.local_cfg.clone(),
-            )?;
-            let alias_server = alias_service.server()?;
-            local_servers.push(LocalPipServerState {
-                _service: alias_service,
-                server: alias_server,
-            });
-        }
 
         Ok(PipServer {
             inner: self.inner.clone(),
@@ -138,74 +125,7 @@ impl Node {
         let peer = peer.into_peer();
         let peer_bytes: [u8; 32] = *peer.endpoint_id.as_bytes();
 
-        let mut candidates = Vec::with_capacity(2);
-        if peer.name.is_some() {
-            candidates.push(service_name(peer.name.as_deref(), &peer_bytes, topic));
-        }
-        candidates.push(service_name(None, &peer_bytes, topic));
-        for svc_name in candidates {
-            if let Ok(svc) = LocalPipService::<ClientMsg, ServerMsg>::open_existing(&svc_name) {
-                return Ok(PipClient {
-                    source: PipClientSource::Local {
-                        client: svc.client()?,
-                    },
-                    pending_remote_sessions: HashMap::new(),
-                    next_pending_session: 0,
-                });
-            }
-        }
-
-        Ok(PipClient {
-            source: PipClientSource::Remote {
-                inner: self.inner.clone(),
-                peer_id: peer.endpoint_id,
-                addr_hint: peer.addr,
-                topic: topic.to_string(),
-                next_id: AtomicU64::new(0),
-                qos,
-                stats: Arc::new(ItemStatsInner::default()),
-            },
-            pending_remote_sessions: HashMap::new(),
-            next_pending_session: 0,
-        })
-    }
-
-    /// Build a system-DID pip client for `topic`.
-    ///
-    /// Resolution order mirrors [`req`](Self::req): local SHM,
-    /// explicit topic route, then topic-agnostic system peer.
-    pub fn pip<ClientMsg, ServerMsg>(&self, topic: &str) -> Result<PipClient<ClientMsg, ServerMsg>>
-    where
-        ClientMsg: datapod::DataPod + 'static,
-        <ClientMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
-        ServerMsg: datapod::DataPod + 'static,
-        <ServerMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
-    {
-        self.pip_with_qos(topic, TopicQos::default())
-    }
-
-    /// Build a system-DID pip client for `topic` with explicit QoS.
-    pub fn pip_with_qos<ClientMsg, ServerMsg>(
-        &self,
-        topic: &str,
-        qos: TopicQos,
-    ) -> Result<PipClient<ClientMsg, ServerMsg>>
-    where
-        ClientMsg: datapod::DataPod + 'static,
-        <ClientMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
-        ServerMsg: datapod::DataPod + 'static,
-        <ServerMsg as datapod::DataPod>::Header: datapod::LeWireHeader,
-    {
-        validate_topic(topic)?;
-        let route_topic = self.system_route_topic(topic)?;
-        let svc_name = system_service_name(
-            self.inner
-                .system_did
-                .as_deref()
-                .expect("system_route_topic validates presence"),
-            topic,
-        );
-
+        let svc_name = service_name(&peer_bytes, topic);
         if let Ok(svc) = LocalPipService::<ClientMsg, ServerMsg>::open_existing(&svc_name) {
             return Ok(PipClient {
                 source: PipClientSource::Local {
@@ -216,26 +136,12 @@ impl Node {
             });
         }
 
-        let endpoint =
-            crate::trace::recover_poison(self.inner.system_routes.lock(), "Node::system_routes")
-                .get(&route_topic)
-                .cloned()
-                .or_else(|| {
-                    crate::trace::recover_poison(
-                        self.inner.system_peers.lock(),
-                        "Node::system_peers",
-                    )
-                    .first()
-                    .cloned()
-                })
-                .ok_or_else(|| Error::ServiceNotFound(route_topic.clone()))?;
-
         Ok(PipClient {
             source: PipClientSource::Remote {
                 inner: self.inner.clone(),
-                peer_id: endpoint.id,
-                addr_hint: Some(endpoint),
-                topic: route_topic,
+                peer_id: peer.endpoint_id,
+                addr_hint: peer.addr,
+                topic: topic.to_string(),
                 next_id: AtomicU64::new(0),
                 qos,
                 stats: Arc::new(ItemStatsInner::default()),

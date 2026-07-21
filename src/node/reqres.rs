@@ -4,8 +4,7 @@ impl Node {
     /// Serve req/res calls for `topic`.
     ///
     /// The returned server polls both same-host SHM requests and
-    /// remote iroh requests. In system-DID mode the local service and
-    /// remote route are keyed by `(system_did, topic)`.
+    /// remote iroh requests.
     pub fn req_server<Req, Res>(&self, topic: &str) -> Result<ReqServer<Req, Res>>
     where
         Req: datapod::DataPod + 'static,
@@ -79,19 +78,6 @@ impl Node {
             server: primary_server,
         });
 
-        if self.inner.system_did.is_none() && self.inner.identity_name.is_some() {
-            let hex_name = service_name(None, self.inner.endpoint_id.as_bytes(), topic);
-            let alias_service = LocalReqResService::<Req, Res>::open_or_create(
-                &hex_name,
-                self.inner.local_cfg.clone(),
-            )?;
-            let alias_server = alias_service.server()?;
-            local_servers.push(LocalReqServerState {
-                _service: alias_service,
-                server: alias_server,
-            });
-        }
-
         Ok(ReqServer {
             inner: self.inner.clone(),
             route_topic,
@@ -143,67 +129,7 @@ impl Node {
         let peer = peer.into_peer();
         let peer_bytes: [u8; 32] = *peer.endpoint_id.as_bytes();
 
-        let mut candidates = Vec::with_capacity(2);
-        if peer.name.is_some() {
-            candidates.push(service_name(peer.name.as_deref(), &peer_bytes, topic));
-        }
-        candidates.push(service_name(None, &peer_bytes, topic));
-        for svc_name in candidates {
-            if let Ok(svc) = LocalReqResService::<Req, Res>::open_existing(&svc_name) {
-                return Ok(ReqClient {
-                    source: ReqClientSource::Local {
-                        client: svc.client()?,
-                    },
-                });
-            }
-        }
-
-        Ok(ReqClient {
-            source: ReqClientSource::Remote {
-                inner: self.inner.clone(),
-                peer_id: peer.endpoint_id,
-                addr_hint: peer.addr,
-                topic: topic.to_string(),
-                next_id: AtomicU64::new(0),
-                qos,
-                stats: Arc::new(ItemStatsInner::default()),
-            },
-        })
-    }
-
-    /// Build a system-DID req/res client for `topic`.
-    ///
-    /// Resolution order mirrors [`subscribe`](Self::subscribe):
-    /// local SHM first, explicit topic route second, system peer
-    /// fallback third.
-    pub fn req<Req, Res>(&self, topic: &str) -> Result<ReqClient<Req, Res>>
-    where
-        Req: datapod::DataPod + 'static,
-        <Req as datapod::DataPod>::Header: datapod::LeWireHeader,
-        Res: datapod::DataPod + 'static,
-        <Res as datapod::DataPod>::Header: datapod::LeWireHeader,
-    {
-        self.req_with_qos(topic, TopicQos::default())
-    }
-
-    /// Build a system-DID req/res client for `topic` with explicit QoS.
-    pub fn req_with_qos<Req, Res>(&self, topic: &str, qos: TopicQos) -> Result<ReqClient<Req, Res>>
-    where
-        Req: datapod::DataPod + 'static,
-        <Req as datapod::DataPod>::Header: datapod::LeWireHeader,
-        Res: datapod::DataPod + 'static,
-        <Res as datapod::DataPod>::Header: datapod::LeWireHeader,
-    {
-        validate_topic(topic)?;
-        let route_topic = self.system_route_topic(topic)?;
-        let svc_name = system_service_name(
-            self.inner
-                .system_did
-                .as_deref()
-                .expect("system_route_topic validates presence"),
-            topic,
-        );
-
+        let svc_name = service_name(&peer_bytes, topic);
         if let Ok(svc) = LocalReqResService::<Req, Res>::open_existing(&svc_name) {
             return Ok(ReqClient {
                 source: ReqClientSource::Local {
@@ -212,26 +138,12 @@ impl Node {
             });
         }
 
-        let endpoint =
-            crate::trace::recover_poison(self.inner.system_routes.lock(), "Node::system_routes")
-                .get(&route_topic)
-                .cloned()
-                .or_else(|| {
-                    crate::trace::recover_poison(
-                        self.inner.system_peers.lock(),
-                        "Node::system_peers",
-                    )
-                    .first()
-                    .cloned()
-                })
-                .ok_or_else(|| Error::ServiceNotFound(route_topic.clone()))?;
-
         Ok(ReqClient {
             source: ReqClientSource::Remote {
                 inner: self.inner.clone(),
-                peer_id: endpoint.id,
-                addr_hint: Some(endpoint),
-                topic: route_topic,
+                peer_id: peer.endpoint_id,
+                addr_hint: peer.addr,
+                topic: topic.to_string(),
                 next_id: AtomicU64::new(0),
                 qos,
                 stats: Arc::new(ItemStatsInner::default()),

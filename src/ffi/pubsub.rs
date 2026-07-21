@@ -143,12 +143,7 @@ pub extern "C" fn peerbus_subscriber_new_with_qos(
         Ok(t) => t,
         Err(()) => return ptr::null_mut(),
     };
-    let result = match peer {
-        Ok(addr) => node.node.subscriber_with_qos::<RawMsg>(addr, topic, qos),
-        Err(name) => node
-            .node
-            .subscriber_with_qos::<RawMsg>(name.as_str(), topic, qos),
-    };
+    let result = node.node.subscriber_with_qos::<RawMsg>(peer, topic, qos);
     match result {
         Ok(subscriber) => Box::into_raw(Box::new(PeerbusSubscriber { subscriber })),
         Err(e) => {
@@ -159,36 +154,6 @@ pub extern "C" fn peerbus_subscriber_new_with_qos(
 })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn peerbus_subscribe_new_with_qos(
-    node: *const PeerbusNode,
-    topic: *const c_char,
-    qos: PeerbusTopicQos,
-) -> *mut PeerbusSubscriber {
-    ffi_guard(ptr::null_mut(), move || {
-    clear_last_error();
-    let qos = match topic_qos_from_c(qos) {
-        Ok(qos) => qos,
-        Err(()) => return ptr::null_mut(),
-    };
-    if node.is_null() {
-        set_last_error("null node handle");
-        return ptr::null_mut();
-    }
-    let node = unsafe { &*node };
-    let topic = match unsafe { cstr(topic) } {
-        Ok(t) => t,
-        Err(()) => return ptr::null_mut(),
-    };
-    match node.node.subscribe_with_qos::<RawMsg>(topic, qos) {
-        Ok(subscriber) => Box::into_raw(Box::new(PeerbusSubscriber { subscriber })),
-        Err(e) => {
-            set_last_error(e.to_string());
-            ptr::null_mut()
-        }
-    }
-})
-}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn peerbus_subscriber_free(subscriber: *mut PeerbusSubscriber) {
@@ -237,16 +202,6 @@ pub extern "C" fn peerbus_datapod_publisher_new_with_qos(
 })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn peerbus_subscribe_with_qos(
-    node: *const PeerbusNode,
-    topic: *const c_char,
-    qos: PeerbusTopicQos,
-) -> *mut PeerbusSubscriber {
-    ffi_guard(ptr::null_mut(), move || {
-    peerbus_subscribe_new_with_qos(node, topic, qos)
-})
-}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn peerbus_datapod_publisher_free(publisher: *mut PeerbusDatapodPublisher) {
@@ -313,14 +268,9 @@ pub extern "C" fn peerbus_datapod_subscriber_new_with_qos(
         Ok(t) => t,
         Err(()) => return ptr::null_mut(),
     };
-    let result = match peer {
-        Ok(addr) => node
+    let result = node
             .node
-            .subscriber_with_qos::<DatapodMsg>(addr, topic, qos),
-        Err(name) => node
-            .node
-            .subscriber_with_qos::<DatapodMsg>(name.as_str(), topic, qos),
-    };
+            .subscriber_with_qos::<DatapodMsg>(peer, topic, qos);
     match result {
         Ok(subscriber) => Box::into_raw(Box::new(PeerbusDatapodSubscriber { subscriber })),
         Err(e) => {
@@ -331,50 +281,7 @@ pub extern "C" fn peerbus_datapod_subscriber_new_with_qos(
 })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn peerbus_datapod_subscribe_new_with_qos(
-    node: *const PeerbusNode,
-    topic: *const c_char,
-    qos: PeerbusTopicQos,
-) -> *mut PeerbusDatapodSubscriber {
-    ffi_guard(ptr::null_mut(), move || {
-    clear_last_error();
-    let qos = match topic_qos_from_c(qos) {
-        Ok(qos) => qos,
-        Err(()) => return ptr::null_mut(),
-    };
-    if node.is_null() {
-        set_last_error("null node handle");
-        return ptr::null_mut();
-    }
-    let node = unsafe { &*node };
-    let topic = match unsafe { cstr(topic) } {
-        Ok(t) => t,
-        Err(()) => return ptr::null_mut(),
-    };
-    match node
-        .node
-        .subscribe_with_qos::<DatapodMsg>(topic, qos)
-    {
-        Ok(subscriber) => Box::into_raw(Box::new(PeerbusDatapodSubscriber { subscriber })),
-        Err(e) => {
-            set_last_error(e.to_string());
-            ptr::null_mut()
-        }
-    }
-})
-}
 
-#[unsafe(no_mangle)]
-pub extern "C" fn peerbus_datapod_subscribe_with_qos(
-    node: *const PeerbusNode,
-    topic: *const c_char,
-    qos: PeerbusTopicQos,
-) -> *mut PeerbusDatapodSubscriber {
-    ffi_guard(ptr::null_mut(), move || {
-    peerbus_datapod_subscribe_new_with_qos(node, topic, qos)
-})
-}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn peerbus_datapod_subscriber_free(subscriber: *mut PeerbusDatapodSubscriber) {
