@@ -17,6 +17,7 @@ pub extern "C" fn peerbus_node_new(secret_key: *const u8, no_relay: bool) -> *mu
     let cfg = PeerbusNodeConfig {
         secret_key,
         no_relay,
+        skip_shm: false,
         allowed_peers: ptr::null(),
         allowed_peers_len: 0,
         allow_any_peer: false,
@@ -38,6 +39,7 @@ pub extern "C" fn peerbus_node_config_default() -> PeerbusNodeConfig {
     PeerbusNodeConfig {
         secret_key: ptr::null(),
         no_relay: false,
+        skip_shm: false,
         allowed_peers: ptr::null(),
         allowed_peers_len: 0,
         allow_any_peer: false,
@@ -395,4 +397,3 @@ pub extern "C" fn peerbus_topic_qos_latest() -> PeerbusTopicQos {
 pub extern "C" fn peerbus_topic_qos_best_effort() -> PeerbusTopicQos {
     TopicQos::best_effort().into()
 }
-

@@ -79,16 +79,18 @@ impl Node {
         }
 
         let mut local_servers = Vec::new();
-        let primary_name = self.primary_service_name(topic)?;
-        let primary_service = LocalPutAckService::<Put, Ack>::open_or_create(
-            &primary_name,
-            self.inner.local_cfg.clone(),
-        )?;
-        let primary_server = primary_service.server()?;
-        local_servers.push(LocalAckServerState {
-            _service: primary_service,
-            server: primary_server,
-        });
+        if !self.inner.skip_shm {
+            let primary_name = self.primary_service_name(topic)?;
+            let primary_service = LocalPutAckService::<Put, Ack>::open_or_create(
+                &primary_name,
+                self.inner.local_cfg.clone(),
+            )?;
+            let primary_server = primary_service.server()?;
+            local_servers.push(LocalAckServerState {
+                _service: primary_service,
+                server: primary_server,
+            });
+        }
 
         Ok(AckServer {
             inner: self.inner.clone(),
@@ -136,15 +138,17 @@ impl Node {
         let peer = peer.into_peer();
         let peer_bytes: [u8; 32] = *peer.endpoint_id.as_bytes();
 
-        let svc_name = service_name(&peer_bytes, topic);
-        if let Ok(svc) = LocalPutAckService::<Put, Ack>::open_existing(&svc_name) {
-            return Ok(PutClient {
-                source: PutClientSource::Local {
-                    client: svc.client()?,
-                },
-                pending_remote_uploads: HashMap::new(),
-                next_pending_upload: 0,
-            });
+        if !self.inner.skip_shm {
+            let svc_name = service_name(&peer_bytes, topic);
+            if let Ok(svc) = LocalPutAckService::<Put, Ack>::open_existing(&svc_name) {
+                return Ok(PutClient {
+                    source: PutClientSource::Local {
+                        client: svc.client()?,
+                    },
+                    pending_remote_uploads: HashMap::new(),
+                    next_pending_upload: 0,
+                });
+            }
         }
 
         Ok(PutClient {

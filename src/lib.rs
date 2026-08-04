@@ -99,4 +99,5 @@ pub use remote::{
     RemoteTransportBuilder,
 };
 pub use reqres::Envelope;
-pub use transport::{LocalPayload, PublisherOps, SubscriberOps, Transport};
+pub use iroh::{EndpointId, SecretKey};
+pub use transport::{wire_type_hash, LocalPayload, PublisherOps, SubscriberOps, Transport};

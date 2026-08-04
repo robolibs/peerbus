@@ -65,13 +65,21 @@ impl Node {
             )
         };
 
-        let svc_name = self.primary_service_name(topic)?;
-        let service = LocalService::<T>::open_or_create(&svc_name, self.inner.local_cfg.clone())?;
-        let local_publisher = service.publisher()?;
+        let (local_publisher, local_service) = if self.inner.skip_shm {
+            (None, None)
+        } else {
+            let svc_name = self.primary_service_name(topic)?;
+            let service = LocalService::<T>::open_or_create(
+                &svc_name,
+                self.inner.local_cfg.clone(),
+            )?;
+            let publisher = service.publisher()?;
+            (Some(publisher), Some(service))
+        };
 
         Ok(Publisher {
             local_publisher,
-            _local_service: service,
+            _local_service: local_service,
             iroh_tx,
             qos,
             published,
@@ -115,21 +123,23 @@ impl Node {
         // Probe local shared memory first, keyed solely by the peer id +
         // topic. `open_existing` returns Err if no publisher created that
         // segment on this host, in which case the peer is remote → dial it.
-        let svc_name = service_name(&peer_bytes, topic);
-        if let Ok(svc) = LocalService::<T>::open_existing(&svc_name) {
-            let local_sub = svc.subscriber()?;
-            return Ok(Subscriber {
-                source: SubscriberSource::Local {
-                    sub: local_sub,
-                    qos: _qos,
-                    _svc: svc,
-                },
-                received: Arc::new(AtomicU64::new(0)),
-                disconnects: Arc::new(AtomicU64::new(0)),
-                stale_dropped: Arc::new(AtomicU64::new(0)),
-                incomplete_dropped: Arc::new(AtomicU64::new(0)),
-                bytes_received: Arc::new(AtomicU64::new(0)),
-            });
+        if !self.inner.skip_shm {
+            let svc_name = service_name(&peer_bytes, topic);
+            if let Ok(svc) = LocalService::<T>::open_existing(&svc_name) {
+                let local_sub = svc.subscriber()?;
+                return Ok(Subscriber {
+                    source: SubscriberSource::Local {
+                        sub: local_sub,
+                        qos: _qos,
+                        _svc: svc,
+                    },
+                    received: Arc::new(AtomicU64::new(0)),
+                    disconnects: Arc::new(AtomicU64::new(0)),
+                    stale_dropped: Arc::new(AtomicU64::new(0)),
+                    incomplete_dropped: Arc::new(AtomicU64::new(0)),
+                    bytes_received: Arc::new(AtomicU64::new(0)),
+                });
+            }
         }
 
         self.remote_subscriber::<T>(peer.endpoint_id, peer.addr.clone(), topic.to_string(), _qos)
@@ -342,8 +352,8 @@ impl ItemStatsInner {
 }
 
 pub struct Publisher<T: datapod::DataPod + 'static> {
-    pub(crate) local_publisher: LocalPublisher<T>,
-    pub(crate) _local_service: LocalService<T>,
+    pub(crate) local_publisher: Option<LocalPublisher<T>>,
+    pub(crate) _local_service: Option<LocalService<T>>,
     pub(crate) iroh_tx: broadcast::Sender<Vec<u8>>,
     pub(crate) qos: TopicQos,
     pub(crate) published: Arc<AtomicU64>,
@@ -359,7 +369,10 @@ impl<T: datapod::DataPod + 'static> Publisher<T> {
     /// For fixed-Pod `T` pass `0`; for heap-bearing `T` pass the
     /// expected byte length of the cast payload.
     pub fn loan(&mut self, byte_count: usize) -> Result<Loan<T>> {
-        self.local_publisher.loan(byte_count)
+        match &mut self.local_publisher {
+            Some(local) => local.loan(byte_count),
+            None => Ok(Loan::owned(byte_count)),
+        }
     }
 
     pub fn publish(&mut self, loan: Loan<T>) -> Result<u64> {
@@ -376,12 +389,15 @@ impl<T: datapod::DataPod + 'static> Publisher<T> {
                 capacity: self.qos.max_message_bytes,
             });
         }
-        let seq = self.local_publisher.publish(loan)?;
+        let seq = match &mut self.local_publisher {
+            Some(local) => Some(local.publish(loan)?),
+            None => None,
+        };
         if self.iroh_tx.send(frame).is_err() {
             self.remote_dropped.fetch_add(1, Ordering::Relaxed);
         }
-        self.published.fetch_add(1, Ordering::Relaxed);
-        Ok(seq)
+        let published_seq = self.published.fetch_add(1, Ordering::Relaxed) + 1;
+        Ok(seq.unwrap_or(published_seq))
     }
 
     /// Convenience: build header + bytes from `value` and publish.

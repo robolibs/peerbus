@@ -11,6 +11,10 @@ pub struct NodeBuilder {
     pub(crate) label: Option<String>,
     pub(crate) alpn: Vec<u8>,
     pub(crate) no_relay: bool,
+    /// Disable the local shared-memory fast path completely. Publishers and
+    /// servers do not create SHM services, and subscribers and clients always
+    /// dial the addressed peer through iroh, including same-host peers.
+    pub(crate) skip_shm: bool,
     pub(crate) local_cfg: LocalConfig,
     /// Allowlist of peers permitted to open inbound connections.
     /// `None` means "no allowlist configured", which — unless
@@ -119,6 +123,18 @@ impl NodeBuilder {
         self
     }
 
+    /// Disable shared memory for this node and force all messaging through
+    /// iroh, even when the addressed peer is on the same host.
+    ///
+    /// This is useful for exercising the real iroh path in local tests and for
+    /// applications that require transport behavior to be independent of
+    /// host locality. Publishers and servers created by this node do not
+    /// create SHM services; subscribers and clients do not probe for them.
+    pub fn skip_shm(mut self) -> Self {
+        self.skip_shm = true;
+        self
+    }
+
     /// Tune the default local SHM QoS used for publishers / subscribers
     /// this node creates. Per-`publisher`/`subscriber` overrides are
     /// not exposed yet.
@@ -145,6 +161,7 @@ impl NodeBuilder {
         let label = self.label;
         let alpn = self.alpn.clone();
         let no_relay = self.no_relay;
+        let skip_shm = self.skip_shm;
 
         let endpoint: Endpoint = {
             const BIND_ATTEMPTS: usize = 80;
@@ -197,6 +214,7 @@ impl NodeBuilder {
             endpoint_id = %endpoint_id,
             label = label.as_deref().unwrap_or("<none>"),
             no_relay,
+            skip_shm,
             "node bound"
         );
 
@@ -218,6 +236,7 @@ impl NodeBuilder {
             label,
             alpn: self.alpn,
             local_cfg: self.local_cfg,
+            skip_shm,
             publisher_topics: Mutex::new(HashMap::new()),
             request_topics: Mutex::new(HashMap::new()),
             que_topics: Mutex::new(HashMap::new()),

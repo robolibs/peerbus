@@ -20,6 +20,8 @@ pub struct PeerbusNodeConfig {
     /// persisting one is the higher-level crate's job.
     pub secret_key: *const u8,
     pub no_relay: bool,
+    /// Disable SHM creation and probing; force same-host traffic over iroh.
+    pub skip_shm: bool,
     pub allowed_peers: *const *const c_char,
     pub allowed_peers_len: usize,
     /// Accept connections from ANY peer that knows the ALPN. Insecure;
@@ -436,4 +438,3 @@ pub type PeerbusPipHandler = Option<
         responder: *mut PeerbusMessageResponder,
     ),
 >;
-

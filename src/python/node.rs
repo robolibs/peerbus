@@ -11,6 +11,7 @@ impl PyNode {
     #[pyo3(signature = (
         secret_key=None,
         no_relay=false,
+        skip_shm=false,
         label=None,
         max_payload_bytes=None,
         history_depth=None,
@@ -24,6 +25,7 @@ impl PyNode {
     fn new(
         secret_key: Option<Vec<u8>>,
         no_relay: bool,
+        skip_shm: bool,
         label: Option<String>,
         max_payload_bytes: Option<usize>,
         history_depth: Option<u32>,
@@ -56,6 +58,9 @@ impl PyNode {
         }
         if no_relay {
             builder = builder.no_relay();
+        }
+        if skip_shm {
+            builder = builder.skip_shm();
         }
         if let Some(peers) = allowed_peers {
             for peer in peers {
@@ -438,4 +443,3 @@ impl PyNode {
         })
     }
 }
-

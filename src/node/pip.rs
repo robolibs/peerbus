@@ -67,16 +67,18 @@ impl Node {
         }
 
         let mut local_servers = Vec::new();
-        let primary_name = self.primary_service_name(topic)?;
-        let primary_service = LocalPipService::<ClientMsg, ServerMsg>::open_or_create(
-            &primary_name,
-            self.inner.local_cfg.clone(),
-        )?;
-        let primary_server = primary_service.server()?;
-        local_servers.push(LocalPipServerState {
-            _service: primary_service,
-            server: primary_server,
-        });
+        if !self.inner.skip_shm {
+            let primary_name = self.primary_service_name(topic)?;
+            let primary_service = LocalPipService::<ClientMsg, ServerMsg>::open_or_create(
+                &primary_name,
+                self.inner.local_cfg.clone(),
+            )?;
+            let primary_server = primary_service.server()?;
+            local_servers.push(LocalPipServerState {
+                _service: primary_service,
+                server: primary_server,
+            });
+        }
 
 
         Ok(PipServer {
@@ -125,15 +127,17 @@ impl Node {
         let peer = peer.into_peer();
         let peer_bytes: [u8; 32] = *peer.endpoint_id.as_bytes();
 
-        let svc_name = service_name(&peer_bytes, topic);
-        if let Ok(svc) = LocalPipService::<ClientMsg, ServerMsg>::open_existing(&svc_name) {
-            return Ok(PipClient {
-                source: PipClientSource::Local {
-                    client: svc.client()?,
-                },
-                pending_remote_sessions: HashMap::new(),
-                next_pending_session: 0,
-            });
+        if !self.inner.skip_shm {
+            let svc_name = service_name(&peer_bytes, topic);
+            if let Ok(svc) = LocalPipService::<ClientMsg, ServerMsg>::open_existing(&svc_name) {
+                return Ok(PipClient {
+                    source: PipClientSource::Local {
+                        client: svc.client()?,
+                    },
+                    pending_remote_sessions: HashMap::new(),
+                    next_pending_session: 0,
+                });
+            }
         }
 
         Ok(PipClient {

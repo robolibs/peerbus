@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use crate::error::Result;
-use crate::local::handle::{Loan, Sample};
+use crate::local::handle::{Loan, LoanInner, Sample};
 use crate::local::shm::{Consumer, Producer, Segment};
 use crate::transport::wire_type_hash;
 
@@ -104,13 +104,18 @@ impl<T: datapod::DataPod + 'static> LocalPublisher<T> {
     /// header and payload bytes are zero-initialised.
     pub fn loan(&mut self, byte_count: usize) -> Result<Loan<T>> {
         Ok(Loan {
-            inner: self.inner.loan(byte_count)?,
+            inner: LoanInner::Shm(self.inner.loan(byte_count)?),
         })
     }
 
     /// Hand the loan back to the publisher.
     pub fn publish(&mut self, loan: Loan<T>) -> Result<u64> {
-        self.inner.publish(loan.inner)
+        match loan.inner {
+            LoanInner::Shm(inner) => self.inner.publish(inner),
+            LoanInner::Owned { .. } => Err(crate::Error::invalid_argument(
+                "an owned iroh loan cannot be published by LocalPublisher",
+            )),
+        }
     }
 
     /// Convenience: build header + bytes from a `&T` and send.

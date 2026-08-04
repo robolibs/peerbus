@@ -162,6 +162,21 @@ The high-level `Node` API chooses local SHM first and falls back to
 iroh, matching pub/sub routing. Lower-level `LocalReqResService` and
 `RemoteTransport` req/res APIs remain available for advanced use.
 
+To force the iroh path even when both peers are on the same host, build the
+node with `skip_shm()`:
+
+```rust
+let node = Node::builder()
+    .ephemeral()
+    .skip_shm()
+    .bind()?;
+```
+
+Such a node never creates SHM services and never probes for them. Its
+publishers, subscribers, and all request-mode servers/clients use iroh only.
+The same option is exposed as `Node(skip_shm=True)` in Python and as
+`PeerbusNodeConfig.skip_shm` in the C ABI.
+
 ## Que/ans
 
 For one query that returns zero or more finite answers, use `que/ans`:

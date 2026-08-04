@@ -1309,6 +1309,7 @@ fn c_abi_endpoint_addr_peer_and_stats_round_trip() {
     let server_cfg = PeerbusNodeConfig {
         secret_key: ptr::null(),
         no_relay: true,
+        skip_shm: false,
         allowed_peers: allowed_peers.as_ptr(),
         allowed_peers_len: allowed_peers.len(),
         allow_any_peer: false,

@@ -67,16 +67,18 @@ impl Node {
         }
 
         let mut local_servers = Vec::new();
-        let primary_name = self.primary_service_name(topic)?;
-        let primary_service = LocalReqResService::<Req, Res>::open_or_create(
-            &primary_name,
-            self.inner.local_cfg.clone(),
-        )?;
-        let primary_server = primary_service.server()?;
-        local_servers.push(LocalReqServerState {
-            _service: primary_service,
-            server: primary_server,
-        });
+        if !self.inner.skip_shm {
+            let primary_name = self.primary_service_name(topic)?;
+            let primary_service = LocalReqResService::<Req, Res>::open_or_create(
+                &primary_name,
+                self.inner.local_cfg.clone(),
+            )?;
+            let primary_server = primary_service.server()?;
+            local_servers.push(LocalReqServerState {
+                _service: primary_service,
+                server: primary_server,
+            });
+        }
 
         Ok(ReqServer {
             inner: self.inner.clone(),
@@ -129,13 +131,15 @@ impl Node {
         let peer = peer.into_peer();
         let peer_bytes: [u8; 32] = *peer.endpoint_id.as_bytes();
 
-        let svc_name = service_name(&peer_bytes, topic);
-        if let Ok(svc) = LocalReqResService::<Req, Res>::open_existing(&svc_name) {
-            return Ok(ReqClient {
-                source: ReqClientSource::Local {
-                    client: svc.client()?,
-                },
-            });
+        if !self.inner.skip_shm {
+            let svc_name = service_name(&peer_bytes, topic);
+            if let Ok(svc) = LocalReqResService::<Req, Res>::open_existing(&svc_name) {
+                return Ok(ReqClient {
+                    source: ReqClientSource::Local {
+                        client: svc.client()?,
+                    },
+                });
+            }
         }
 
         Ok(ReqClient {

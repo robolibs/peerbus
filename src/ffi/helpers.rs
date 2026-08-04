@@ -204,6 +204,9 @@ pub(crate) fn build_node_from_config(cfg: PeerbusNodeConfig) -> Result<Node, ()>
     if cfg.no_relay {
         builder = builder.no_relay();
     }
+    if cfg.skip_shm {
+        builder = builder.skip_shm();
+    }
     if cfg.allowed_peers_len != 0 {
         if cfg.allowed_peers.is_null() {
             set_last_error("allowed_peers is null but allowed_peers_len is non-zero");
@@ -247,4 +250,3 @@ pub(crate) fn build_node_from_config(cfg: PeerbusNodeConfig) -> Result<Node, ()>
         set_last_error(e.to_string());
     })
 }
-

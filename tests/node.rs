@@ -11,7 +11,7 @@
 use std::time::{Duration, Instant};
 
 use peerbus::transport::{PublisherOps, SubscriberOps};
-use peerbus::{LocalConfig, Node, RemoteTransport, TopicQos, Transport};
+use peerbus::{LocalConfig, LocalService, Node, RemoteTransport, TopicQos, Transport};
 
 static NODE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -1296,6 +1296,64 @@ fn node_best_effort_pubsub_uses_datagram_path_when_available() {
     assert_eq!(got.payload, 44_004);
     assert!(pubr.stats().bytes_sent > 0);
     assert!(sub.stats().bytes_received > 0);
+}
+
+#[test]
+fn skip_shm_forces_same_host_pubsub_through_iroh_without_creating_a_segment() {
+    let _guard = node_test_guard();
+    let topic = unique_name("interop/skip_shm");
+
+    let sub_node = Node::builder()
+        .no_relay()
+        .skip_shm()
+        .ephemeral()
+        .bind()
+        .expect("subscriber node");
+    let pub_node = Node::builder()
+        .no_relay()
+        .skip_shm()
+        .ephemeral()
+        .allow_peer(sub_node.endpoint_id())
+        .bind()
+        .expect("publisher node");
+    pub_node
+        .wait_for_direct_addresses(Duration::from_secs(5))
+        .expect("publisher addresses");
+
+    let mut pubr = pub_node.publisher::<Tick>(&topic).expect("publisher");
+    let service = peerbus::node::service_name(pub_node.endpoint_id().as_bytes(), &topic);
+    assert!(
+        LocalService::<Tick>::open_existing(&service).is_err(),
+        "skip_shm publisher must not create a local SHM service"
+    );
+
+    let mut sub = sub_node
+        .subscriber::<Tick>(pub_node.endpoint_addr(), &topic)
+        .expect("iroh subscriber");
+
+    // Exercise the loan/publish API too: skip_shm loans are owned buffers,
+    // not shared-memory slots.
+    let mut loan = pubr.loan(0).expect("owned loan");
+    *loan.header_mut() = Tick {
+        seq: 1,
+        payload: 55_005,
+    };
+    pubr.publish(loan).expect("publish over iroh");
+
+    let got = poll_for(Duration::from_secs(5), || {
+        pubr.send(&Tick {
+            seq: 2,
+            payload: 55_005,
+        })
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        sub.take().unwrap().map(|sample| *sample.header())
+    })
+    .expect("same-host iroh subscriber should receive");
+
+    assert_eq!(got.payload, 55_005);
+    assert!(pubr.stats().bytes_sent > 0, "publisher must use iroh");
+    assert!(sub.stats().bytes_received > 0, "subscriber must use iroh");
 }
 
 #[test]

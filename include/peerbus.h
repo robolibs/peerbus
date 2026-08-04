@@ -287,6 +287,10 @@ typedef struct {
    */
   const uint8_t *secret_key;
   bool no_relay;
+  /**
+   * Disable SHM creation and probing; force same-host traffic over iroh.
+   */
+  bool skip_shm;
   const char *const *allowed_peers;
   uintptr_t allowed_peers_len;
   /**

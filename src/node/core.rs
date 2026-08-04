@@ -40,6 +40,8 @@ pub(crate) struct NodeInner {
     pub(crate) label: Option<String>,
     pub(crate) alpn: Vec<u8>,
     pub(crate) local_cfg: LocalConfig,
+    /// When true, this node never creates or probes local SHM services.
+    pub(crate) skip_shm: bool,
     pub(crate) publisher_topics: Mutex<HashMap<String, PublisherTopicState>>,
     pub(crate) request_topics: Mutex<HashMap<String, RequestTopicState>>,
     pub(crate) que_topics: Mutex<HashMap<String, QueTopicState>>,
@@ -205,6 +207,7 @@ impl Node {
             label: None,
             alpn: DEFAULT_ALPN.to_vec(),
             no_relay: false,
+            skip_shm: false,
             local_cfg: LocalConfig::default(),
             allowed_peers: None,
             allow_any_peer: false,
