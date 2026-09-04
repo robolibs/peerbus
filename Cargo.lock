@@ -143,7 +143,7 @@ dependencies = [
 [[package]]
 name = "authbox"
 version = "0.1.0"
-source = "git+https://codeberg.org/robolibs/authbox.git?tag=0.1.0#ffbb800de5f1785c5aef90fca1d3ebd12f6f6541"
+source = "git+https://codeberg.org/robolibs/authbox.git?tag=0.1.1#247b32343d2404798c464fc48270964341a30dc1"
 dependencies = [
  "base64ct",
  "bs58",
@@ -2164,7 +2164,7 @@ dependencies = [
 [[package]]
 name = "keylock"
 version = "0.1.0"
-source = "git+https://codeberg.org/robolibs/keylock.git?tag=0.1.0#3b7dbcecd7fd952371684d5e0520c7471fe73625"
+source = "git+https://codeberg.org/robolibs/keylock.git?tag=0.1.1#559a27eddfb3d173399d45b1f2b989356d567fff"
 dependencies = [
  "aes",
  "aes-gcm",

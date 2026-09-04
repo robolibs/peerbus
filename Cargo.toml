@@ -67,7 +67,7 @@ iroh = "1.0.0-rc.0"
 # authbox — DID:KEY encode/parse for ed25519 EndpointIds, so peers
 # can be addressed as `did:key:z6Mk…` strings interchangeably with
 # iroh's native base32 form.
-authbox = { git = "https://codeberg.org/robolibs/authbox.git", tag = "0.1.0" }
+authbox = { git = "https://codeberg.org/robolibs/authbox.git", tag = "0.1.1" }
 # blake3 — derive deterministic SecretKeys from human-readable
 # identity strings.
 blake3 = { version = "1", default-features = false }
