@@ -89,7 +89,7 @@ where
         Ok(Self {
             requests,
             responses,
-            next_id: Arc::new(AtomicU64::new(0)),
+            next_id: Arc::new(AtomicU64::new(crate::local::seed_id())),
         })
     }
 
@@ -107,7 +107,7 @@ where
         Ok(Self {
             requests,
             responses,
-            next_id: Arc::new(AtomicU64::new(0)),
+            next_id: Arc::new(AtomicU64::new(crate::local::seed_id())),
         })
     }
 

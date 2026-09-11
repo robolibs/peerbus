@@ -75,7 +75,7 @@ where
                 cfg.clone(),
             )?,
             s2c: MsgService::<ServerMsg>::open_or_create(&with_suffix(name, S2C_SUFFIX), cfg)?,
-            next_id: Arc::new(AtomicU64::new(0)),
+            next_id: Arc::new(AtomicU64::new(crate::local::seed_id())),
         })
     }
 
@@ -83,7 +83,7 @@ where
         Ok(Self {
             c2s: MsgService::<ClientMsg>::open_existing(&with_suffix(name, C2S_SUFFIX))?,
             s2c: MsgService::<ServerMsg>::open_existing(&with_suffix(name, S2C_SUFFIX))?,
-            next_id: Arc::new(AtomicU64::new(0)),
+            next_id: Arc::new(AtomicU64::new(crate::local::seed_id())),
         })
     }
 
