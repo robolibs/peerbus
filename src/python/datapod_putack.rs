@@ -1,8 +1,16 @@
 use super::*;
 
-#[pyclass(name = "DatapodPutClient")]
+#[pyclass(name = "DatapodPutClient", subclass)]
 pub struct PyDatapodPutClient {
     pub(crate) client: Arc<Mutex<PutClient<DatapodMsg, DatapodMsg>>>,
+}
+
+impl From<PutClient<DatapodMsg, DatapodMsg>> for PyDatapodPutClient {
+    fn from(client: PutClient<DatapodMsg, DatapodMsg>) -> Self {
+        Self {
+            client: Arc::new(Mutex::new(client)),
+        }
+    }
 }
 
 #[pyclass(name = "DatapodPutUpload")]
@@ -157,9 +165,17 @@ impl PyDatapodPutUpload {
     }
 }
 
-#[pyclass(name = "DatapodAckServer")]
+#[pyclass(name = "DatapodAckServer", subclass)]
 pub struct PyDatapodAckServer {
     pub(crate) server: Arc<Mutex<AckServer<DatapodMsg, DatapodMsg>>>,
+}
+
+impl From<AckServer<DatapodMsg, DatapodMsg>> for PyDatapodAckServer {
+    fn from(server: AckServer<DatapodMsg, DatapodMsg>) -> Self {
+        Self {
+            server: Arc::new(Mutex::new(server)),
+        }
+    }
 }
 
 pub(crate) struct PendingDatapodPutState {
@@ -404,7 +420,9 @@ impl PyPendingDatapodPut {
         let len = self.items.len() as isize;
         let index = if index < 0 { len + index } else { index };
         if index < 0 || index >= len {
-            return Err(PyIndexError::new_err("PendingDatapodPut index out of range"));
+            return Err(PyIndexError::new_err(
+                "PendingDatapodPut index out of range",
+            ));
         }
         Ok(self.items[index as usize].clone())
     }
@@ -439,4 +457,3 @@ impl PyPendingDatapodPut {
         })
     }
 }
-

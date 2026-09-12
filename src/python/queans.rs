@@ -1,8 +1,14 @@
 use super::*;
 
-#[pyclass(name = "DatapodQueClient")]
+#[pyclass(name = "DatapodQueClient", subclass)]
 pub struct PyDatapodQueClient {
     pub(crate) client: QueClient<DatapodMsg, DatapodMsg>,
+}
+
+impl From<QueClient<DatapodMsg, DatapodMsg>> for PyDatapodQueClient {
+    fn from(client: QueClient<DatapodMsg, DatapodMsg>) -> Self {
+        Self { client }
+    }
 }
 
 #[pymethods]
@@ -65,9 +71,17 @@ impl PyDatapodQueClient {
     }
 }
 
-#[pyclass(name = "DatapodAnsServer")]
+#[pyclass(name = "DatapodAnsServer", subclass)]
 pub struct PyDatapodAnsServer {
     pub(crate) server: Arc<Mutex<AnsServer<DatapodMsg, DatapodMsg>>>,
+}
+
+impl From<AnsServer<DatapodMsg, DatapodMsg>> for PyDatapodAnsServer {
+    fn from(server: AnsServer<DatapodMsg, DatapodMsg>) -> Self {
+        Self {
+            server: Arc::new(Mutex::new(server)),
+        }
+    }
 }
 
 #[pyclass(name = "PendingDatapodQue")]
@@ -571,4 +585,3 @@ impl PyPendingAnswers {
         })
     }
 }
-

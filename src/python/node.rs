@@ -1,8 +1,14 @@
 use super::*;
 
-#[pyclass(name = "Node")]
+#[pyclass(name = "Node", subclass)]
 pub struct PyNode {
     pub(crate) node: Node,
+}
+
+impl From<Node> for PyNode {
+    fn from(node: Node) -> Self {
+        Self { node }
+    }
 }
 
 #[pymethods]
@@ -189,8 +195,10 @@ impl PyNode {
     ) -> PyResult<PySubscriber> {
         let qos = qos_value(qos);
         let addr = decode_endpoint_addr(peer)?;
-        let subscriber = self.node.subscriber_with_qos::<RawMsg>(addr, topic, qos)
-        .map_err(py_err)?;
+        let subscriber = self
+            .node
+            .subscriber_with_qos::<RawMsg>(addr, topic, qos)
+            .map_err(py_err)?;
         Ok(PySubscriber { subscriber })
     }
 
@@ -205,9 +213,10 @@ impl PyNode {
     ) -> PyResult<PyDatapodSubscriber> {
         let qos = qos_value(qos);
         let addr = decode_endpoint_addr(peer)?;
-        let subscriber = self.node
-                .subscriber_with_qos::<DatapodMsg>(addr, topic, qos)
-        .map_err(py_err)?;
+        let subscriber = self
+            .node
+            .subscriber_with_qos::<DatapodMsg>(addr, topic, qos)
+            .map_err(py_err)?;
         Ok(PyDatapodSubscriber { subscriber })
     }
 
@@ -220,9 +229,10 @@ impl PyNode {
     ) -> PyResult<PyReqClient> {
         let qos = qos_value(qos);
         let addr = decode_endpoint_addr(peer)?;
-        let client = self.node
-                .req_client_with_qos::<RawMsg, RawMsg>(addr, topic, qos)
-        .map_err(py_err)?;
+        let client = self
+            .node
+            .req_client_with_qos::<RawMsg, RawMsg>(addr, topic, qos)
+            .map_err(py_err)?;
         Ok(PyReqClient { client })
     }
 
@@ -246,9 +256,10 @@ impl PyNode {
     ) -> PyResult<PyDatapodReqClient> {
         let qos = qos_value(qos);
         let addr = decode_endpoint_addr(peer)?;
-        let client = self.node
-                .req_client_with_qos::<DatapodMsg, DatapodMsg>(addr, topic, qos)
-        .map_err(py_err)?;
+        let client = self
+            .node
+            .req_client_with_qos::<DatapodMsg, DatapodMsg>(addr, topic, qos)
+            .map_err(py_err)?;
         Ok(PyDatapodReqClient { client })
     }
 
@@ -276,9 +287,10 @@ impl PyNode {
     ) -> PyResult<PyDatapodQueClient> {
         let qos = qos_value(qos);
         let addr = decode_endpoint_addr(peer)?;
-        let client = self.node
-                .que_client_with_qos::<DatapodMsg, DatapodMsg>(addr, topic, qos)
-        .map_err(py_err)?;
+        let client = self
+            .node
+            .que_client_with_qos::<DatapodMsg, DatapodMsg>(addr, topic, qos)
+            .map_err(py_err)?;
         Ok(PyDatapodQueClient { client })
     }
 
@@ -306,9 +318,10 @@ impl PyNode {
     ) -> PyResult<PyQueClient> {
         let qos = qos_value(qos);
         let addr = decode_endpoint_addr(peer)?;
-        let client = self.node
-                .que_client_with_qos::<RawMsg, RawMsg>(addr, topic, qos)
-        .map_err(py_err)?;
+        let client = self
+            .node
+            .que_client_with_qos::<RawMsg, RawMsg>(addr, topic, qos)
+            .map_err(py_err)?;
         Ok(PyQueClient { client })
     }
 
@@ -332,9 +345,10 @@ impl PyNode {
     ) -> PyResult<PyPutClient> {
         let qos = qos_value(qos);
         let addr = decode_endpoint_addr(peer)?;
-        let client = self.node
-                .put_client_with_qos::<RawMsg, RawMsg>(addr, topic, qos)
-        .map_err(py_err)?;
+        let client = self
+            .node
+            .put_client_with_qos::<RawMsg, RawMsg>(addr, topic, qos)
+            .map_err(py_err)?;
         Ok(PyPutClient {
             client: Arc::new(Mutex::new(client)),
         })
@@ -360,9 +374,10 @@ impl PyNode {
     ) -> PyResult<PyDatapodPutClient> {
         let qos = qos_value(qos);
         let addr = decode_endpoint_addr(peer)?;
-        let client = self.node
-                .put_client_with_qos::<DatapodMsg, DatapodMsg>(addr, topic, qos)
-        .map_err(py_err)?;
+        let client = self
+            .node
+            .put_client_with_qos::<DatapodMsg, DatapodMsg>(addr, topic, qos)
+            .map_err(py_err)?;
         Ok(PyDatapodPutClient {
             client: Arc::new(Mutex::new(client)),
         })
@@ -392,9 +407,10 @@ impl PyNode {
     ) -> PyResult<PyDatapodPipClient> {
         let qos = qos_value(qos);
         let addr = decode_endpoint_addr(peer)?;
-        let client = self.node
-                .pip_client_with_qos::<DatapodMsg, DatapodMsg>(addr, topic, qos)
-        .map_err(py_err)?;
+        let client = self
+            .node
+            .pip_client_with_qos::<DatapodMsg, DatapodMsg>(addr, topic, qos)
+            .map_err(py_err)?;
         Ok(PyDatapodPipClient {
             client: Arc::new(Mutex::new(client)),
         })
@@ -424,9 +440,10 @@ impl PyNode {
     ) -> PyResult<PyPipClient> {
         let qos = qos_value(qos);
         let addr = decode_endpoint_addr(peer)?;
-        let client = self.node
-                .pip_client_with_qos::<RawMsg, RawMsg>(addr, topic, qos)
-        .map_err(py_err)?;
+        let client = self
+            .node
+            .pip_client_with_qos::<RawMsg, RawMsg>(addr, topic, qos)
+            .map_err(py_err)?;
         Ok(PyPipClient {
             client: Arc::new(Mutex::new(client)),
         })

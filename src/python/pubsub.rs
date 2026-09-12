@@ -180,9 +180,15 @@ impl PySubscriber {
     }
 }
 
-#[pyclass(name = "DatapodPublisher")]
+#[pyclass(name = "DatapodPublisher", subclass)]
 pub struct PyDatapodPublisher {
     pub(crate) publisher: Publisher<DatapodMsg>,
+}
+
+impl From<Publisher<DatapodMsg>> for PyDatapodPublisher {
+    fn from(publisher: Publisher<DatapodMsg>) -> Self {
+        Self { publisher }
+    }
 }
 
 #[pymethods]
@@ -205,9 +211,15 @@ impl PyDatapodPublisher {
     }
 }
 
-#[pyclass(name = "DatapodSubscriber")]
+#[pyclass(name = "DatapodSubscriber", subclass)]
 pub struct PyDatapodSubscriber {
     pub(crate) subscriber: Subscriber<DatapodMsg>,
+}
+
+impl From<Subscriber<DatapodMsg>> for PyDatapodSubscriber {
+    fn from(subscriber: Subscriber<DatapodMsg>) -> Self {
+        Self { subscriber }
+    }
 }
 
 /// Borrowed zero-copy datapod sample.
@@ -344,4 +356,3 @@ impl PyDatapodSubscriber {
         Ok(dict.into())
     }
 }
-

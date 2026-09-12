@@ -1,8 +1,16 @@
 use super::*;
 
-#[pyclass(name = "DatapodPipClient")]
+#[pyclass(name = "DatapodPipClient", subclass)]
 pub struct PyDatapodPipClient {
     pub(crate) client: Arc<Mutex<PipClient<DatapodMsg, DatapodMsg>>>,
+}
+
+impl From<PipClient<DatapodMsg, DatapodMsg>> for PyDatapodPipClient {
+    fn from(client: PipClient<DatapodMsg, DatapodMsg>) -> Self {
+        Self {
+            client: Arc::new(Mutex::new(client)),
+        }
+    }
 }
 
 #[pyclass(name = "DatapodPipSession")]
@@ -206,9 +214,17 @@ impl PyDatapodPipSession {
     }
 }
 
-#[pyclass(name = "DatapodPipServer")]
+#[pyclass(name = "DatapodPipServer", subclass)]
 pub struct PyDatapodPipServer {
     pub(crate) server: Arc<Mutex<PipServer<DatapodMsg, DatapodMsg>>>,
+}
+
+impl From<PipServer<DatapodMsg, DatapodMsg>> for PyDatapodPipServer {
+    fn from(server: PipServer<DatapodMsg, DatapodMsg>) -> Self {
+        Self {
+            server: Arc::new(Mutex::new(server)),
+        }
+    }
 }
 
 pub(crate) struct PendingDatapodPipState {
@@ -439,4 +455,3 @@ impl PyPendingDatapodPip {
         })
     }
 }
-

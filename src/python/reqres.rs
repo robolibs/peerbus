@@ -214,9 +214,15 @@ impl PyPendingReq {
     }
 }
 
-#[pyclass(name = "DatapodReqClient")]
+#[pyclass(name = "DatapodReqClient", subclass)]
 pub struct PyDatapodReqClient {
     pub(crate) client: ReqClient<DatapodMsg, DatapodMsg>,
+}
+
+impl From<ReqClient<DatapodMsg, DatapodMsg>> for PyDatapodReqClient {
+    fn from(client: ReqClient<DatapodMsg, DatapodMsg>) -> Self {
+        Self { client }
+    }
 }
 
 #[pymethods]
@@ -264,9 +270,17 @@ impl PyDatapodReqClient {
     }
 }
 
-#[pyclass(name = "DatapodReqServer")]
+#[pyclass(name = "DatapodReqServer", subclass)]
 pub struct PyDatapodReqServer {
     pub(crate) server: Arc<Mutex<ReqServer<DatapodMsg, DatapodMsg>>>,
+}
+
+impl From<ReqServer<DatapodMsg, DatapodMsg>> for PyDatapodReqServer {
+    fn from(server: ReqServer<DatapodMsg, DatapodMsg>) -> Self {
+        Self {
+            server: Arc::new(Mutex::new(server)),
+        }
+    }
 }
 
 #[pyclass(name = "PendingDatapodReq")]
@@ -391,4 +405,3 @@ impl PyPendingDatapodReq {
         })
     }
 }
-

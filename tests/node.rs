@@ -137,11 +137,7 @@ fn local_routing_two_nodes_same_process() {
 #[test]
 fn publisher_stats_track_no_remote_subscriber_drop() {
     let _guard = node_test_guard();
-    let node = Node::builder()
-        .no_relay()
-        .ephemeral()
-        .bind()
-        .expect("node");
+    let node = Node::builder().no_relay().ephemeral().bind().expect("node");
     let topic = unique_name("stats/topic");
     let mut pubr = node.publisher::<Tick>(&topic).unwrap();
 
@@ -465,7 +461,11 @@ fn req_res_client_stats_track_remote_calls() {
         })
         .unwrap();
 
-    let client_node = Node::builder().ephemeral().no_relay().bind().expect("client node");
+    let client_node = Node::builder()
+        .ephemeral()
+        .no_relay()
+        .bind()
+        .expect("client node");
     let mut client = client_node
         .req_client::<Add, Sum>(remote_server.endpoint_addr(), &topic)
         .unwrap();
@@ -513,7 +513,11 @@ fn req_res_chunks_large_payload_over_iroh() {
         .with_max_message_bytes(8 * 1024 * 1024)
         .with_max_inflight_bytes(8 * 1024 * 1024);
 
-    let client_node = Node::builder().ephemeral().no_relay().bind().expect("client node");
+    let client_node = Node::builder()
+        .ephemeral()
+        .no_relay()
+        .bind()
+        .expect("client node");
     let mut client = client_node
         .req_client_with_qos::<Big64, Big64>(remote_server.endpoint_addr(), &topic, qos)
         .unwrap();
@@ -662,7 +666,9 @@ fn node_putack_server_serves_standalone_client() {
     server_node
         .wait_for_direct_addresses(Duration::from_secs(5))
         .unwrap();
-    let mut server = server_node.put_server::<LogChunk, UploadAck>(&topic).unwrap();
+    let mut server = server_node
+        .put_server::<LogChunk, UploadAck>(&topic)
+        .unwrap();
     let handle = std::thread::spawn(move || {
         poll_for(Duration::from_secs(5), || {
             let mut puts = server.take().unwrap()?;
@@ -894,7 +900,9 @@ fn node_put_ack_routes_locally_by_name() {
         .bind()
         .expect("client node");
 
-    let mut server = server_node.put_server::<LogChunk, UploadAck>(&topic).unwrap();
+    let mut server = server_node
+        .put_server::<LogChunk, UploadAck>(&topic)
+        .unwrap();
     let handle = std::thread::spawn(move || {
         poll_for(Duration::from_secs(2), || {
             let mut puts = server.take().unwrap()?;
@@ -949,7 +957,9 @@ fn node_put_ack_routes_remotely_by_endpoint_addr() {
         .bind()
         .expect("client node");
 
-    let mut server = server_node.put_server::<LogChunk, UploadAck>(&topic).unwrap();
+    let mut server = server_node
+        .put_server::<LogChunk, UploadAck>(&topic)
+        .unwrap();
     let handle = std::thread::spawn(move || {
         poll_for(Duration::from_secs(5), || {
             let mut puts = server.take().unwrap()?;
@@ -1422,8 +1432,18 @@ fn node_publisher_fans_out_to_local_shm_and_remote_iroh() {
 #[test]
 fn ephemeral_key_changes_each_bind() {
     let _guard = node_test_guard();
-    let id1 = Node::builder().ephemeral().no_relay().bind().unwrap().endpoint_id();
-    let id2 = Node::builder().ephemeral().no_relay().bind().unwrap().endpoint_id();
+    let id1 = Node::builder()
+        .ephemeral()
+        .no_relay()
+        .bind()
+        .unwrap()
+        .endpoint_id();
+    let id2 = Node::builder()
+        .ephemeral()
+        .no_relay()
+        .bind()
+        .unwrap()
+        .endpoint_id();
     assert_ne!(id1, id2, "fresh keys each time when no path is supplied");
 }
 
@@ -1541,7 +1561,12 @@ fn rejects_unallowlisted_peer() {
     let topic = unique_name("acl/not_on_list");
 
     // Some unrelated peer is allowlisted; the client below is not.
-    let stranger_id = Node::builder().ephemeral().no_relay().bind().unwrap().endpoint_id();
+    let stranger_id = Node::builder()
+        .ephemeral()
+        .no_relay()
+        .bind()
+        .unwrap()
+        .endpoint_id();
 
     let server_node = Node::builder()
         .no_relay()
@@ -1623,7 +1648,9 @@ fn put_ack_empty_upload() {
     let client_node = Node::builder().no_relay().ephemeral().bind().unwrap();
     let topic = unique_name("empty/put");
 
-    let mut server = server_node.put_server::<LogChunk, UploadAck>(&topic).unwrap();
+    let mut server = server_node
+        .put_server::<LogChunk, UploadAck>(&topic)
+        .unwrap();
     let handle = std::thread::spawn(move || {
         poll_for(Duration::from_secs(3), || {
             let mut puts = server.take().unwrap()?;
@@ -1834,4 +1861,61 @@ fn req_res_type_mismatch_is_rejected() {
         .unwrap();
     let result = client.call(&Sum { value: 1 });
     assert!(result.is_err(), "type mismatch must surface as an error");
+}
+
+/// A deny-by-default node opens to one peer at runtime: the same client
+/// gets nothing before `allow_peer` and samples after it re-dials.
+#[test]
+fn runtime_allow_peer_admits_a_rejected_peer() {
+    let _guard = node_test_guard();
+    let topic = unique_name("acl/runtime_allow");
+    // Over QUIC on purpose: the inbound policy gates connections, and
+    // same-host traffic would take shared memory instead.
+    let server = Node::builder()
+        .no_relay()
+        .ephemeral()
+        .skip_shm()
+        .bind()
+        .unwrap();
+    let client = Node::builder()
+        .no_relay()
+        .ephemeral()
+        .skip_shm()
+        .allow_peer(server.endpoint_id())
+        .bind()
+        .unwrap();
+    server
+        .wait_for_direct_addresses(Duration::from_secs(5))
+        .unwrap();
+    client
+        .wait_for_direct_addresses(Duration::from_secs(5))
+        .unwrap();
+    assert!(!server.allows_peer(&client.endpoint_id()));
+    let mut publisher = server.publisher::<Tick>(&topic).unwrap();
+    let mut rejected = client
+        .subscriber::<Tick>(server.endpoint_addr(), &topic)
+        .unwrap();
+    for seq in 0..4 {
+        publisher.send(&Tick { seq, payload: 1 }).unwrap();
+        assert!(
+            rejected
+                .recv_timeout(Duration::from_millis(200))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    server.allow_peer(client.endpoint_id());
+    assert!(server.allows_peer(&client.endpoint_id()));
+    let mut admitted = client
+        .subscriber::<Tick>(server.endpoint_addr(), &topic)
+        .unwrap();
+    let got = poll_for(Duration::from_secs(5), || {
+        publisher.send(&Tick { seq: 9, payload: 2 }).unwrap();
+        admitted
+            .recv_timeout(Duration::from_millis(100))
+            .unwrap()
+            .map(|sample| sample.header().seq)
+    });
+    assert_eq!(got, Some(9));
 }

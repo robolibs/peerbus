@@ -245,7 +245,7 @@ impl NodeBuilder {
             peer_connections: Mutex::new(HashMap::new()),
             pubsub_datagram_routes: Mutex::new(HashMap::new()),
             pubsub_datagram_readers: Mutex::new(HashMap::new()),
-            inbound_policy,
+            inbound_policy: std::sync::RwLock::new(inbound_policy),
             rt: rt.clone(),
             accept_handle: Mutex::new(None),
             closed: AtomicBool::new(false),

@@ -36,8 +36,14 @@ pub(crate) async fn run_accept_loop(inner: Arc<NodeInner>) -> Result<()> {
             // the dialing side sees a clean ConnectFailed rather than a
             // hang.
             let remote = conn.remote_id();
-            if !inner.inbound_policy.allows(&remote) {
-                let reason = inner.inbound_policy.reject_reason();
+            let rejection = {
+                let policy = crate::trace::recover_poison(
+                    inner.inbound_policy.read(),
+                    "Node::inbound_policy",
+                );
+                (!policy.allows(&remote)).then(|| policy.reject_reason())
+            };
+            if let Some(reason) = rejection {
                 qb_warn!(
                     target: "peerbus::node",
                     remote = %remote,
@@ -62,7 +68,10 @@ pub(crate) async fn run_accept_loop(inner: Arc<NodeInner>) -> Result<()> {
 // `e` below is consumed only by `qb_warn!`, which compiles to nothing
 // without the `tracing` feature, so the binding reads as unused there.
 #[cfg_attr(not(feature = "tracing"), allow(unused_variables))]
-pub(crate) async fn serve_incoming_connection(inner: Arc<NodeInner>, conn: Connection) -> Result<()> {
+pub(crate) async fn serve_incoming_connection(
+    inner: Arc<NodeInner>,
+    conn: Connection,
+) -> Result<()> {
     loop {
         match conn.accept_bi().await {
             Ok((send, recv)) => {

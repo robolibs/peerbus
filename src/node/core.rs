@@ -64,7 +64,7 @@ pub(crate) struct NodeInner {
     /// before a single bi stream is served — so it covers pub/sub and
     /// all five request modes at once. Defaults to
     /// [`InboundPolicy::DenyAll`].
-    pub(crate) inbound_policy: InboundPolicy,
+    pub(crate) inbound_policy: std::sync::RwLock<InboundPolicy>,
     /// Tokio runtime that drives the accept loop and per-subscriber
     /// tasks. Held so `Drop` can spawn `endpoint.close()` without
     /// reaching for the global singleton.
@@ -201,6 +201,31 @@ pub struct PeerPathDiagnostics {
 }
 
 impl Node {
+    /// Add `peer` to the inbound allowlist of a live node. A node built
+    /// deny-by-default starts accepting that peer; a node built with
+    /// `allow_any_peer` is unchanged. Takes effect for the next inbound
+    /// connection; connections already open are not revisited.
+    pub fn allow_peer(&self, peer: impl IntoPeer) {
+        let id = *peer.into_peer().endpoint_id.as_bytes();
+        let mut policy =
+            crate::trace::recover_poison(self.inner.inbound_policy.write(), "Node::inbound_policy");
+        match &mut *policy {
+            InboundPolicy::AnyPeer => {}
+            InboundPolicy::Allowlist(set) => {
+                set.insert(id);
+            }
+            InboundPolicy::DenyAll => {
+                *policy = InboundPolicy::Allowlist(HashSet::from([id]));
+            }
+        }
+    }
+
+    /// Whether an inbound connection from `peer` would be accepted now.
+    pub fn allows_peer(&self, peer: &EndpointId) -> bool {
+        crate::trace::recover_poison(self.inner.inbound_policy.read(), "Node::inbound_policy")
+            .allows(peer)
+    }
+
     pub fn builder() -> NodeBuilder {
         NodeBuilder {
             secret: None,
@@ -385,11 +410,9 @@ impl Node {
     /// last clone will not close a second time.
     pub fn close(self) -> Result<()> {
         // Stop accepting new inbound connections first.
-        if let Some(handle) = crate::trace::recover_poison(
-            self.inner.accept_handle.lock(),
-            "Node::accept_handle",
-        )
-        .take()
+        if let Some(handle) =
+            crate::trace::recover_poison(self.inner.accept_handle.lock(), "Node::accept_handle")
+                .take()
         {
             handle.abort();
         }
@@ -402,7 +425,6 @@ impl Node {
         });
         Ok(())
     }
-
 }
 
 impl Node {
