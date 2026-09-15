@@ -285,7 +285,7 @@ Enable the `tracing` feature for structured events on accept / connect / disconn
 | `tracing` | structured events at accept / connect / disconnect / lag / errors |
 | `python`  | pyo3 CPython extension (built by maturin)                         |
 
-The local SHM backend and iroh are always on; there is no feature gate for either transport. Service-discovery config files (TOML / JSON) are planned, not yet implemented — see [`PLAN.md`](PLAN.md).
+The local SHM backend and iroh are always on; there is no feature gate for either transport. Service-discovery config files (TOML / JSON) are planned, not yet implemented.
 
 ## Foreign-language bindings
 
@@ -420,4 +420,4 @@ Datapod-focused examples:
 
 ## Status
 
-`0.3.x` — pre-1.0. Wire format documented in [`PLAN.md`](PLAN.md), not stable between minor releases. Sharp edges in [`LIMITATIONS.md`](LIMITATIONS.md).
+`0.3.x` — pre-1.0. Wire format not stable between minor releases. Sharp edges in [`LIMITATIONS.md`](docs/LIMITATIONS.md).

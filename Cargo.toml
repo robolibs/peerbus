@@ -100,3 +100,63 @@ minifb = { version = "0.27", default-features = false, features = ["wayland"] }
 # tracing-subscriber for the examples so iroh / peerbus emit logs
 # under RUST_LOG=iroh=info,peerbus=info etc.
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[[example]]
+name = "bench_local"
+path = "examples/rust/bench_local.rs"
+
+[[example]]
+name = "datapod_fixed_gallery"
+path = "examples/rust/datapod_fixed_gallery.rs"
+
+[[example]]
+name = "datapod_heap_payloads"
+path = "examples/rust/datapod_heap_payloads.rs"
+
+[[example]]
+name = "datapod_pose"
+path = "examples/rust/datapod_pose.rs"
+
+[[example]]
+name = "datapod_primitives_gallery"
+path = "examples/rust/datapod_primitives_gallery.rs"
+
+[[example]]
+name = "local_pose"
+path = "examples/rust/local_pose.rs"
+
+[[example]]
+name = "local_shm_smoke"
+path = "examples/rust/local_shm_smoke.rs"
+
+[[example]]
+name = "node_demo"
+path = "examples/rust/node_demo.rs"
+
+[[example]]
+name = "pip"
+path = "examples/rust/pip.rs"
+
+[[example]]
+name = "put_ack"
+path = "examples/rust/put_ack.rs"
+
+[[example]]
+name = "que_ans"
+path = "examples/rust/que_ans.rs"
+
+[[example]]
+name = "remote_loopback"
+path = "examples/rust/remote_loopback.rs"
+
+[[example]]
+name = "req_res"
+path = "examples/rust/req_res.rs"
+
+[[example]]
+name = "video_pub"
+path = "examples/rust/video_pub.rs"
+
+[[example]]
+name = "video_sub"
+path = "examples/rust/video_sub.rs"

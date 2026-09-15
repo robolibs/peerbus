@@ -1,6 +1,6 @@
 # LIMITATIONS
 
-Known sharp edges. Pair with [`PLAN.md`](PLAN.md) for the roadmap.
+Known sharp edges.
 
 `0.3.x` — pre-1.0. Wire formats are documented but **not stable**
 between minor releases.
