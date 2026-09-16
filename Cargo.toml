@@ -47,7 +47,7 @@ python-extension = ["python"]
 inherits = "dev"
 
 [dependencies]
-datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.6.0" }
+datapod = { git = "https://codeberg.org/robolibs/datapod.git", tag = "0.6.1" }
 thiserror = "2.0"
 bytes = "1"
 # bytemuck for Plain-Old-Data typed payloads placed directly into
