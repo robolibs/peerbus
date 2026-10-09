@@ -38,6 +38,14 @@ pub enum Error {
     #[error("incompatible SHM segment: {0}")]
     IncompatibleShm(String),
 
+    /// The OS could not reserve backing store for a shared-memory
+    /// segment (tmpfs/`/dev/shm` full or a per-user quota exceeded).
+    /// Reported eagerly at create time so callers get a catchable error
+    /// instead of a later SIGBUS when a lazily-backed page is first
+    /// touched.
+    #[error("shared memory exhausted: {0}")]
+    ShmExhausted(String),
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 

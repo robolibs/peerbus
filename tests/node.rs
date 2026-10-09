@@ -1,17 +1,17 @@
 //! End-to-end tests for `Node`.
 //!
-//! With the SHM local backend, same-host routing keys off
-//! the service name we compose from
-//! `(identity, topic)`. The subscriber asks the backend whether
-//! that service exists locally; if yes → SHM, if no → dial via
-//! iroh. So all the local tests below use `.identity(...)` so the
-//! routing has something to match.
+//! With the SHM local backend, same-host routing keys off the
+//! service name we compose from `(endpoint_id, topic)`. The
+//! subscriber asks the backend whether that service exists
+//! locally; if yes → SHM, if no → dial via iroh. Peers are
+//! addressed only by id, so the local tests below create the
+//! publisher/server on one node and address it from the other
+//! by that node's `endpoint_id()`.
 
 use std::time::{Duration, Instant};
 
-use peerbus::did_key::endpoint_id_to_did_key;
 use peerbus::transport::{PublisherOps, SubscriberOps};
-use peerbus::{LocalConfig, Node, RemoteTransport, TopicQos, Transport};
+use peerbus::{LocalConfig, LocalService, Node, RemoteTransport, TopicQos, Transport};
 
 static NODE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -93,10 +93,6 @@ fn unique_name(stem: &str) -> String {
     format!("{stem}_{pid}_{nanos}")
 }
 
-fn unique_system_did() -> String {
-    endpoint_id_to_did_key(&iroh::SecretKey::generate().public())
-}
-
 fn node_test_guard() -> std::sync::MutexGuard<'static, ()> {
     NODE_TEST_LOCK.lock().unwrap_or_else(|err| err.into_inner())
 }
@@ -106,19 +102,19 @@ fn local_routing_two_nodes_same_process() {
     let _guard = node_test_guard();
     let pub_node = Node::builder()
         .no_relay()
-        .identity("local_pub")
+        .ephemeral()
         .bind()
         .expect("publisher node");
 
     let sub_node = Node::builder()
         .no_relay()
-        .identity("local_sub")
+        .ephemeral()
         .bind()
         .expect("subscriber node");
 
     let mut pubr = pub_node.publisher::<Tick>("rover/pose").unwrap();
     let mut sub = sub_node
-        .subscriber::<Tick>("local_pub", "rover/pose")
+        .subscriber::<Tick>(pub_node.endpoint_id(), "rover/pose")
         .expect("local subscribe");
 
     pubr.send(&Tick {
@@ -141,11 +137,7 @@ fn local_routing_two_nodes_same_process() {
 #[test]
 fn publisher_stats_track_no_remote_subscriber_drop() {
     let _guard = node_test_guard();
-    let node = Node::builder()
-        .no_relay()
-        .identity(unique_name("stats_pub"))
-        .bind()
-        .expect("node");
+    let node = Node::builder().no_relay().ephemeral().bind().expect("node");
     let topic = unique_name("stats/topic");
     let mut pubr = node.publisher::<Tick>(&topic).unwrap();
 
@@ -167,23 +159,22 @@ fn local_latest_qos_skips_stale_samples() {
         ..LocalConfig::default()
     };
 
-    let pub_identity = unique_name("local_latest_pub");
     let topic = unique_name("local/latest");
     let pub_node = Node::builder()
         .no_relay()
-        .identity(&pub_identity)
+        .ephemeral()
         .local_config(cfg)
         .bind()
         .expect("publisher node");
     let sub_node = Node::builder()
         .no_relay()
-        .identity(unique_name("local_latest_sub"))
+        .ephemeral()
         .bind()
         .expect("subscriber node");
 
     let mut pubr = pub_node.publisher::<Tick>(&topic).unwrap();
     let mut sub = sub_node
-        .subscriber_with_qos::<Tick>(pub_identity.as_str(), &topic, TopicQos::latest())
+        .subscriber_with_qos::<Tick>(pub_node.endpoint_id(), &topic, TopicQos::latest())
         .unwrap();
 
     pubr.send(&Tick {
@@ -218,23 +209,22 @@ fn local_reliable_qos_preserves_backlog_under_capacity() {
         ..LocalConfig::default()
     };
 
-    let pub_identity = unique_name("local_reliable_pub");
     let topic = unique_name("local/reliable");
     let pub_node = Node::builder()
         .no_relay()
-        .identity(&pub_identity)
+        .ephemeral()
         .local_config(cfg)
         .bind()
         .expect("publisher node");
     let sub_node = Node::builder()
         .no_relay()
-        .identity(unique_name("local_reliable_sub"))
+        .ephemeral()
         .bind()
         .expect("subscriber node");
 
     let mut pubr = pub_node.publisher::<Tick>(&topic).unwrap();
     let mut sub = sub_node
-        .subscriber_with_qos::<Tick>(pub_identity.as_str(), &topic, TopicQos::reliable())
+        .subscriber_with_qos::<Tick>(pub_node.endpoint_id(), &topic, TopicQos::reliable())
         .unwrap();
 
     pubr.send(&Tick {
@@ -269,23 +259,22 @@ fn local_reliable_qos_reports_lag_when_capacity_exceeded() {
         ..LocalConfig::default()
     };
 
-    let pub_identity = unique_name("local_lag_pub");
     let topic = unique_name("local/reliable_lag");
     let pub_node = Node::builder()
         .no_relay()
-        .identity(&pub_identity)
+        .ephemeral()
         .local_config(cfg)
         .bind()
         .expect("publisher node");
     let sub_node = Node::builder()
         .no_relay()
-        .identity(unique_name("local_lag_sub"))
+        .ephemeral()
         .bind()
         .expect("subscriber node");
 
     let mut pubr = pub_node.publisher::<Tick>(&topic).unwrap();
     let mut sub = sub_node
-        .subscriber_with_qos::<Tick>(pub_identity.as_str(), &topic, TopicQos::reliable())
+        .subscriber_with_qos::<Tick>(pub_node.endpoint_id(), &topic, TopicQos::reliable())
         .unwrap();
 
     pubr.send(&Tick {
@@ -321,31 +310,30 @@ fn local_latest_qos_subscribers_have_independent_drop_stats() {
         ..LocalConfig::default()
     };
 
-    let pub_identity = unique_name("local_multi_latest_pub");
     let topic = unique_name("local/latest_multi");
     let pub_node = Node::builder()
         .no_relay()
-        .identity(&pub_identity)
+        .ephemeral()
         .local_config(cfg)
         .bind()
         .expect("publisher node");
     let sub_node_a = Node::builder()
         .no_relay()
-        .identity(unique_name("local_multi_latest_sub_a"))
+        .ephemeral()
         .bind()
         .expect("subscriber node a");
     let sub_node_b = Node::builder()
         .no_relay()
-        .identity(unique_name("local_multi_latest_sub_b"))
+        .ephemeral()
         .bind()
         .expect("subscriber node b");
 
     let mut pubr = pub_node.publisher::<Tick>(&topic).unwrap();
     let mut sub_a = sub_node_a
-        .subscriber_with_qos::<Tick>(pub_identity.as_str(), &topic, TopicQos::latest())
+        .subscriber_with_qos::<Tick>(pub_node.endpoint_id(), &topic, TopicQos::latest())
         .unwrap();
     let mut sub_b = sub_node_b
-        .subscriber_with_qos::<Tick>(pub_identity.as_str(), &topic, TopicQos::latest())
+        .subscriber_with_qos::<Tick>(pub_node.endpoint_id(), &topic, TopicQos::latest())
         .unwrap();
 
     pubr.send(&Tick {
@@ -372,66 +360,18 @@ fn local_latest_qos_subscribers_have_independent_drop_stats() {
 }
 
 #[test]
-fn system_did_subscribe_with_qos_routes_locally() {
-    let _guard = node_test_guard();
-    let system_did = unique_system_did();
-    let topic = unique_name("system/qos_local");
-    let cfg = LocalConfig {
-        max_subscribers: 2,
-        history_depth: 8,
-        subscriber_buffer: 8,
-        ..LocalConfig::default()
-    };
-
-    let pub_node = Node::builder()
-        .no_relay()
-        .system_did(&system_did)
-        .local_config(cfg)
-        .bind()
-        .expect("system publisher node");
-    let sub_node = Node::builder()
-        .no_relay()
-        .system_did(&system_did)
-        .bind()
-        .expect("system subscriber node");
-
-    let mut pubr = pub_node
-        .publisher_with_qos::<Tick>(&topic, TopicQos::latest())
-        .unwrap();
-    let mut sub = sub_node
-        .subscribe_with_qos::<Tick>(&topic, TopicQos::latest())
-        .unwrap();
-
-    pubr.send(&Tick {
-        seq: 1,
-        payload: 10,
-    })
-    .unwrap();
-    pubr.send(&Tick {
-        seq: 2,
-        payload: 20,
-    })
-    .unwrap();
-    let sample = sub.take().unwrap().expect("latest system sample");
-    assert_eq!(sample.header().seq, 2);
-    assert_eq!(sub.stats().stale_dropped, 1);
-}
-
-#[test]
 fn node_req_res_routes_locally_by_name() {
     let _guard = node_test_guard();
-    let server_identity = unique_name("calc_local");
-    let client_identity = unique_name("calc_client");
     let topic = unique_name("calc/add");
 
     let server_node = Node::builder()
         .no_relay()
-        .identity(&server_identity)
+        .ephemeral()
         .bind()
         .expect("server node");
     let client_node = Node::builder()
         .no_relay()
-        .identity(client_identity)
+        .ephemeral()
         .bind()
         .expect("client node");
 
@@ -450,7 +390,7 @@ fn node_req_res_routes_locally_by_name() {
     });
 
     let mut client = client_node
-        .req_client::<Add, Sum>(server_identity.as_str(), &topic)
+        .req_client::<Add, Sum>(server_node.endpoint_id(), &topic)
         .unwrap();
     let res = client.call(&Add { a: 2, b: 40 }).unwrap();
     assert_eq!(res.header().value, 42);
@@ -464,7 +404,7 @@ fn node_req_res_routes_remotely_by_endpoint_addr() {
 
     let server_node = Node::builder()
         .no_relay()
-        .identity(unique_name("calc_remote_server"))
+        .ephemeral()
         .bind()
         .expect("server node");
     server_node
@@ -473,7 +413,7 @@ fn node_req_res_routes_remotely_by_endpoint_addr() {
 
     let client_node = Node::builder()
         .no_relay()
-        .identity(unique_name("calc_remote_client"))
+        .ephemeral()
         .bind()
         .expect("client node");
 
@@ -500,111 +440,6 @@ fn node_req_res_routes_remotely_by_endpoint_addr() {
 }
 
 #[test]
-fn system_did_req_res_routes_locally_without_peer_argument() {
-    let _guard = node_test_guard();
-    let system_did = unique_system_did();
-    let topic = unique_name("system/calc_add");
-
-    let server_node = Node::builder()
-        .no_relay()
-        .system_did(&system_did)
-        .bind()
-        .expect("system server node");
-    let client_node = Node::builder()
-        .no_relay()
-        .system_did(&system_did)
-        .bind()
-        .expect("system client node");
-
-    let mut server = server_node.req_server::<Add, Sum>(&topic).unwrap();
-    let handle = std::thread::spawn(move || {
-        poll_for(Duration::from_secs(2), || {
-            let (req, reply) = server.take().unwrap()?;
-            reply
-                .respond(&Sum {
-                    value: req.header().a + req.header().b,
-                })
-                .unwrap();
-            Some(())
-        })
-        .expect("system server should receive req");
-    });
-
-    let mut client = client_node.req::<Add, Sum>(&topic).unwrap();
-    let res = client.call(&Add { a: 4, b: 38 }).unwrap();
-    assert_eq!(res.header().value, 42);
-    handle.join().unwrap();
-}
-
-#[test]
-fn system_did_req_res_uses_topic_route_when_not_local() {
-    let _guard = node_test_guard();
-    let system_did = unique_system_did();
-    let topic = unique_name("system/remote_calc_add");
-    let route_topic = format!("{system_did}::{topic}");
-
-    let remote_server = RemoteTransport::builder(route_topic)
-        .no_relay()
-        .build_blocking()
-        .expect("remote req/res server transport");
-    remote_server
-        .wait_for_direct_addresses(Duration::from_secs(5))
-        .expect("remote server addresses");
-    remote_server
-        .serve_requests::<Add, Sum, _>(|req| Sum {
-            value: req.a + req.b,
-        })
-        .unwrap();
-
-    let client_node = Node::builder()
-        .no_relay()
-        .system_did(&system_did)
-        .bind()
-        .expect("system client node");
-    client_node
-        .add_topic_route(&topic, remote_server.endpoint_addr())
-        .unwrap();
-
-    let mut client = client_node.req::<Add, Sum>(&topic).unwrap();
-    let res = client.call(&Add { a: 5, b: 37 }).unwrap();
-    assert_eq!(res.header().value, 42);
-}
-
-#[test]
-fn system_did_req_res_can_use_topic_agnostic_system_peer() {
-    let _guard = node_test_guard();
-    let system_did = unique_system_did();
-    let topic = unique_name("system/peer_calc_add");
-    let route_topic = format!("{system_did}::{topic}");
-
-    let remote_server = RemoteTransport::builder(route_topic)
-        .no_relay()
-        .build_blocking()
-        .expect("remote req/res server transport");
-    remote_server
-        .wait_for_direct_addresses(Duration::from_secs(5))
-        .expect("remote server addresses");
-    remote_server
-        .serve_requests::<Add, Sum, _>(|req| Sum {
-            value: req.a + req.b,
-        })
-        .unwrap();
-
-    let client_node = Node::builder()
-        .no_relay()
-        .system_did(&system_did)
-        .bind()
-        .expect("system client node");
-    client_node
-        .add_system_peer(remote_server.endpoint_addr())
-        .unwrap();
-
-    let mut client = client_node.req::<Add, Sum>(&topic).unwrap();
-    let res = client.call(&Add { a: 6, b: 36 }).unwrap();
-    assert_eq!(res.header().value, 42);
-}
-
-#[test]
 fn req_res_client_stats_track_remote_calls() {
     // Node req/res client dialing a RemoteTransport server goes over
     // iroh (the RemoteTransport peer has no local SHM service), so the
@@ -626,7 +461,11 @@ fn req_res_client_stats_track_remote_calls() {
         })
         .unwrap();
 
-    let client_node = Node::builder().no_relay().bind().expect("client node");
+    let client_node = Node::builder()
+        .ephemeral()
+        .no_relay()
+        .bind()
+        .expect("client node");
     let mut client = client_node
         .req_client::<Add, Sum>(remote_server.endpoint_addr(), &topic)
         .unwrap();
@@ -674,7 +513,11 @@ fn req_res_chunks_large_payload_over_iroh() {
         .with_max_message_bytes(8 * 1024 * 1024)
         .with_max_inflight_bytes(8 * 1024 * 1024);
 
-    let client_node = Node::builder().no_relay().bind().expect("client node");
+    let client_node = Node::builder()
+        .ephemeral()
+        .no_relay()
+        .bind()
+        .expect("client node");
     let mut client = client_node
         .req_client_with_qos::<Big64, Big64>(remote_server.endpoint_addr(), &topic, qos)
         .unwrap();
@@ -715,7 +558,7 @@ fn standalone_queans_server_serves_node_client() {
         })
         .unwrap();
 
-    let client_node = Node::builder().no_relay().bind().unwrap();
+    let client_node = Node::builder().ephemeral().no_relay().bind().unwrap();
     let mut client = client_node
         .que_client::<RangeQue, Hit>(server.endpoint_addr(), &topic)
         .unwrap();
@@ -736,15 +579,20 @@ fn standalone_queans_server_serves_node_client() {
 fn node_queans_server_serves_standalone_client() {
     let _guard = node_test_guard();
     let topic = unique_name("search/standalone_cli");
+    // `allow_any_peer` rather than a real allowlist: the inbound peer is a
+    // `RemoteTransport`, whose endpoint key is ephemeral — its id does not
+    // exist until it is built, and building it needs this node's address.
+    // There is nothing to allowlist at builder time.
     let server_node = Node::builder()
         .no_relay()
-        .identity(unique_name("ans_srv"))
+        .ephemeral()
+        .allow_any_peer()
         .bind()
         .unwrap();
     server_node
         .wait_for_direct_addresses(Duration::from_secs(5))
         .unwrap();
-    let mut server = server_node.ans::<RangeQue, Hit>(&topic).unwrap();
+    let mut server = server_node.que_server::<RangeQue, Hit>(&topic).unwrap();
     let handle = std::thread::spawn(move || {
         poll_for(Duration::from_secs(5), || {
             let (que, mut ans) = server.take().unwrap()?;
@@ -790,7 +638,7 @@ fn standalone_putack_server_serves_node_client() {
         })
         .unwrap();
 
-    let client_node = Node::builder().no_relay().bind().unwrap();
+    let client_node = Node::builder().ephemeral().no_relay().bind().unwrap();
     let mut client = client_node
         .put_client::<LogChunk, UploadAck>(server.endpoint_addr(), &topic)
         .unwrap();
@@ -807,15 +655,20 @@ fn standalone_putack_server_serves_node_client() {
 fn node_putack_server_serves_standalone_client() {
     let _guard = node_test_guard();
     let topic = unique_name("logs/standalone_cli");
+    // See `node_queans_server_serves_standalone_client`: the RemoteTransport
+    // client's ephemeral id is unknowable before this node binds.
     let server_node = Node::builder()
         .no_relay()
-        .identity(unique_name("ack_srv"))
+        .ephemeral()
+        .allow_any_peer()
         .bind()
         .unwrap();
     server_node
         .wait_for_direct_addresses(Duration::from_secs(5))
         .unwrap();
-    let mut server = server_node.ack::<LogChunk, UploadAck>(&topic).unwrap();
+    let mut server = server_node
+        .put_server::<LogChunk, UploadAck>(&topic)
+        .unwrap();
     let handle = std::thread::spawn(move || {
         poll_for(Duration::from_secs(5), || {
             let mut puts = server.take().unwrap()?;
@@ -864,7 +717,7 @@ fn standalone_pip_server_serves_node_client() {
         })
         .unwrap();
 
-    let client_node = Node::builder().no_relay().bind().unwrap();
+    let client_node = Node::builder().ephemeral().no_relay().bind().unwrap();
     let mut client = client_node
         .pip_client::<ClientMsg, ServerMsg>(server.endpoint_addr(), &topic)
         .unwrap();
@@ -884,9 +737,12 @@ fn standalone_pip_server_serves_node_client() {
 fn node_pip_server_serves_standalone_client() {
     let _guard = node_test_guard();
     let topic = unique_name("session/standalone_cli");
+    // See `node_queans_server_serves_standalone_client`: the RemoteTransport
+    // client's ephemeral id is unknowable before this node binds.
     let server_node = Node::builder()
         .no_relay()
-        .identity(unique_name("pip_srv"))
+        .ephemeral()
+        .allow_any_peer()
         .bind()
         .unwrap();
     server_node
@@ -929,22 +785,20 @@ fn node_pip_server_serves_standalone_client() {
 #[test]
 fn node_que_ans_routes_locally_by_name() {
     let _guard = node_test_guard();
-    let server_identity = unique_name("search_local");
-    let client_identity = unique_name("search_client");
     let topic = unique_name("search/local");
 
     let server_node = Node::builder()
         .no_relay()
-        .identity(&server_identity)
+        .ephemeral()
         .bind()
         .expect("server node");
     let client_node = Node::builder()
         .no_relay()
-        .identity(client_identity)
+        .ephemeral()
         .bind()
         .expect("client node");
 
-    let mut server = server_node.ans::<RangeQue, Hit>(&topic).unwrap();
+    let mut server = server_node.que_server::<RangeQue, Hit>(&topic).unwrap();
     let handle = std::thread::spawn(move || {
         poll_for(Duration::from_secs(2), || {
             let (que, mut ans) = server.take().unwrap()?;
@@ -961,7 +815,7 @@ fn node_que_ans_routes_locally_by_name() {
     });
 
     let mut client = client_node
-        .que_client::<RangeQue, Hit>(server_identity.as_str(), &topic)
+        .que_client::<RangeQue, Hit>(server_node.endpoint_id(), &topic)
         .unwrap();
     let mut answers = client
         .send(&RangeQue {
@@ -984,7 +838,7 @@ fn node_que_ans_routes_remotely_by_endpoint_addr() {
 
     let server_node = Node::builder()
         .no_relay()
-        .identity(unique_name("search_remote_server"))
+        .ephemeral()
         .bind()
         .expect("server node");
     server_node
@@ -993,11 +847,11 @@ fn node_que_ans_routes_remotely_by_endpoint_addr() {
 
     let client_node = Node::builder()
         .no_relay()
-        .identity(unique_name("search_remote_client"))
+        .ephemeral()
         .bind()
         .expect("client node");
 
-    let mut server = server_node.ans::<RangeQue, Hit>(&topic).unwrap();
+    let mut server = server_node.que_server::<RangeQue, Hit>(&topic).unwrap();
     let handle = std::thread::spawn(move || {
         poll_for(Duration::from_secs(5), || {
             let (que, mut ans) = server.take().unwrap()?;
@@ -1031,72 +885,24 @@ fn node_que_ans_routes_remotely_by_endpoint_addr() {
 }
 
 #[test]
-fn system_did_que_ans_routes_locally_without_peer_argument() {
-    let _guard = node_test_guard();
-    let system_did = unique_system_did();
-    let topic = unique_name("system/search");
-
-    let server_node = Node::builder()
-        .no_relay()
-        .system_did(&system_did)
-        .bind()
-        .expect("system server node");
-    let client_node = Node::builder()
-        .no_relay()
-        .system_did(&system_did)
-        .bind()
-        .expect("system client node");
-
-    let mut server = server_node.ans::<RangeQue, Hit>(&topic).unwrap();
-    let handle = std::thread::spawn(move || {
-        poll_for(Duration::from_secs(2), || {
-            let (que, mut ans) = server.take().unwrap()?;
-            for offset in 0..que.header().count {
-                ans.send(&Hit {
-                    value: que.header().start + offset,
-                })
-                .unwrap();
-            }
-            ans.finish().unwrap();
-            Some(())
-        })
-        .expect("system server should receive que");
-    });
-
-    let mut client = client_node.que::<RangeQue, Hit>(&topic).unwrap();
-    let mut answers = client
-        .send(&RangeQue {
-            start: 30,
-            count: 2,
-        })
-        .unwrap();
-    let mut got = Vec::new();
-    while let Some(ans) = answers.next().unwrap() {
-        got.push(ans.header().value);
-    }
-    assert_eq!(got, vec![30, 31]);
-    handle.join().unwrap();
-}
-
-#[test]
 fn node_put_ack_routes_locally_by_name() {
     let _guard = node_test_guard();
-    let server_identity = unique_name("sink_local");
-    let client_identity = unique_name("sink_client");
     let topic = unique_name("logs/local");
 
     let server_node = Node::builder()
         .no_relay()
-        .identity(&server_identity)
+        .ephemeral()
         .bind()
         .expect("server node");
     let client_node = Node::builder()
         .no_relay()
-        .identity(client_identity)
+        .ephemeral()
         .bind()
         .expect("client node");
 
-    let mut server = server_node.ack::<LogChunk, UploadAck>(&topic).unwrap();
+    let mut server = server_node
+        .put_server::<LogChunk, UploadAck>(&topic)
+        .unwrap();
     let handle = std::thread::spawn(move || {
         poll_for(Duration::from_secs(2), || {
             let mut puts = server.take().unwrap()?;
@@ -1119,7 +925,7 @@ fn node_put_ack_routes_locally_by_name() {
     });
 
     let mut client = client_node
-        .put_client::<LogChunk, UploadAck>(server_identity.as_str(), &topic)
+        .put_client::<LogChunk, UploadAck>(server_node.endpoint_id(), &topic)
         .unwrap();
     let mut put = client.open().unwrap();
     put.send(&LogChunk { value: 10 }).unwrap();
@@ -1138,7 +944,7 @@ fn node_put_ack_routes_remotely_by_endpoint_addr() {
 
     let server_node = Node::builder()
         .no_relay()
-        .identity(unique_name("sink_remote_server"))
+        .ephemeral()
         .bind()
         .expect("server node");
     server_node
@@ -1147,11 +953,13 @@ fn node_put_ack_routes_remotely_by_endpoint_addr() {
 
     let client_node = Node::builder()
         .no_relay()
-        .identity(unique_name("sink_remote_client"))
+        .ephemeral()
         .bind()
         .expect("client node");
 
-    let mut server = server_node.ack::<LogChunk, UploadAck>(&topic).unwrap();
+    let mut server = server_node
+        .put_server::<LogChunk, UploadAck>(&topic)
+        .unwrap();
     let handle = std::thread::spawn(move || {
         poll_for(Duration::from_secs(5), || {
             let mut puts = server.take().unwrap()?;
@@ -1186,69 +994,18 @@ fn node_put_ack_routes_remotely_by_endpoint_addr() {
 }
 
 #[test]
-fn system_did_put_ack_routes_locally_without_peer_argument() {
-    let _guard = node_test_guard();
-    let system_did = unique_system_did();
-    let topic = unique_name("system/logs");
-
-    let server_node = Node::builder()
-        .no_relay()
-        .system_did(&system_did)
-        .bind()
-        .expect("system server node");
-    let client_node = Node::builder()
-        .no_relay()
-        .system_did(&system_did)
-        .bind()
-        .expect("system client node");
-
-    let mut server = server_node.ack::<LogChunk, UploadAck>(&topic).unwrap();
-    let handle = std::thread::spawn(move || {
-        poll_for(Duration::from_secs(2), || {
-            let mut puts = server.take().unwrap()?;
-            let mut count = 0;
-            let mut sum = 0;
-            loop {
-                match puts.next().unwrap() {
-                    Some(chunk) => {
-                        count += 1;
-                        sum += chunk.header().value;
-                    }
-                    None if count == 0 => return None,
-                    None => break,
-                }
-            }
-            puts.ack(&UploadAck { count, sum }).unwrap();
-            Some(())
-        })
-        .expect("system server should receive puts");
-    });
-
-    let mut client = client_node.put::<LogChunk, UploadAck>(&topic).unwrap();
-    let mut put = client.open().unwrap();
-    put.send(&LogChunk { value: 100 }).unwrap();
-    put.send(&LogChunk { value: 23 }).unwrap();
-    let ack = put.finish().unwrap();
-    assert_eq!(ack.header().count, 2);
-    assert_eq!(ack.header().sum, 123);
-    handle.join().unwrap();
-}
-
-#[test]
 fn node_pip_routes_locally_by_name() {
     let _guard = node_test_guard();
-    let server_identity = unique_name("pip_local");
-    let client_identity = unique_name("pip_client");
     let topic = unique_name("session/local");
 
     let server_node = Node::builder()
         .no_relay()
-        .identity(&server_identity)
+        .ephemeral()
         .bind()
         .expect("server node");
     let client_node = Node::builder()
         .no_relay()
-        .identity(client_identity)
+        .ephemeral()
         .bind()
         .expect("client node");
 
@@ -1276,7 +1033,7 @@ fn node_pip_routes_locally_by_name() {
     });
 
     let mut client = client_node
-        .pip_client::<ClientMsg, ServerMsg>(server_identity.as_str(), &topic)
+        .pip_client::<ClientMsg, ServerMsg>(server_node.endpoint_id(), &topic)
         .unwrap();
     let mut pip = client.open().unwrap();
     pip.send(&ClientMsg { value: 41 }).unwrap();
@@ -1293,7 +1050,7 @@ fn node_pip_routes_remotely_by_endpoint_addr() {
 
     let server_node = Node::builder()
         .no_relay()
-        .identity(unique_name("pip_remote_server"))
+        .ephemeral()
         .bind()
         .expect("server node");
     server_node
@@ -1302,7 +1059,7 @@ fn node_pip_routes_remotely_by_endpoint_addr() {
 
     let client_node = Node::builder()
         .no_relay()
-        .identity(unique_name("pip_remote_client"))
+        .ephemeral()
         .bind()
         .expect("client node");
 
@@ -1341,64 +1098,14 @@ fn node_pip_routes_remotely_by_endpoint_addr() {
 }
 
 #[test]
-fn system_did_pip_routes_locally_without_peer_argument() {
+fn endpoint_id_is_stable_with_secret_key() {
     let _guard = node_test_guard();
-    let system_did = unique_system_did();
-    let topic = unique_name("system/session");
-
-    let server_node = Node::builder()
-        .no_relay()
-        .system_did(&system_did)
-        .bind()
-        .expect("system server node");
-    let client_node = Node::builder()
-        .no_relay()
-        .system_did(&system_did)
-        .bind()
-        .expect("system client node");
-
-    let mut server = server_node
-        .pip_server::<ClientMsg, ServerMsg>(&topic)
-        .unwrap();
-    let handle = std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let mut pip = loop {
-            if let Some(pip) = server.take().unwrap() {
-                break pip;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "system server should receive pip session"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        };
-        let msg = pip.next().unwrap().expect("server should receive msg");
-        pip.send(&ServerMsg {
-            value: msg.header().value * 2,
-        })
-        .unwrap();
-        pip.finish_send().unwrap();
-    });
-
-    let mut client = client_node.pip::<ClientMsg, ServerMsg>(&topic).unwrap();
-    let mut pip = client.open().unwrap();
-    pip.send(&ClientMsg { value: 21 }).unwrap();
-    let msg = pip.next().unwrap().expect("client should receive msg");
-    assert_eq!(msg.header().value, 42);
-    assert!(pip.next().unwrap().is_none());
-    handle.join().unwrap();
-}
-
-#[test]
-fn endpoint_id_is_stable_with_key_file() {
-    let _guard = node_test_guard();
-    let dir = tempfile::tempdir().expect("tmpdir");
-    let path = dir.path().join("rover.key");
+    let secret = iroh::SecretKey::generate();
 
     let id1 = {
         let node = Node::builder()
             .no_relay()
-            .identity_file(&path)
+            .secret_key(secret.clone())
             .bind()
             .expect("first bind");
         node.endpoint_id()
@@ -1407,84 +1114,28 @@ fn endpoint_id_is_stable_with_key_file() {
     let id2 = {
         let node = Node::builder()
             .no_relay()
-            .identity_file(&path)
+            .secret_key(secret.clone())
             .bind()
             .expect("second bind");
         node.endpoint_id()
     };
 
-    assert_eq!(id1, id2, "EndpointId should persist across reloads");
+    assert_eq!(id1, id2, "same secret key yields the same EndpointId");
 }
 
 #[test]
-fn identity_string_yields_deterministic_endpoint_id() {
+fn local_routing_by_endpoint_id() {
     let _guard = node_test_guard();
-    let id1 = Node::builder()
-        .no_relay()
-        .identity("rover-a")
-        .bind()
-        .unwrap()
-        .endpoint_id();
-    let id2 = Node::builder()
-        .no_relay()
-        .identity("rover-a")
-        .bind()
-        .unwrap()
-        .endpoint_id();
-    assert_eq!(id1, id2);
-
-    let other = Node::builder()
-        .no_relay()
-        .identity("rover-b")
-        .bind()
-        .unwrap()
-        .endpoint_id();
-    assert_ne!(id1, other);
-}
-
-#[test]
-fn identity_env_round_trip() {
-    let _guard = node_test_guard();
-    let var = format!("PEERBUS_TEST_ID_{}", std::process::id());
-    // SAFETY: tests modify process env, single-threaded read here.
-    unsafe { std::env::set_var(&var, "rover-c") };
-
-    let id1 = Node::builder()
-        .no_relay()
-        .identity_env(&var)
-        .bind()
-        .unwrap()
-        .endpoint_id();
-    let id2 = Node::builder()
-        .no_relay()
-        .identity("rover-c") // same name, derived directly
-        .bind()
-        .unwrap()
-        .endpoint_id();
-    assert_eq!(id1, id2);
-
-    unsafe { std::env::remove_var(&var) };
-}
-
-#[test]
-fn name_based_local_routing() {
-    let _guard = node_test_guard();
-    let pub_node = Node::builder()
-        .no_relay()
-        .identity("sensors")
-        .bind()
-        .unwrap();
-    let sub_node = Node::builder()
-        .no_relay()
-        .identity("planner")
-        .bind()
-        .unwrap();
+    let pub_node = Node::builder().no_relay().ephemeral().bind().unwrap();
+    let sub_node = Node::builder().no_relay().ephemeral().bind().unwrap();
 
     let mut pubr = pub_node.publisher::<Tick>("imu/raw").unwrap();
-    // Subscribe by NAME — local service name is composed from
-    // it, and `open_existing` succeeds because the publisher is
-    // already up on this host.
-    let mut sub = sub_node.subscriber::<Tick>("sensors", "imu/raw").unwrap();
+    // Subscribe by the publisher node's `endpoint_id()` — the local
+    // service name is composed from it, and `open_existing` succeeds
+    // because the publisher is already up on this host.
+    let mut sub = sub_node
+        .subscriber::<Tick>(pub_node.endpoint_id(), "imu/raw")
+        .unwrap();
 
     pubr.send(&Tick {
         seq: 7,
@@ -1505,12 +1156,15 @@ fn name_based_local_routing() {
 #[test]
 fn node_publisher_feeds_remote_transport_subscriber() {
     let _guard = node_test_guard();
-    let identity = unique_name("node_pub_remote_sub");
     let topic = unique_name("interop/node_to_remote");
 
+    // The inbound peer is a RemoteTransport with an ephemeral key that only
+    // exists once it is built — and building it needs this node's address —
+    // so there is no id to allowlist. Opt out explicitly instead.
     let pub_node = Node::builder()
         .no_relay()
-        .identity(&identity)
+        .ephemeral()
+        .allow_any_peer()
         .bind()
         .expect("publisher node");
     pub_node
@@ -1560,7 +1214,7 @@ fn remote_transport_publisher_feeds_node_subscriber() {
 
     let sub_node = Node::builder()
         .no_relay()
-        .identity(unique_name("node_sub_remote_pub"))
+        .ephemeral()
         .bind()
         .expect("subscriber node");
 
@@ -1597,20 +1251,23 @@ fn node_best_effort_pubsub_uses_datagram_path_when_available() {
         .with_chunk_bytes(4)
         .with_max_inflight_bytes(1024);
 
+    // Both sides are Nodes. Bind the subscriber first so the publisher can
+    // allowlist it by its real `endpoint_id()`. This is the secure path.
+    let sub_node = Node::builder()
+        .no_relay()
+        .ephemeral()
+        .bind()
+        .expect("subscriber node");
+
     let pub_node = Node::builder()
         .no_relay()
-        .identity(unique_name("best_effort_pub"))
+        .ephemeral()
+        .allow_peer(sub_node.endpoint_id())
         .bind()
         .expect("publisher node");
     pub_node
         .wait_for_direct_addresses(Duration::from_secs(5))
         .expect("publisher addresses");
-
-    let sub_node = Node::builder()
-        .no_relay()
-        .identity(unique_name("best_effort_sub"))
-        .bind()
-        .expect("subscriber node");
 
     // Subscribe before creating the local SHM service so this same-host test
     // is forced onto the iroh path instead of the local fast path.
@@ -1652,15 +1309,74 @@ fn node_best_effort_pubsub_uses_datagram_path_when_available() {
 }
 
 #[test]
-fn node_publisher_fans_out_to_local_shm_and_remote_iroh() {
+fn skip_shm_forces_same_host_pubsub_through_iroh_without_creating_a_segment() {
     let _guard = node_test_guard();
-    let identity = unique_name("node_pub_dual");
-    let local_sub_identity = unique_name("node_local_sub_dual");
-    let topic = unique_name("interop/dual");
+    let topic = unique_name("interop/skip_shm");
 
+    let sub_node = Node::builder()
+        .no_relay()
+        .skip_shm()
+        .ephemeral()
+        .bind()
+        .expect("subscriber node");
     let pub_node = Node::builder()
         .no_relay()
-        .identity(&identity)
+        .skip_shm()
+        .ephemeral()
+        .allow_peer(sub_node.endpoint_id())
+        .bind()
+        .expect("publisher node");
+    pub_node
+        .wait_for_direct_addresses(Duration::from_secs(5))
+        .expect("publisher addresses");
+
+    let mut pubr = pub_node.publisher::<Tick>(&topic).expect("publisher");
+    let service = peerbus::node::service_name(pub_node.endpoint_id().as_bytes(), &topic);
+    assert!(
+        LocalService::<Tick>::open_existing(&service).is_err(),
+        "skip_shm publisher must not create a local SHM service"
+    );
+
+    let mut sub = sub_node
+        .subscriber::<Tick>(pub_node.endpoint_addr(), &topic)
+        .expect("iroh subscriber");
+
+    // Exercise the loan/publish API too: skip_shm loans are owned buffers,
+    // not shared-memory slots.
+    let mut loan = pubr.loan(0).expect("owned loan");
+    *loan.header_mut() = Tick {
+        seq: 1,
+        payload: 55_005,
+    };
+    pubr.publish(loan).expect("publish over iroh");
+
+    let got = poll_for(Duration::from_secs(5), || {
+        pubr.send(&Tick {
+            seq: 2,
+            payload: 55_005,
+        })
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        sub.take().unwrap().map(|sample| *sample.header())
+    })
+    .expect("same-host iroh subscriber should receive");
+
+    assert_eq!(got.payload, 55_005);
+    assert!(pubr.stats().bytes_sent > 0, "publisher must use iroh");
+    assert!(sub.stats().bytes_received > 0, "subscriber must use iroh");
+}
+
+#[test]
+fn node_publisher_fans_out_to_local_shm_and_remote_iroh() {
+    let _guard = node_test_guard();
+    let topic = unique_name("interop/dual");
+
+    // The remote leg of the fan-out is a RemoteTransport (ephemeral id,
+    // built after this node), so there is nothing to allowlist.
+    let pub_node = Node::builder()
+        .no_relay()
+        .ephemeral()
+        .allow_any_peer()
         .bind()
         .expect("publisher node");
     pub_node
@@ -1669,12 +1385,12 @@ fn node_publisher_fans_out_to_local_shm_and_remote_iroh() {
 
     let local_sub_node = Node::builder()
         .no_relay()
-        .identity(local_sub_identity)
+        .ephemeral()
         .bind()
         .expect("local subscriber node");
     let mut pubr = pub_node.publisher::<Tick>(&topic).unwrap();
     let mut local_sub = local_sub_node
-        .subscriber::<Tick>(identity.as_str(), &topic)
+        .subscriber::<Tick>(pub_node.endpoint_id(), &topic)
         .unwrap();
 
     let remote_sub_side = RemoteTransport::builder(&topic)
@@ -1714,256 +1430,20 @@ fn node_publisher_fans_out_to_local_shm_and_remote_iroh() {
 }
 
 #[test]
-fn system_did_routes_topic_locally_without_peer_argument() {
-    let _guard = node_test_guard();
-    let system_did = unique_system_did();
-    let topic = unique_name("system/pose");
-
-    let pub_node = Node::builder()
-        .no_relay()
-        .system_did(&system_did)
-        .bind()
-        .expect("system publisher node");
-    let sub_node = Node::builder()
-        .no_relay()
-        .system_did(&system_did)
-        .bind()
-        .expect("system subscriber node");
-
-    let mut pubr = pub_node.publisher::<Tick>(&topic).unwrap();
-    let mut sub = sub_node.subscribe::<Tick>(&topic).unwrap();
-
-    pubr.send(&Tick {
-        seq: 1,
-        payload: 44_004,
-    })
-    .unwrap();
-    let got = poll_for(Duration::from_secs(2), || sub.take().unwrap())
-        .expect("system subscriber should receive via local SHM");
-    assert_eq!(got.header().payload, 44_004);
-}
-
-#[test]
-fn system_did_namespace_is_independent_from_process_identity() {
-    let _guard = node_test_guard();
-    let system_did = unique_system_did();
-    let topic = unique_name("system/shared_topic");
-
-    let pub_node = Node::builder()
-        .no_relay()
-        .identity(unique_name("system_process_a"))
-        .system_did(&system_did)
-        .bind()
-        .expect("system publisher node");
-    let sub_node = Node::builder()
-        .no_relay()
-        .identity(unique_name("system_process_b"))
-        .system_did(&system_did)
-        .bind()
-        .expect("system subscriber node");
-
-    assert_ne!(
-        pub_node.endpoint_id(),
-        sub_node.endpoint_id(),
-        "process transport identities stay independent"
-    );
-    assert_eq!(pub_node.system_did(), Some(system_did.as_str()));
-    assert_eq!(sub_node.system_did(), Some(system_did.as_str()));
-
-    let mut pubr = pub_node.publisher::<Tick>(&topic).unwrap();
-    let mut sub = sub_node.subscribe::<Tick>(&topic).unwrap();
-
-    pubr.send(&Tick {
-        seq: 1,
-        payload: 66_006,
-    })
-    .unwrap();
-    let got = poll_for(Duration::from_secs(2), || sub.take().unwrap())
-        .expect("same system DID should share a topic namespace locally");
-    assert_eq!(got.header().payload, 66_006);
-}
-
-#[test]
-fn different_system_dids_isolate_the_same_topic_key() {
-    let _guard = node_test_guard();
-    let system_a = unique_system_did();
-    let system_b = unique_system_did();
-    let topic = unique_name("system/same_topic_key");
-
-    let pub_node = Node::builder()
-        .no_relay()
-        .system_did(&system_a)
-        .bind()
-        .expect("system A publisher node");
-    let sub_node = Node::builder()
-        .no_relay()
-        .system_did(&system_b)
-        .bind()
-        .expect("system B subscriber node");
-
-    let _pubr = pub_node.publisher::<Tick>(&topic).unwrap();
-    let err = match sub_node.subscribe::<Tick>(&topic) {
-        Ok(_) => panic!("same topic key in a different system DID must not attach locally"),
-        Err(err) => err,
-    };
-    assert!(
-        matches!(err, peerbus::Error::ServiceNotFound(_)),
-        "got {err:?}"
-    );
-}
-
-#[test]
-fn system_did_subscribe_falls_back_to_iroh_route_when_not_local() {
-    let _guard = node_test_guard();
-    let system_did = unique_system_did();
-    let topic = unique_name("system/remote_pose");
-    let route_topic = format!("{system_did}::{topic}");
-
-    let remote_pub_side = RemoteTransport::builder(route_topic)
-        .no_relay()
-        .build_blocking()
-        .expect("remote publisher transport");
-    remote_pub_side
-        .wait_for_direct_addresses(Duration::from_secs(5))
-        .expect("remote publisher addresses");
-
-    let sub_node = Node::builder()
-        .no_relay()
-        .system_did(&system_did)
-        .bind()
-        .expect("system subscriber node");
-    sub_node
-        .add_topic_route(&topic, remote_pub_side.endpoint_addr())
-        .unwrap();
-
-    let mut pubr = remote_pub_side.publisher::<Tick>().unwrap();
-    let mut sub = sub_node.subscribe::<Tick>(&topic).unwrap();
-
-    let got = poll_for(Duration::from_secs(5), || {
-        let mut loan = pubr.loan(0).unwrap();
-        loan.header = Tick {
-            seq: 1,
-            payload: 55_005,
-        };
-        pubr.publish(loan).unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        while let Some(sample) = sub.take().unwrap() {
-            if sample.header().payload == 55_005 {
-                return Some(*sample.header());
-            }
-        }
-        None
-    })
-    .expect("system subscriber should receive via iroh route");
-
-    assert_eq!(got.payload, 55_005);
-}
-
-#[test]
-fn system_did_subscribe_can_use_topic_agnostic_system_peer() {
-    let _guard = node_test_guard();
-    let system_did = unique_system_did();
-    let topic = unique_name("system/peer_pose");
-    let route_topic = format!("{system_did}::{topic}");
-
-    let remote_pub_side = RemoteTransport::builder(route_topic)
-        .no_relay()
-        .build_blocking()
-        .expect("remote publisher transport");
-    remote_pub_side
-        .wait_for_direct_addresses(Duration::from_secs(5))
-        .expect("remote publisher addresses");
-
-    let sub_node = Node::builder()
-        .no_relay()
-        .system_did(&system_did)
-        .bind()
-        .expect("system subscriber node");
-    sub_node
-        .add_system_peer(remote_pub_side.endpoint_addr())
-        .unwrap();
-
-    let mut pubr = remote_pub_side.publisher::<Tick>().unwrap();
-    let mut sub = sub_node.subscribe::<Tick>(&topic).unwrap();
-
-    let got = poll_for(Duration::from_secs(5), || {
-        let mut loan = pubr.loan(0).unwrap();
-        loan.header = Tick {
-            seq: 1,
-            payload: 77_007,
-        };
-        pubr.publish(loan).unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        while let Some(sample) = sub.take().unwrap() {
-            if sample.header().payload == 77_007 {
-                return Some(*sample.header());
-            }
-        }
-        None
-    })
-    .expect("system subscriber should receive through system peer fallback");
-
-    assert_eq!(got.payload, 77_007);
-}
-
-#[test]
-fn system_did_requires_did_key() {
-    let _guard = node_test_guard();
-    let err = match Node::builder()
-        .no_relay()
-        .system_did("did:name:not-yet")
-        .bind()
-    {
-        Ok(_) => panic!("system_did should require did:key for now"),
-        Err(err) => err,
-    };
-    assert!(
-        matches!(err, peerbus::Error::InvalidArgument(_)),
-        "got {err:?}"
-    );
-}
-
-#[test]
-fn system_topic_helpers_require_system_did() {
-    let _guard = node_test_guard();
-    let node = Node::builder()
-        .no_relay()
-        .identity(unique_name("plain_node"))
-        .bind()
-        .unwrap();
-    let topic = unique_name("system/requires_did");
-
-    let sub_err = match node.subscribe::<Tick>(&topic) {
-        Ok(_) => panic!("Node::subscribe(topic) is only for system DID mode"),
-        Err(err) => err,
-    };
-    assert!(
-        matches!(sub_err, peerbus::Error::InvalidArgument(_)),
-        "got {sub_err:?}"
-    );
-
-    let route_err = node
-        .add_topic_route(&topic, node.endpoint_addr())
-        .expect_err("topic routes require system DID mode");
-    assert!(
-        matches!(route_err, peerbus::Error::InvalidArgument(_)),
-        "got {route_err:?}"
-    );
-
-    let peer_err = node
-        .add_system_peer(node.endpoint_addr())
-        .expect_err("system peers require system DID mode");
-    assert!(
-        matches!(peer_err, peerbus::Error::InvalidArgument(_)),
-        "got {peer_err:?}"
-    );
-}
-
-#[test]
 fn ephemeral_key_changes_each_bind() {
     let _guard = node_test_guard();
-    let id1 = Node::builder().no_relay().bind().unwrap().endpoint_id();
-    let id2 = Node::builder().no_relay().bind().unwrap().endpoint_id();
+    let id1 = Node::builder()
+        .ephemeral()
+        .no_relay()
+        .bind()
+        .unwrap()
+        .endpoint_id();
+    let id2 = Node::builder()
+        .ephemeral()
+        .no_relay()
+        .bind()
+        .unwrap()
+        .endpoint_id();
     assert_ne!(id1, id2, "fresh keys each time when no path is supplied");
 }
 
@@ -1971,7 +1451,7 @@ fn ephemeral_key_changes_each_bind() {
 fn topic_validation_rejects_bad_chars() {
     let _guard = node_test_guard();
     use peerbus::Error;
-    let node = Node::builder().no_relay().identity("v").bind().unwrap();
+    let node = Node::builder().no_relay().ephemeral().bind().unwrap();
 
     // Empty topic.
     assert!(matches!(
@@ -1985,7 +1465,7 @@ fn topic_validation_rejects_bad_chars() {
     ));
     // Disallowed char (colon).
     assert!(matches!(
-        node.subscriber::<Tick>("v", "rover:pose"),
+        node.subscriber::<Tick>(node.endpoint_id(), "rover:pose"),
         Err(Error::InvalidArgument(_))
     ));
     // The allowed set still passes.
@@ -1993,259 +1473,145 @@ fn topic_validation_rejects_bad_chars() {
 }
 
 /// Connection from an un-allowlisted peer must be rejected by the
-/// accept loop before any data flows. We exercise this by binding a
-/// publisher with an empty allowlist (`.allow_peer(<unrelated>)`)
-/// and then subscribing from a node whose endpoint id is NOT in
-/// the list. The subscriber's `take()` should never see a sample
-/// because no stream is served.
+/// accept loop before any data flows.
+///
+/// All three ACL tests below share one shape, and the ordering in them
+/// is load-bearing: the client's `req_client` is built *before* the
+/// server registers its req/res service, so the client cannot attach to
+/// the server's same-host SHM service and is forced onto the iroh path —
+/// which is where the peer ACL lives. The server is then wired up to
+/// answer, so the only thing that can make the call fail is the ACL.
+///
+/// Runs an `Add` call against `server_node` from `client_node` over
+/// iroh and returns whether the call succeeded. Asserts the server never
+/// observes the request when the connection was refused.
+fn remote_call_is_served(server_node: &Node, client_node: &Node, topic: &str) -> bool {
+    server_node
+        .wait_for_direct_addresses(Duration::from_secs(5))
+        .expect("server addresses");
+
+    // Built before `req_server` below exists → no local SHM service to
+    // attach to → genuine iroh path.
+    let mut client = client_node
+        .req_client::<Add, Sum>(server_node.endpoint_addr(), topic)
+        .expect("remote req client");
+
+    let mut server = server_node.req_server::<Add, Sum>(topic).unwrap();
+    let handle = std::thread::spawn(move || {
+        poll_for(Duration::from_secs(3), || {
+            let (req, reply) = server.take().unwrap()?;
+            reply
+                .respond(&Sum {
+                    value: req.header().a + req.header().b,
+                })
+                .unwrap();
+            Some(())
+        })
+        .is_some()
+    });
+
+    let call = client.call(&Add { a: 2, b: 40 });
+    let served = handle.join().unwrap();
+    match call {
+        Ok(res) => {
+            assert_eq!(res.header().value, 42);
+            assert!(served, "a served call must have reached the server");
+            true
+        }
+        Err(_) => {
+            assert!(
+                !served,
+                "a rejected connection must never reach the req/res server"
+            );
+            false
+        }
+    }
+}
+
+/// Regression test for the deny-by-default flip: a node that configures
+/// neither `.allow_peer(...)` nor `.allow_any_peer()` must REJECT every
+/// inbound peer. Before the fix, this call succeeded.
+#[test]
+fn deny_by_default_rejects_inbound_peer_without_allowlist() {
+    let _guard = node_test_guard();
+    let topic = unique_name("acl/deny_by_default");
+
+    // No allowlist, no `allow_any_peer` → deny all inbound.
+    let server_node = Node::builder()
+        .no_relay()
+        .ephemeral()
+        .bind()
+        .expect("server node");
+    let client_node = Node::builder()
+        .no_relay()
+        .ephemeral()
+        .bind()
+        .expect("client node");
+
+    assert!(
+        !remote_call_is_served(&server_node, &client_node, &topic),
+        "deny-by-default: an un-allowlisted peer must be refused, not served"
+    );
+}
+
+/// A node WITH an allowlist rejects peers that are not on it.
 #[test]
 fn rejects_unallowlisted_peer() {
     let _guard = node_test_guard();
-    use peerbus::Error;
+    let topic = unique_name("acl/not_on_list");
 
-    // An "intended" peer whose key won't actually dial us — we
-    // just need *some* allowlisted id so the publisher is in
-    // closed-not-open mode.
-    let stranger_id = Node::builder().no_relay().bind().unwrap().endpoint_id();
-
-    let pub_node = Node::builder()
+    // Some unrelated peer is allowlisted; the client below is not.
+    let stranger_id = Node::builder()
+        .ephemeral()
         .no_relay()
-        .identity("rejector")
+        .bind()
+        .unwrap()
+        .endpoint_id();
+
+    let server_node = Node::builder()
+        .no_relay()
+        .ephemeral()
         .allow_peer(stranger_id)
         .bind()
-        .expect("publisher node");
-
-    pub_node
-        .wait_for_direct_addresses(Duration::from_secs(5))
-        .expect("publisher addresses");
-
-    let sub_node = Node::builder()
-        .no_relay()
-        .identity("attacker")
-        .bind()
-        .expect("subscriber node");
-
-    let _pubr = pub_node.publisher::<Tick>("blocked/topic").unwrap();
-
-    // The dial succeeds at the QUIC layer; peerbus then closes the
-    // connection because the subscriber's endpoint id is not in
-    // the allowlist. Subsequent take() observes the disconnect.
-    let mut sub = sub_node
-        .subscriber::<Tick>(pub_node.endpoint_addr(), "blocked/topic")
-        .expect("subscribe handshake (over wire)");
-
-    // Spin a little to give the publisher time to send/close.
-    let _ = poll_for(Duration::from_millis(300), || match sub.take() {
-        Err(Error::Disconnected) => Some(()),
-        Ok(Some(_)) => panic!("attacker should not receive any sample"),
-        _ => None,
-    });
-    // Either Disconnected or no sample is acceptable; the
-    // contract is that no Tick samples reach the attacker.
-    if let Ok(Some(_)) = sub.take() {
-        panic!("attacker received a Tick despite ACL");
-    }
-}
-
-// ---- system-DID routing parity for the streaming modes ----
-// que/ans, put/ack, pip now mirror req/res: local SHM, then explicit
-// topic route, then topic-agnostic system peer. A standalone
-// RemoteTransport server (no SHM) stands in for the remote endpoint.
-
-#[test]
-fn system_did_que_ans_uses_topic_route_when_not_local() {
-    let _guard = node_test_guard();
-    let system_did = unique_system_did();
-    let topic = unique_name("system/search_route");
-    let route_topic = format!("{system_did}::{topic}");
-
-    let server = RemoteTransport::builder(route_topic)
-        .no_relay()
-        .build_blocking()
-        .unwrap();
-    server
-        .wait_for_direct_addresses(Duration::from_secs(5))
-        .unwrap();
-    server
-        .serve_ques::<RangeQue, Hit, _>(|q| {
-            (0..q.count).map(|o| Hit { value: q.start + o }).collect()
-        })
-        .unwrap();
-
+        .expect("server node");
     let client_node = Node::builder()
         .no_relay()
-        .system_did(&system_did)
+        .ephemeral()
         .bind()
-        .unwrap();
-    client_node
-        .add_topic_route(&topic, server.endpoint_addr())
-        .unwrap();
+        .expect("client node");
 
-    let mut client = client_node.que::<RangeQue, Hit>(&topic).unwrap();
-    let mut answers = client.send(&RangeQue { start: 1, count: 3 }).unwrap();
-    let mut got = Vec::new();
-    while let Some(a) = answers.next().unwrap() {
-        got.push(a.header().value);
-    }
-    assert_eq!(got, vec![1, 2, 3]);
+    assert!(
+        !remote_call_is_served(&server_node, &client_node, &topic),
+        "a peer missing from the allowlist must be refused"
+    );
 }
 
+/// Positive control for the two rejection tests: the very same wire path
+/// succeeds once the client's endpoint id IS on the allowlist. Without
+/// this, the rejections above could be passing for the wrong reason.
 #[test]
-fn system_did_que_ans_can_use_topic_agnostic_system_peer() {
+fn allowlisted_peer_is_accepted_over_iroh() {
     let _guard = node_test_guard();
-    let system_did = unique_system_did();
-    let topic = unique_name("system/search_peer");
-    let route_topic = format!("{system_did}::{topic}");
+    let topic = unique_name("acl/on_list");
 
-    let server = RemoteTransport::builder(route_topic)
-        .no_relay()
-        .build_blocking()
-        .unwrap();
-    server
-        .wait_for_direct_addresses(Duration::from_secs(5))
-        .unwrap();
-    server
-        .serve_ques::<RangeQue, Hit, _>(|q| {
-            (0..q.count).map(|o| Hit { value: q.start + o }).collect()
-        })
-        .unwrap();
-
+    // Bind the client first so the server can allowlist its real id.
     let client_node = Node::builder()
         .no_relay()
-        .system_did(&system_did)
+        .ephemeral()
         .bind()
-        .unwrap();
-    client_node.add_system_peer(server.endpoint_addr()).unwrap();
+        .expect("client node");
 
-    let mut client = client_node.que::<RangeQue, Hit>(&topic).unwrap();
-    let mut answers = client.send(&RangeQue { start: 7, count: 2 }).unwrap();
-    let mut got = Vec::new();
-    while let Some(a) = answers.next().unwrap() {
-        got.push(a.header().value);
-    }
-    assert_eq!(got, vec![7, 8]);
-}
-
-#[test]
-fn system_did_put_ack_uses_topic_route_when_not_local() {
-    let _guard = node_test_guard();
-    let system_did = unique_system_did();
-    let topic = unique_name("system/upload_route");
-    let route_topic = format!("{system_did}::{topic}");
-
-    let server = RemoteTransport::builder(route_topic)
+    let server_node = Node::builder()
         .no_relay()
-        .build_blocking()
-        .unwrap();
-    server
-        .wait_for_direct_addresses(Duration::from_secs(5))
-        .unwrap();
-    server
-        .serve_puts::<LogChunk, UploadAck, _>(|puts| UploadAck {
-            count: puts.len() as u32,
-            sum: puts.iter().map(|p| p.value).sum(),
-        })
-        .unwrap();
-
-    let client_node = Node::builder()
-        .no_relay()
-        .system_did(&system_did)
+        .ephemeral()
+        .allow_peer(client_node.endpoint_id())
         .bind()
-        .unwrap();
-    client_node
-        .add_topic_route(&topic, server.endpoint_addr())
-        .unwrap();
+        .expect("server node");
 
-    let mut client = client_node.put::<LogChunk, UploadAck>(&topic).unwrap();
-    let mut upload = client.open().unwrap();
-    for value in [5, 6, 7] {
-        upload.send(&LogChunk { value }).unwrap();
-    }
-    let ack = upload.finish().unwrap();
-    assert_eq!(ack.header().count, 3);
-    assert_eq!(ack.header().sum, 18);
-}
-
-#[test]
-fn system_did_put_ack_can_use_topic_agnostic_system_peer() {
-    let _guard = node_test_guard();
-    let system_did = unique_system_did();
-    let topic = unique_name("system/upload_peer");
-    let route_topic = format!("{system_did}::{topic}");
-
-    let server = RemoteTransport::builder(route_topic)
-        .no_relay()
-        .build_blocking()
-        .unwrap();
-    server
-        .wait_for_direct_addresses(Duration::from_secs(5))
-        .unwrap();
-    server
-        .serve_puts::<LogChunk, UploadAck, _>(|puts| UploadAck {
-            count: puts.len() as u32,
-            sum: puts.iter().map(|p| p.value).sum(),
-        })
-        .unwrap();
-
-    let client_node = Node::builder()
-        .no_relay()
-        .system_did(&system_did)
-        .bind()
-        .unwrap();
-    client_node.add_system_peer(server.endpoint_addr()).unwrap();
-
-    let mut client = client_node.put::<LogChunk, UploadAck>(&topic).unwrap();
-    let mut upload = client.open().unwrap();
-    upload.send(&LogChunk { value: 100 }).unwrap();
-    let ack = upload.finish().unwrap();
-    assert_eq!(ack.header().count, 1);
-    assert_eq!(ack.header().sum, 100);
-}
-
-#[test]
-fn system_did_pip_uses_topic_route_when_not_local() {
-    let _guard = node_test_guard();
-    let system_did = unique_system_did();
-    let topic = unique_name("system/session_route");
-    let route_topic = format!("{system_did}::{topic}");
-
-    let server = RemoteTransport::builder(route_topic)
-        .no_relay()
-        .build_blocking()
-        .unwrap();
-    server
-        .wait_for_direct_addresses(Duration::from_secs(5))
-        .unwrap();
-    server
-        .serve_pips::<ClientMsg, ServerMsg, _>(|msgs| {
-            msgs.iter()
-                .map(|m| ServerMsg {
-                    value: m.value * 10,
-                })
-                .collect()
-        })
-        .unwrap();
-
-    let client_node = Node::builder()
-        .no_relay()
-        .system_did(&system_did)
-        .bind()
-        .unwrap();
-    client_node
-        .add_topic_route(&topic, server.endpoint_addr())
-        .unwrap();
-
-    let mut client = client_node.pip::<ClientMsg, ServerMsg>(&topic).unwrap();
-    let mut pip = client.open().unwrap();
-    for value in [1, 2] {
-        pip.send(&ClientMsg { value }).unwrap();
-    }
-    pip.finish_send().unwrap();
-    let mut got = Vec::new();
-    while let Some(reply) = pip.next().unwrap() {
-        got.push(reply.header().value);
-    }
-    assert_eq!(got, vec![10, 20]);
+    assert!(
+        remote_call_is_served(&server_node, &client_node, &topic),
+        "an allowlisted peer must be served over iroh"
+    );
 }
 
 // ---- empty-stream edge cases (local SHM) ----
@@ -2253,19 +1619,11 @@ fn system_did_pip_uses_topic_route_when_not_local() {
 #[test]
 fn que_ans_empty_answer_stream() {
     let _guard = node_test_guard();
-    let server_node = Node::builder()
-        .no_relay()
-        .identity("empty_ans_srv")
-        .bind()
-        .unwrap();
-    let client_node = Node::builder()
-        .no_relay()
-        .identity("empty_ans_cli")
-        .bind()
-        .unwrap();
+    let server_node = Node::builder().no_relay().ephemeral().bind().unwrap();
+    let client_node = Node::builder().no_relay().ephemeral().bind().unwrap();
     let topic = unique_name("empty/que");
 
-    let mut server = server_node.ans::<RangeQue, Hit>(&topic).unwrap();
+    let mut server = server_node.que_server::<RangeQue, Hit>(&topic).unwrap();
     let handle = std::thread::spawn(move || {
         poll_for(Duration::from_secs(3), || {
             let (_que, ans) = server.take().unwrap()?;
@@ -2276,7 +1634,7 @@ fn que_ans_empty_answer_stream() {
     });
 
     let mut client = client_node
-        .que_client::<RangeQue, Hit>("empty_ans_srv", &topic)
+        .que_client::<RangeQue, Hit>(server_node.endpoint_id(), &topic)
         .unwrap();
     let mut answers = client.send(&RangeQue { start: 0, count: 0 }).unwrap();
     assert!(answers.next().unwrap().is_none(), "no answers expected");
@@ -2286,19 +1644,13 @@ fn que_ans_empty_answer_stream() {
 #[test]
 fn put_ack_empty_upload() {
     let _guard = node_test_guard();
-    let server_node = Node::builder()
-        .no_relay()
-        .identity("empty_put_srv")
-        .bind()
-        .unwrap();
-    let client_node = Node::builder()
-        .no_relay()
-        .identity("empty_put_cli")
-        .bind()
-        .unwrap();
+    let server_node = Node::builder().no_relay().ephemeral().bind().unwrap();
+    let client_node = Node::builder().no_relay().ephemeral().bind().unwrap();
     let topic = unique_name("empty/put");
 
-    let mut server = server_node.ack::<LogChunk, UploadAck>(&topic).unwrap();
+    let mut server = server_node
+        .put_server::<LogChunk, UploadAck>(&topic)
+        .unwrap();
     let handle = std::thread::spawn(move || {
         poll_for(Duration::from_secs(3), || {
             let mut puts = server.take().unwrap()?;
@@ -2313,7 +1665,7 @@ fn put_ack_empty_upload() {
     });
 
     let mut client = client_node
-        .put_client::<LogChunk, UploadAck>("empty_put_srv", &topic)
+        .put_client::<LogChunk, UploadAck>(server_node.endpoint_id(), &topic)
         .unwrap();
     let upload = client.open().unwrap();
     let ack = upload.finish().unwrap(); // zero puts
@@ -2324,16 +1676,8 @@ fn put_ack_empty_upload() {
 #[test]
 fn pip_empty_session() {
     let _guard = node_test_guard();
-    let server_node = Node::builder()
-        .no_relay()
-        .identity("empty_pip_srv")
-        .bind()
-        .unwrap();
-    let client_node = Node::builder()
-        .no_relay()
-        .identity("empty_pip_cli")
-        .bind()
-        .unwrap();
+    let server_node = Node::builder().no_relay().ephemeral().bind().unwrap();
+    let client_node = Node::builder().no_relay().ephemeral().bind().unwrap();
     let topic = unique_name("empty/pip");
 
     let mut server = server_node
@@ -2350,7 +1694,7 @@ fn pip_empty_session() {
     });
 
     let mut client = client_node
-        .pip_client::<ClientMsg, ServerMsg>("empty_pip_srv", &topic)
+        .pip_client::<ClientMsg, ServerMsg>(server_node.endpoint_id(), &topic)
         .unwrap();
     let mut pip = client.open().unwrap();
     pip.finish_send().unwrap(); // zero messages
@@ -2377,7 +1721,7 @@ fn que_ans_client_stats_over_iroh() {
         })
         .unwrap();
 
-    let client_node = Node::builder().no_relay().bind().unwrap();
+    let client_node = Node::builder().ephemeral().no_relay().bind().unwrap();
     let mut client = client_node
         .que_client::<RangeQue, Hit>(server.endpoint_addr(), &topic)
         .unwrap();
@@ -2409,7 +1753,7 @@ fn put_ack_client_stats_over_iroh() {
         })
         .unwrap();
 
-    let client_node = Node::builder().no_relay().bind().unwrap();
+    let client_node = Node::builder().ephemeral().no_relay().bind().unwrap();
     let mut client = client_node
         .put_client::<LogChunk, UploadAck>(server.endpoint_addr(), &topic)
         .unwrap();
@@ -2441,7 +1785,7 @@ fn pip_client_stats_over_iroh() {
         })
         .unwrap();
 
-    let client_node = Node::builder().no_relay().bind().unwrap();
+    let client_node = Node::builder().ephemeral().no_relay().bind().unwrap();
     let mut client = client_node
         .pip_client::<ClientMsg, ServerMsg>(server.endpoint_addr(), &topic)
         .unwrap();
@@ -2477,7 +1821,7 @@ fn req_res_sequential_calls_preserve_req_ids() {
         })
         .unwrap();
 
-    let client_node = Node::builder().no_relay().bind().unwrap();
+    let client_node = Node::builder().ephemeral().no_relay().bind().unwrap();
     let mut client = client_node
         .req_client::<Add, Sum>(server.endpoint_addr(), &topic)
         .unwrap();
@@ -2511,10 +1855,67 @@ fn req_res_type_mismatch_is_rejected() {
         })
         .unwrap();
 
-    let client_node = Node::builder().no_relay().bind().unwrap();
+    let client_node = Node::builder().ephemeral().no_relay().bind().unwrap();
     let mut client = client_node
         .req_client::<Sum, Sum>(server.endpoint_addr(), &topic)
         .unwrap();
     let result = client.call(&Sum { value: 1 });
     assert!(result.is_err(), "type mismatch must surface as an error");
+}
+
+/// A deny-by-default node opens to one peer at runtime: the same client
+/// gets nothing before `allow_peer` and samples after it re-dials.
+#[test]
+fn runtime_allow_peer_admits_a_rejected_peer() {
+    let _guard = node_test_guard();
+    let topic = unique_name("acl/runtime_allow");
+    // Over QUIC on purpose: the inbound policy gates connections, and
+    // same-host traffic would take shared memory instead.
+    let server = Node::builder()
+        .no_relay()
+        .ephemeral()
+        .skip_shm()
+        .bind()
+        .unwrap();
+    let client = Node::builder()
+        .no_relay()
+        .ephemeral()
+        .skip_shm()
+        .allow_peer(server.endpoint_id())
+        .bind()
+        .unwrap();
+    server
+        .wait_for_direct_addresses(Duration::from_secs(5))
+        .unwrap();
+    client
+        .wait_for_direct_addresses(Duration::from_secs(5))
+        .unwrap();
+    assert!(!server.allows_peer(&client.endpoint_id()));
+    let mut publisher = server.publisher::<Tick>(&topic).unwrap();
+    let mut rejected = client
+        .subscriber::<Tick>(server.endpoint_addr(), &topic)
+        .unwrap();
+    for seq in 0..4 {
+        publisher.send(&Tick { seq, payload: 1 }).unwrap();
+        assert!(
+            rejected
+                .recv_timeout(Duration::from_millis(200))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    server.allow_peer(client.endpoint_id());
+    assert!(server.allows_peer(&client.endpoint_id()));
+    let mut admitted = client
+        .subscriber::<Tick>(server.endpoint_addr(), &topic)
+        .unwrap();
+    let got = poll_for(Duration::from_secs(5), || {
+        publisher.send(&Tick { seq: 9, payload: 2 }).unwrap();
+        admitted
+            .recv_timeout(Duration::from_millis(100))
+            .unwrap()
+            .map(|sample| sample.header().seq)
+    });
+    assert_eq!(got, Some(9));
 }

@@ -1,10 +1,69 @@
 # Changelog
 
+## [0.4.2] - 2026-10-09
+
+### <!-- 0 -->⛰️  Features
+
+- Runtime allow_peer and py constructors
+- Add option to skip shared memory for nodes
+- Hmmmmmm
+- Everything less than 1000loc
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Seed request ids per handle
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Bump datapod pin to 0.6.2
+- Bump datapod pin to 0.6.1
+- Bump datapod to 0.6.0
+- Bump datapod dependency to 0.5.0
+- Migrate to oslo config, clean up layout
+- Update iroh imports
+
+## [0.4.0] - 2026-07-12
+
+### <!-- 0 -->⛰️  Features
+
+- Async, deny-by-default ACL, recv, close
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Release GIL, put/ack poll surface
+- Panic guards, handle safety, parity
+- Chunk DoS, net timeouts, type-hash
+- SIGBUS guard and self-healing reclaim
+
+### <!-- 2 -->🚜 Refactor
+
+- Promote reqres over reqresp
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Drop dead config feature, CI, docs, versions
+
 ## [0.3.2] - 2026-07-11
 
 ### <!-- 0 -->⛰️  Features
 
-- More on phase 2
+- Rename the crate, C header, and Python module from quicbit to peerbus
+- Expand the C ABI and pyo3 bindings across all five modes
+- Add zero-copy sample views (`take_view` / `DatapodSubscriber.take_view`) exposing read-only `memoryview` payload and wire bytes
+- Expose `peer_path_diagnostics` and inbound peer allowlisting through the Python and C bindings
+- Add a dedicated `reqres` module and export `DatapodSample`, `AnsStream`, and `PutSenderToken`
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Move the `datapod` dependency from a local path to git tag 0.4.1
+
+## [0.3.1] - 2026-06-07
+
+### <!-- 0 -->⛰️  Features
+
+- Add `DatapodMsg` and a generic datapod binding path for cross-language pub/sub and item modes
+- Add Python video publisher and subscriber examples over the datapod `Grid` path
+- Rework the Rust video publisher/subscriber examples onto the datapod path
 
 ## [0.3.0] - 2026-06-01
 

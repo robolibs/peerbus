@@ -15,7 +15,7 @@ use crate::error::{Error, Result};
 use crate::local::service::LocalConfig;
 use crate::local::shm::{Consumer, Producer, Segment};
 use crate::queans::{ANS_KIND_DONE, ANS_KIND_ITEM, AnsEnvelope};
-use crate::reqresp::Envelope;
+use crate::reqres::Envelope;
 use crate::transport::wire_type_hash;
 
 const QUE_SUFFIX: &str = "__que";
@@ -110,7 +110,7 @@ where
                 cfg.clone(),
             )?,
             answers: AnsService::<Ans>::open_or_create(&with_suffix(name, ANS_SUFFIX), cfg)?,
-            next_id: Arc::new(AtomicU64::new(0)),
+            next_id: Arc::new(AtomicU64::new(crate::local::seed_id())),
         })
     }
 
@@ -118,7 +118,7 @@ where
         Ok(Self {
             queries: QueService::<Que>::open_existing(&with_suffix(name, QUE_SUFFIX))?,
             answers: AnsService::<Ans>::open_existing(&with_suffix(name, ANS_SUFFIX))?,
-            next_id: Arc::new(AtomicU64::new(0)),
+            next_id: Arc::new(AtomicU64::new(crate::local::seed_id())),
         })
     }
 

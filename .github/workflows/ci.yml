@@ -41,8 +41,6 @@ jobs:
         features:
           - "" # default
           - "tracing"
-          - "config"
-          - "tracing config"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -72,3 +70,48 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
+
+  # Build the CPython extension with maturin and run the Python test suite.
+  # Mirrors pyproject.toml (build-backend = maturin, features = ["python"],
+  # profile = "python") and examples/python_binding/Makefile.
+  python:
+    name: python bindings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install build + test tooling
+        run: |
+          python -m pip install --upgrade pip
+          # maturin builds the extension; pytest runs tests/python.
+          python -m pip install "maturin>=1.7,<2.0" pytest
+          # tests/python/test_bindings.py imports `datapod`; install it from git
+          # at the same tag the crate pins (Cargo.toml: datapod tag 0.4.1).
+          python -m pip install --force-reinstall --no-deps \
+            "git+https://codeberg.org/robolibs/datapod.git@0.4.1"
+      - name: Build extension (maturin develop)
+        # Installs peerbus into the active Python env from the local crate;
+        # `--features python` matches [tool.maturin] in pyproject.toml.
+        run: maturin develop --features python
+      - name: Run Python tests
+        run: pytest tests/python
+
+  # Build the cdylib (libpeerbus) and compile + run the C ABI examples.
+  # examples/c_abi/Makefile links against target/debug/libpeerbus and runs
+  # each demo; it invokes `cargo build --lib` itself, which produces the
+  # cdylib because Cargo.toml sets crate-type = ["rlib", "cdylib"].
+  c-abi:
+    name: c abi examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build cdylib
+        run: cargo build --lib
+      - name: Compile and run C examples
+        run: make -C examples/c_abi run

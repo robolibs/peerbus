@@ -45,7 +45,7 @@ fn remote_reqresp_call_roundtrip() {
         .build_blocking()
         .expect("client endpoint");
 
-    let mut client = client_side.client::<Add, Sum>().expect("client");
+    let mut client = client_side.req_client::<Add, Sum>().expect("client");
 
     // Issue a handful of calls; verify each response.
     for i in 0..5 {

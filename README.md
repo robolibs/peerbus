@@ -64,10 +64,10 @@ use peerbus::Node;
 #[datapod::datapod]
 struct Pose { x: f32, y: f32, yaw: f32 }
 
-let node = Node::builder().identity("rover-a").no_relay().bind()?;
+let node = Node::builder().ephemeral().no_relay().bind()?;
 
 let mut pubr = node.publisher::<Pose>("rover/pose")?;
-let mut sub  = node.subscriber::<Pose>("rover-a", "rover/pose")?;
+let mut sub  = node.subscriber::<Pose>(node.endpoint_id(), "rover/pose")?;
 
 pubr.send(&Pose { x: 1.0, y: 2.0, yaw: 0.1 })?;
 if let Some(s) = sub.take()? {
@@ -78,86 +78,72 @@ if let Some(s) = sub.take()? {
 
 Payload types implement `datapod::DataPod` — typically a one-line `#[datapod::datapod]` annotation. Fixed-size types ride entirely in the local SHM header / iroh frame prefix; heap-bearing types (one `#[dp(bytes)]` field) ride the variable-length payload too.
 
-## System DID mode
-
-For multi-process systems that together form one machine, join a
-logical `did:key` system namespace and route by topic key:
-
-```rust
-let node = Node::builder()
-    .system_did("did:key:z6MkSystem...")
-    .bind()?;
-
-let mut pubr = node.publisher::<Pose>("/state/pose")?;
-let mut sub  = node.subscribe::<Pose>("/state/pose")?;
-```
-
-In this mode local SHM names derive from `system_did + topic`, not
-from the process identity. Multiple processes can therefore use
-different transport identities while joining the same system DID/topic
-namespace. If the topic is not local, add an explicit remote route:
-
-```rust
-node.add_topic_route("/state/pose", publisher_endpoint_addr)?;
-let mut sub = node.subscribe::<Pose>("/state/pose")?;
-```
-
-Or add a topic-agnostic system peer and let `subscribe(topic)` use the
-same `(system_did, topic)` route key over iroh when SHM is absent:
-
-```rust
-node.add_system_peer(remote_system_endpoint_addr)?;
-let mut sub = node.subscribe::<Pose>("/state/pose")?;
-```
-
 ## Addressing a peer
 
-A subscriber names *who* it's listening to. `IntoPeer` accepts:
+peerbus addresses peers **only by their 32-byte `EndpointId`** — the same
+id iroh dials and that seeds the shared-memory rendezvous name. `IntoPeer`
+accepts an `EndpointId` or a full `EndpointAddr`:
 
-| Form                              | Routes locally? | Use when                                 |
-|-----------------------------------|-----------------|------------------------------------------|
-| `"rover-a"` (string)              | yes             | Trusted LAN — string hashes to a key.    |
-| `did:key:z6Mk…` (W3C DID:KEY)     | yes             | Sharing a public key out-of-band.        |
-| `EndpointId` / `EndpointAddr`     | yes             | Already holding the iroh object.         |
+```rust
+let mut sub = sub_node.subscriber::<Pose>(pub_node.endpoint_id(), "rover/pose")?;
+```
 
-All three resolve to the same 32-byte Ed25519 key. `Node::endpoint_did_key()` prints your own identity in DID:KEY form.
-
-For cross-host you need the publisher's full `EndpointAddr`, not just an identifier:
+For cross-host you generally want the publisher's full `EndpointAddr` (it
+carries direct addresses / relay info, so no discovery round-trip is needed):
 
 ```rust
 let pub_addr = pub_node.endpoint_addr();          // share this with peers
 let mut sub  = sub_node.subscriber::<Pose>(pub_addr, "rover/pose")?;
 ```
 
+Friendly names, `did:key` strings, name→id derivation, and grouping many
+ids into one logical "robot" are intentionally **not** peerbus's job — they
+live in a higher-level crate that resolves a name to an `EndpointId` and then
+calls in here. peerbus itself only ever speaks 32-byte ids.
+
 ## Your own identity
 
+peerbus only *consumes* a key; it does not mint, name, or persist one:
+
 ```rust
-.identity("rover-a")              // string → impersonable, dev only
-.identity_env("ROVER_ID")         // string from env var
-.identity_file("/etc/rover.key")  // 32 raw bytes on disk, mode 0600
+.secret_key(key)   // bind with this exact ed25519 key (its public half is the EndpointId)
+.ephemeral()       // bind with a fresh random key (tests, examples, short-lived nodes)
+.label("rover-a")  // optional, cosmetic — shown in logs only, never in routing
 ```
 
-`identity_file` is the only path that can't be impersonated. Mode is re-enforced (`0600`) on every read.
+Deriving a key from a name, loading one from a file, or persisting it is the
+higher-level crate's responsibility: it produces a `SecretKey` and hands it to
+`.secret_key(...)`.
 
 ## Limiting who can dial in
 
+Inbound peers are **denied by default**. A node accepts an incoming connection only if the dialing peer is on its allowlist:
+
 ```rust
 let node = Node::builder()
-    .identity_file("/etc/rover.key")
+    .secret_key(rover_key)
     .allow_peer(planner_id)
     .allow_peer(logger_id)
     .bind()?;
 ```
 
-Without `allow_peer`, any peer that knows the ALPN can subscribe. Once one is set, every other connection is closed immediately after the QUIC handshake.
+Every other connection is closed immediately after the QUIC handshake, with a `WARN` naming the rejected peer. This covers pub/sub and all five request modes — the check runs once, on the connection, before any stream is served.
+
+A node that configures no allowlist rejects *everyone*. To accept any peer that knows the ALPN — a trusted LAN, a loopback test — opt out explicitly:
+
+```rust
+let node = Node::builder().allow_any_peer().bind()?; // WARNs at bind
+```
+
+The ALPN is not a secret (it is sent in the clear in the TLS ClientHello), so `allow_any_peer` is not access control. Only outbound dials are unfiltered; the peer you dial decides whether to accept you.
 
 ## Req/res
 
 ```rust
 use peerbus::Node;
 
-let server_node = Node::builder().identity("calc").bind()?;
-let client_node = Node::builder().bind()?;
+let server_node = Node::builder().ephemeral().bind()?;
+let client_node = Node::builder().ephemeral().bind()?;
 
 // server
 let mut server = server_node.req_server::<Ping, Pong>("calc/ping")?;
@@ -165,8 +151,8 @@ while let Some((req, res)) = server.take()? {
     res.respond(&handle(req.header()))?;
 }
 
-// client
-let mut client = client_node.req_client::<Ping, Pong>("calc", "calc/ping")?;
+// client — address the server by its id
+let mut client = client_node.req_client::<Ping, Pong>(server_node.endpoint_id(), "calc/ping")?;
 let res = client.call(&Ping { /* … */ })?;
 let pong: Pong = *res.header();
 # Ok::<_, peerbus::Error>(())
@@ -176,13 +162,28 @@ The high-level `Node` API chooses local SHM first and falls back to
 iroh, matching pub/sub routing. Lower-level `LocalReqResService` and
 `RemoteTransport` req/res APIs remain available for advanced use.
 
+To force the iroh path even when both peers are on the same host, build the
+node with `skip_shm()`:
+
+```rust
+let node = Node::builder()
+    .ephemeral()
+    .skip_shm()
+    .bind()?;
+```
+
+Such a node never creates SHM services and never probes for them. Its
+publishers, subscribers, and all request-mode servers/clients use iroh only.
+The same option is exposed as `Node(skip_shm=True)` in Python and as
+`PeerbusNodeConfig.skip_shm` in the C ABI.
+
 ## Que/ans
 
 For one query that returns zero or more finite answers, use `que/ans`:
 
 ```rust
 let mut server = server_node.ans::<RangeQue, Hit>("search/range")?;
-let mut client = client_node.que_client::<RangeQue, Hit>("search", "search/range")?;
+let mut client = client_node.que_client::<RangeQue, Hit>(server_node.endpoint_id(), "search/range")?;
 
 // server
 while let Some((que, mut ans)) = server.take()? {
@@ -201,8 +202,7 @@ while let Some(hit) = answers.next()? {
 ```
 
 Like pub/sub and req/res, `que_client(peer, topic)` tries local SHM first
-and falls back to iroh. In system-DID mode, use `node.que::<Que, Ans>(topic)`
-to route by `(system_did, topic)`.
+and falls back to iroh.
 
 ## Put/ack
 
@@ -231,8 +231,7 @@ let ack = put.finish()?;
 # Ok::<_, peerbus::Error>(())
 ```
 
-`put_client(peer, topic)` chooses local SHM first and then iroh. In
-system-DID mode, use `node.put::<Put, Ack>(topic)`.
+`put_client(peer, topic)` chooses local SHM first and then iroh.
 
 ## Pip
 
@@ -260,8 +259,7 @@ while let Some(msg) = pip.next()? {
 # Ok::<_, peerbus::Error>(())
 ```
 
-`pip_client(peer, topic)` chooses local SHM first and then iroh. In
-system-DID mode, use `node.pip::<ClientMsg, ServerMsg>(topic)`.
+`pip_client(peer, topic)` chooses local SHM first and then iroh.
 
 ## Observability
 
@@ -285,9 +283,9 @@ Enable the `tracing` feature for structured events on accept / connect / disconn
 | Feature   | Adds                                                              |
 |-----------|-------------------------------------------------------------------|
 | `tracing` | structured events at accept / connect / disconnect / lag / errors |
-| `config`  | service-discovery config files (TOML / JSON)                      |
+| `python`  | pyo3 CPython extension (built by maturin)                         |
 
-The local SHM backend and iroh are always on; there is no feature gate for either transport.
+The local SHM backend and iroh are always on; there is no feature gate for either transport. Service-discovery config files (TOML / JSON) are planned, not yet implemented.
 
 ## Foreign-language bindings
 
@@ -330,9 +328,12 @@ read-only `memoryview` payload/wire bytes without copying.
 Python also exposes `node.peer_path_diagnostics(endpoint_addr)` for remote
 path checks; the C ABI mirrors it through `peerbus_node_peer_path_diagnostics`
 and the `peerbus_peer_path_diagnostics_*` accessors.
-Inbound peer allowlisting is also binding-visible: Python accepts
-`Node(allowed_peers=[did_key_or_name, ...])`, and C uses
-`PeerbusNodeConfig.allowed_peers` / `allowed_peers_len`.
+Inbound peer allowlisting is also binding-visible, and deny-by-default applies
+to the bindings too: Python accepts
+`Node(allowed_peers=[endpoint_addr, ...], allow_any_peer=False)`, and C uses
+`PeerbusNodeConfig.allowed_peers` / `allowed_peers_len` / `allow_any_peer`.
+(`peerbus_node_new` has no ACL knob, so the node it builds refuses every
+inbound connection; use `peerbus_node_new_with_config` to serve remote peers.)
 
 The video examples use `datapod.Grid` (`Encoding.Rgba8`) over that generic
 datapod path:
@@ -340,11 +341,11 @@ datapod path:
 ```sh
 # Python publisher -> Rust Wayland subscriber
 peerbus-video-pub
-cargo run --release --example video_sub -- <did printed by Python>
+cargo run --release --example video_sub -- <endpoint-addr printed by Python>
 
 # Rust publisher -> Python headless subscriber
 cargo run --release --example video_pub
-peerbus-video-sub <did printed by Rust>
+peerbus-video-sub <endpoint-addr printed by Rust>
 ```
 
 ## Topic QoS
@@ -400,7 +401,6 @@ counters via `.stats()` (`ReqStats`/`QueStats`/`PutStats`/`PipStats`).
   and pip (`serve_pips`/`pip_client`). `Pod` payloads; interoperates
   with the `Node` path over iroh.
 - `AsyncPublisher` / `AsyncSubscriber` — `async fn` shims over the sync core.
-- `did_key::endpoint_id_to_did_key` / `did_key_to_endpoint_id` — DID:KEY adapter (delegates to [`authbox`](https://codeberg.org/robolibs/authbox)).
 
 See `examples/` for runnable demos of every mode over **both**
 transports: `req_res`, `que_ans`, `put_ack`, and `pip` each show a
@@ -415,9 +415,9 @@ Datapod-focused examples:
   fixed-size user type over pub/sub.
 - `datapod_heap_payloads` — heap-bearing `Bytes` and `Linestring` payloads
   with QoS/chunk settings.
-- `datapod_primitives_gallery` — one system-DID namespace using different
-  datapods across pub/sub, req/res, que/ans, put/ack, and pip.
+- `datapod_primitives_gallery` — different datapods across pub/sub, req/res,
+  que/ans, put/ack, and pip, all addressed by the server node's id.
 
 ## Status
 
-`0.0.x` — pre-1.0. Wire format documented in [`PLAN.md`](PLAN.md), not stable between minor releases. Sharp edges in [`LIMITATIONS.md`](LIMITATIONS.md).
+`0.3.x` — pre-1.0. Wire format not stable between minor releases. Sharp edges in [`LIMITATIONS.md`](docs/LIMITATIONS.md).

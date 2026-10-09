@@ -37,3 +37,25 @@ pub use reqresp::{
 };
 pub use service::{LocalConfig, LocalPublisher, LocalService, LocalSubscriber};
 pub use transport::LocalTransport;
+
+/// Starting value for a handle's request or session counter. Counters
+/// that all start at zero collide across clients on one shared ring: a
+/// retained response with the same id is taken by the wrong caller.
+pub fn seed_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SALT: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let salt = SALT.fetch_add(1, Ordering::Relaxed);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&nanos.to_le_bytes());
+    hasher.update(&(std::process::id() as u64).to_le_bytes());
+    hasher.update(&salt.to_le_bytes());
+    let digest = hasher.finalize();
+    let mut out = [0u8; 8];
+    out.copy_from_slice(&digest.as_bytes()[..8]);
+    // Keep headroom below u64::MAX so fetch_add never wraps in practice.
+    u64::from_le_bytes(out) >> 1
+}

@@ -67,9 +67,26 @@ pub const PIP_MAGIC: u32 = 0x3149_4251;
 /// History:
 /// * `1` — type identity hashed from `std::any::type_name::<T>()`.
 ///   Unstable across rustc versions; retired.
-/// * `2` — type identity hashed from `(size_of::<T>(), align_of::<T>())`
-///   via [`crate::transport::wire_type_hash`]. Stable across
-///   toolchains; coarser (size+align collisions possible).
+/// * `2` — current. The wire *shape* below is unchanged, but the type
+///   identity it carries is now hashed from
+///   `(size_of::<T>(), align_of::<T>(), type_name::<T>())` via
+///   [`crate::transport::wire_type_hash`], not size+align alone.
+///   Size+align alone was toolchain-stable but *collision-prone*: two
+///   unrelated types with the same size and alignment hashed
+///   identically and could be interchanged silently. Distinct types
+///   now produce distinct hashes, so a mismatched pair fails loudly
+///   with `TypeMismatch` instead of exchanging garbage — at the cost
+///   of the hash no longer being invariant across rustc versions that
+///   reformat type names, or across renaming/moving a type. Peers must
+///   be built from the same type definitions. A loud refusal is
+///   strictly preferable to silent corruption.
+///
+/// The version number is NOT bumped for that change: the frame layout
+/// is byte-identical, and a peer built against the old hashing already
+/// fails loudly (`TypeMismatch`) rather than misparsing. Note also that
+/// this constant doubles as the *legacy baseline* marker that the item
+/// and pub/sub parsers compare against, so it must stay distinct from
+/// [`ITEM_HANDSHAKE_VERSION_CHUNKED`] / [`PUBSUB_HANDSHAKE_VERSION_QOS`].
 pub const HANDSHAKE_VERSION: u32 = 2;
 
 /// Pub/sub handshake version carrying data-agnostic topic QoS.

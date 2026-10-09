@@ -1,0 +1,83 @@
+//! Publish + subscribe a `datapod::Pose` end-to-end.
+//!
+//! ```text
+//! cargo run --example datapod_pose
+//! ```
+//!
+//! Two `Node`s in one process, both `no_relay`. The publisher
+//! simulates a slowly-moving robot reporting its pose every 100 ms
+//! over the topic `"rover/pose"`. The subscriber attaches by the
+//! publisher's identity name and prints what it sees.
+
+use std::thread;
+use std::time::{Duration, Instant};
+
+use datapod::{Point, Pose, Quaternion};
+use peerbus::Node;
+
+fn main() -> peerbus::Result<()> {
+    let pub_node = Node::builder().no_relay().ephemeral().label("rover-a").bind()?;
+    let sub_node = Node::builder().no_relay().ephemeral().label("planner").bind()?;
+
+    let mut pubr = pub_node.publisher::<Pose>("rover/pose")?;
+    let mut sub = sub_node.subscriber::<Pose>(pub_node.endpoint_id(), "rover/pose")?;
+
+    println!(
+        "publisher \"rover-a\"   EndpointId={}",
+        pub_node.endpoint_id()
+    );
+    println!(
+        "subscriber \"planner\"  EndpointId={}",
+        sub_node.endpoint_id()
+    );
+
+    let publisher = thread::spawn(move || {
+        for i in 0..5 {
+            let pose = Pose {
+                point: Point {
+                    x: i as f64,
+                    y: 0.5 * i as f64,
+                    z: 0.0,
+                },
+                // Spin slowly around z; identity at i=0.
+                rotation: Quaternion::new(
+                    (0.05 * i as f64).cos(),
+                    0.0,
+                    0.0,
+                    (0.05 * i as f64).sin(),
+                ),
+            };
+            pubr.send(&pose).expect("publish");
+            thread::sleep(Duration::from_millis(100));
+        }
+    });
+
+    let subscriber = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut seen = 0u32;
+        while Instant::now() < deadline && seen < 5 {
+            match sub.take() {
+                Ok(Some(s)) => {
+                    let h = s.header();
+                    println!(
+                        "got pose:  ({:.2}, {:.2}, {:.2})   q=({:.3}, {:.3}, {:.3}, {:.3})",
+                        h.point.x,
+                        h.point.y,
+                        h.point.z,
+                        h.rotation.w,
+                        h.rotation.x,
+                        h.rotation.y,
+                        h.rotation.z,
+                    );
+                    seen += 1;
+                }
+                Ok(None) => thread::sleep(Duration::from_millis(10)),
+                Err(_) => {}
+            }
+        }
+    });
+
+    publisher.join().unwrap();
+    subscriber.join().unwrap();
+    Ok(())
+}
