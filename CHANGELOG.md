@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.4.2] - 2026-10-09
+
+### <!-- 0 -->⛰️  Features
+
+- Runtime allow_peer and py constructors
+- Add option to skip shared memory for nodes
+- Hmmmmmm
+- Everything less than 1000loc
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Seed request ids per handle
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Bump datapod pin to 0.6.2
+- Bump datapod pin to 0.6.1
+- Bump datapod to 0.6.0
+- Bump datapod dependency to 0.5.0
+- Migrate to oslo config, clean up layout
+- Update iroh imports
+
 ## [0.4.0] - 2026-07-12
 
 ### <!-- 0 -->⛰️  Features
