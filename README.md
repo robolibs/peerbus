@@ -49,7 +49,7 @@ shape above is identical on both.
 ## Install
 
 ```toml
-peerbus = { git = "https://codeberg.org/robolibs/peerbus" }
+peerbus = { git = "https://github.com/robolibs/peerbus" }
 ```
 
 On Nix: `nix develop`. The local backend is pure Rust
