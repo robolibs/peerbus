@@ -119,8 +119,8 @@ dependencies = [
 
 [[package]]
 name = "authbox"
-version = "0.1.1"
-source = "git+https://codeberg.org/robolibs/authbox.git?tag=0.1.1#b22094a1f9742072542f523608ca226969a702f1"
+version = "0.1.2"
+source = "git+https://github.com/robolibs/authbox?tag=v0.1.2#c463b3c4326536d29d05585bc9234170f42b9894"
 dependencies = [
  "base64ct",
  "bs58",
@@ -705,7 +705,7 @@ dependencies = [
 [[package]]
 name = "datapod"
 version = "0.6.2"
-source = "git+https://codeberg.org/robolibs/datapod.git?tag=0.6.2#f4aded9d7cac9e2762fff7a99eeb96026a2d0841"
+source = "git+https://github.com/robolibs/datapod?tag=0.6.2#f4aded9d7cac9e2762fff7a99eeb96026a2d0841"
 dependencies = [
  "bytemuck",
  "datapod-macros",
@@ -714,7 +714,7 @@ dependencies = [
 [[package]]
 name = "datapod-macros"
 version = "0.0.1"
-source = "git+https://codeberg.org/robolibs/datapod.git?tag=0.6.2#f4aded9d7cac9e2762fff7a99eeb96026a2d0841"
+source = "git+https://github.com/robolibs/datapod?tag=0.6.2#f4aded9d7cac9e2762fff7a99eeb96026a2d0841"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1948,7 +1948,7 @@ dependencies = [
 [[package]]
 name = "keylock"
 version = "0.1.1"
-source = "git+https://codeberg.org/robolibs/keylock.git?tag=0.1.1#998cfac26b8e307280f7f30f62dfe9c0e465b5d2"
+source = "git+https://github.com/robolibs/keylock?tag=0.1.1#998cfac26b8e307280f7f30f62dfe9c0e465b5d2"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -5277,7 +5277,7 @@ dependencies = [
 [[package]]
 name = "wirebit"
 version = "0.0.1"
-source = "git+https://codeberg.org/robolibs/wirebit.git?rev=f4b72c4c2c16563a8897e3f7f0fe6efbfee97441#f4b72c4c2c16563a8897e3f7f0fe6efbfee97441"
+source = "git+https://github.com/robolibs/wirebit?rev=f4b72c4c2c16563a8897e3f7f0fe6efbfee97441#f4b72c4c2c16563a8897e3f7f0fe6efbfee97441"
 dependencies = [
  "bon",
  "bytes",
