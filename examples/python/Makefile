@@ -16,7 +16,7 @@ endif
 VENV := .venv
 VENV_PYTHON := $(CURDIR)/$(VENV)/bin/python
 DATAPOD_REF ?= 0.4.1
-DATAPOD_GIT ?= git+https://codeberg.org/robolibs/datapod.git@$(DATAPOD_REF)
+DATAPOD_GIT ?= git+https://github.com/robolibs/datapod.git@$(DATAPOD_REF)
 
 .PHONY: all bind-py develop demo clean
 
