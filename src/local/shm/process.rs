@@ -27,8 +27,20 @@ pub(crate) fn current_pid() -> u32 {
     std::process::id()
 }
 
+/// This process' start token, read once per process id.
 pub(crate) fn current_process_token() -> u64 {
-    process_start_token(current_pid()).unwrap_or(0)
+    static READ: std::sync::OnceLock<(u32, u64)> = std::sync::OnceLock::new();
+    let pid = current_pid();
+    match READ.get() {
+        Some(&(at, token)) if at == pid => token,
+        _ => {
+            let token = process_start_token(pid);
+            if let Some(token) = token {
+                let _ = READ.set((pid, token));
+            }
+            token.unwrap_or(0)
+        }
+    }
 }
 
 /// Read a process' start-time token from `/proc/<pid>/stat`, distinguishing

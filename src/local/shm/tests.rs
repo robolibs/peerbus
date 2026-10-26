@@ -653,3 +653,10 @@
             );
         }
     }
+
+    #[test]
+    fn the_current_token_stays_the_process_start_token() {
+        let read = process_start_token(current_pid()).unwrap_or(0);
+        assert_eq!(current_process_token(), read);
+        assert_eq!(current_process_token(), read);
+    }
