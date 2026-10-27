@@ -1430,6 +1430,57 @@ fn node_publisher_fans_out_to_local_shm_and_remote_iroh() {
 }
 
 #[test]
+fn publisher_counts_local_and_remote_subscribers() {
+    let _guard = node_test_guard();
+    let topic = unique_name("interop/count");
+    let pub_node = Node::builder()
+        .no_relay()
+        .ephemeral()
+        .allow_any_peer()
+        .bind()
+        .expect("publisher node");
+    pub_node
+        .wait_for_direct_addresses(Duration::from_secs(5))
+        .expect("publisher addresses");
+    let mut pubr = pub_node.publisher::<Tick>(&topic).unwrap();
+    assert_eq!(pubr.subscriber_count(), 0);
+
+    let local_node = Node::builder()
+        .no_relay()
+        .ephemeral()
+        .bind()
+        .expect("local subscriber node");
+    let local_sub = local_node
+        .subscriber::<Tick>(pub_node.endpoint_id(), &topic)
+        .unwrap();
+    assert_eq!(pubr.subscriber_count(), 1);
+    drop(local_sub);
+    assert_eq!(pubr.subscriber_count(), 0);
+
+    let remote_side = RemoteTransport::builder(&topic)
+        .no_relay()
+        .peer(pub_node.endpoint_addr())
+        .build_blocking()
+        .expect("remote subscriber transport");
+    let remote_sub = remote_side.subscriber::<Tick>().unwrap();
+    let attached = poll_for(Duration::from_secs(5), || {
+        pubr.send(&Tick { seq: 1, payload: 1 }).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        (pubr.subscriber_count() == 1).then_some(())
+    });
+    assert!(attached.is_some(), "the remote subscriber should be counted");
+
+    drop(remote_sub);
+    drop(remote_side);
+    let detached = poll_for(Duration::from_secs(5), || {
+        pubr.send(&Tick { seq: 2, payload: 2 }).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        (pubr.subscriber_count() == 0).then_some(())
+    });
+    assert!(detached.is_some(), "a closed remote subscriber should leave the count");
+}
+
+#[test]
 fn ephemeral_key_changes_each_bind() {
     let _guard = node_test_guard();
     let id1 = Node::builder()

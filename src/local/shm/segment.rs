@@ -411,6 +411,11 @@ impl<H: Pod + Zeroable + Copy + 'static> Segment<H> {
         self.control().publishers.load(Ordering::Acquire) as usize
     }
 
+    pub(crate) fn subscriber_count(&self) -> usize {
+        self.reap_dead_subscribers();
+        self.control().subscribers.load(Ordering::Acquire) as usize
+    }
+
     pub(crate) fn producer(self: &Arc<Self>) -> Result<Producer<H>> {
         let lease = Arc::new(ProducerLease {
             segment: Arc::clone(self),

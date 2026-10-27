@@ -364,6 +364,16 @@ pub struct Publisher<T: datapod::DataPod + 'static> {
 }
 
 impl<T: datapod::DataPod + 'static> Publisher<T> {
+    /// Subscribers attached right now: local SHM readers plus remote
+    /// iroh streams. Zero means a sample would reach nobody.
+    pub fn subscriber_count(&self) -> usize {
+        let local = self
+            .local_publisher
+            .as_ref()
+            .map_or(0, LocalPublisher::subscriber_count);
+        local + self.iroh_tx.receiver_count()
+    }
+
     /// Loan a slot with `byte_count` payload bytes. The returned
     /// [`Loan`] exposes a `T::Header` plus a writable `[u8]` slice.
     /// For fixed-Pod `T` pass `0`; for heap-bearing `T` pass the

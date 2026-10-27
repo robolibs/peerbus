@@ -80,6 +80,11 @@ impl<T: datapod::DataPod + 'static> LocalService<T> {
         self.segment.publisher_count()
     }
 
+    /// Subscribers attached to the ring right now, in any process.
+    pub fn subscriber_count(&self) -> usize {
+        self.segment.subscriber_count()
+    }
+
     pub fn publisher(&self) -> Result<LocalPublisher<T>> {
         Ok(LocalPublisher {
             inner: self.segment.producer()?,
@@ -100,6 +105,11 @@ pub struct LocalPublisher<T: datapod::DataPod + 'static> {
 }
 
 impl<T: datapod::DataPod + 'static> LocalPublisher<T> {
+    /// Subscribers attached to this publisher's ring right now.
+    pub fn subscriber_count(&self) -> usize {
+        self.inner.lease.segment.subscriber_count()
+    }
+
     /// Loan an in-flight slot with `byte_count` payload bytes. The
     /// header and payload bytes are zero-initialised.
     pub fn loan(&mut self, byte_count: usize) -> Result<Loan<T>> {
